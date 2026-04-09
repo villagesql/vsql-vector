@@ -1,0 +1,195 @@
+# Install vsql-svector extension
+INSTALL EXTENSION vsql_vector;
+
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+--replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
+
+########################################################################
+#
+# Test SVECTOR SELECT operations and UDF functions
+#
+########################################################################
+
+--echo # Create table with multiple SVECTOR columns
+CREATE TABLE vector_test (
+  id INT PRIMARY KEY,
+  embedding1 SVECTOR(6) NOT NULL,
+  embedding2 SVECTOR(6) NOT NULL,
+  name VARCHAR(50),
+  category INT,
+  INDEX idx_category (category)
+) ENGINE=InnoDB;
+
+--echo # Insert test records
+INSERT INTO vector_test VALUES
+  (1, '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', '[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]', 'row1', 10),
+  (2, '[1.1, 2.1, 3.1, 4.1, 5.1, 6.1]', '[0.11, 0.21, 0.31, 0.41, 0.51, 0.61]', 'row2', 20),
+  (3, '[1.2, 2.2, 3.2, 4.2, 5.2, 6.2]', '[0.12, 0.22, 0.32, 0.42, 0.52, 0.62]', 'row3', 30),
+  (4, '[-1.0, -2.0, -3.0, -4.0, -5.0, -6.0]', '[-0.1, -0.2, -0.3, -0.4, -0.5, -0.6]', 'row4', 40),
+  (5, '[0, 0, 0, 0, 0, 0]', '[1, 1, 1, 1, 1, 1]', 'row5', 50),
+  (6, '[100.5, 200.5, 300.5, 400.5, 500.5, 600.5]', '[10.05, 20.05, 30.05, 40.05, 50.05, 60.05]', 'row6', 60),
+  (7, '[1e-5, 2e-5, 3e-5, 4e-5, 5e-5, 6e-5]', '[1e5, 2e5, 3e5, 4e5, 5e5, 6e5]', 'row7', 70),
+  (8, '[3.14159, 2.71828, 1.41421, 1.73205, 0.57721, 1.61803]', '[0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625]', 'row8', 80),
+  (9, '[-0.5, 0.5, -0.5, 0.5, -0.5, 0.5]', '[7.7, 8.8, 9.9, 10.1, 11.2, 12.3]', 'row9', 90),
+  (10, '[999.999, 888.888, 777.777, 666.666, 555.555, 444.444]', '[0.001, 0.002, 0.003, 0.004, 0.005, 0.006]', 'row10', 100);
+
+--echo # Test 1: Select all records with HEX() to avoid binary dump (skip first 8 bytes)
+SELECT id, SUBSTRING(SVECTOR_HEX(embedding1), 17) AS embedding1_hex,
+SUBSTRING(SVECTOR_HEX(embedding2), 17) AS embedding2_hex, name
+FROM vector_test ORDER BY id;
+
+--echo # Test 2: Select all records with SVECTOR_TO_STRING()
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name
+FROM vector_test ORDER BY id;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, SVECTOR_FORMAT(embedding2, 6) AS embedding2_str, name
+FROM vector_test ORDER BY id;
+
+--echo # Test 3: Select specific columns only
+SELECT id, name FROM vector_test ORDER BY id;
+
+--echo # Test 4: Select only SVECTOR columns
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str FROM vector_test ORDER BY id;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str FROM vector_test ORDER BY id;
+
+--echo # Test 5: Select with WHERE clause on primary key
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+FROM vector_test WHERE id = 5;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+FROM vector_test WHERE id = 5;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+FROM vector_test WHERE id = 5;
+
+--echo # Test 6: Select with WHERE clause using IN list
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+FROM vector_test WHERE id IN (1, 5, 10) ORDER BY id;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+FROM vector_test WHERE id IN (1, 5, 10) ORDER BY id;
+
+--echo # Test 7: Select with WHERE clause on non-vector column
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+FROM vector_test WHERE name LIKE 'row%' AND id <= 5 ORDER BY id;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+FROM vector_test WHERE name LIKE 'row%' AND id <= 5 ORDER BY id;
+
+--echo # Test 8: Select with WHERE clause on secondary key
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, category
+FROM vector_test WHERE category >= 50 ORDER BY id;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, category
+FROM vector_test WHERE category >= 50 ORDER BY id;
+
+--echo # Test 9: Count records
+SELECT COUNT(*) AS total_count FROM vector_test;
+
+--echo # Test 10: Count with WHERE clause
+SELECT COUNT(*) AS filtered_count FROM vector_test WHERE category > 50;
+
+--echo # Test 11: Select with ORDER BY on non-vector column
+SELECT id, name, category FROM vector_test ORDER BY category DESC;
+
+--echo # Test 12: Select with LIMIT
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+FROM vector_test ORDER BY id LIMIT 3;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+FROM vector_test ORDER BY id LIMIT 3;
+
+--echo # Test 13: Select with LIMIT and OFFSET
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+FROM vector_test ORDER BY id LIMIT 3 OFFSET 5;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+FROM vector_test ORDER BY id LIMIT 3 OFFSET 5;
+
+--echo # Test 14: Select with GROUP BY
+SELECT category, COUNT(*) AS count FROM vector_test GROUP BY category ORDER BY category;
+
+--echo # Test 15: Test SVECTOR_TO_STRING UDF with specific rows
+SELECT id, SVECTOR_TO_STRING(embedding1) AS emb1_str, SVECTOR_TO_STRING(embedding2) AS emb2_str
+FROM vector_test WHERE id IN (1, 5, 10) ORDER BY id;
+
+SELECT id, SVECTOR_FORMAT(embedding1, 6) AS emb1_str, SVECTOR_FORMAT(embedding2, 6) AS emb2_str
+FROM vector_test WHERE id IN (1, 5, 10) ORDER BY id;
+
+--echo # Test 16: Test SVECTOR_FROM_STRING UDF with HEX()
+--echo # TODO: Enable after decode works with constants for parameterized types
+--error ER_UDF_ERROR
+SELECT SVECTOR_HEX(SVECTOR_FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS test_vector_hex;
+
+--echo # Test 17: Test round-trip conversion: FROM_STRING -> TO_STRING
+--echo # TODO: Enable after decode works with constants for parameterized types
+--error ER_UDF_ERROR
+SELECT SVECTOR_TO_STRING(SVECTOR_FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS roundtrip_test;
+
+--echo # Test 18: Test round-trip with edge case values
+--echo # TODO: Enable after decode works with constants for parameterized types
+--error ER_UDF_ERROR
+SELECT SVECTOR_TO_STRING(SVECTOR_FROM_STRING('[0, -1.5, 1e5, 1e-5, 999.999, -999.999]')) AS roundtrip_edge_cases;
+
+--echo # Test 19: Select with DISTINCT on non-vector column
+SELECT DISTINCT category FROM vector_test ORDER BY category;
+
+--echo # Test 20: Select with JOIN (self-join on category)
+SELECT t1.id AS id1, t1.name AS name1, t2.id AS id2, t2.name AS name2
+FROM vector_test t1
+JOIN vector_test t2 ON t1.category = t2.category
+WHERE t1.id < t2.id
+ORDER BY t1.id, t2.id
+LIMIT 5;
+
+--echo # Test 21: Select with subquery
+SELECT id, name FROM vector_test
+WHERE category IN (SELECT category FROM vector_test WHERE id <= 3)
+ORDER BY id;
+
+--echo # Test 22: Select with CASE expression
+SELECT id, name,
+  CASE
+    WHEN category < 50 THEN 'Low'
+    WHEN category >= 50 AND category < 80 THEN 'Medium'
+    ELSE 'High'
+  END AS category_level
+FROM vector_test ORDER BY id;
+
+--echo # Test 23: Test with nullable SVECTOR column
+CREATE TABLE vector_nullable_test (
+  id INT PRIMARY KEY,
+  embedding SVECTOR(6) NULL,
+  name VARCHAR(50)
+) ENGINE=InnoDB;
+
+INSERT INTO vector_nullable_test VALUES
+  (1, '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', 'has_vector'),
+  (2, NULL, 'null_vector'),
+  (3, '[3.0, 3.1, 3.2, 3.3, 3.4, 3.5]', 'another_vector'),
+  (4, NULL, 'another_null');
+
+--echo # Select with IS NULL check
+SELECT id, embedding IS NULL AS is_null, SVECTOR_TO_STRING(embedding) AS embedding_str, name
+FROM vector_nullable_test ORDER BY id;
+
+--echo # Select only NULL SVECTOR rows
+SELECT id, name FROM vector_nullable_test WHERE embedding IS NULL ORDER BY id;
+
+--echo # Select only non-NULL SVECTOR rows
+SELECT id, SVECTOR_TO_STRING(embedding) AS embedding_str, name
+FROM vector_nullable_test WHERE embedding IS NOT NULL ORDER BY id;
+
+--echo # Test 24: Select with COALESCE on nullable SVECTOR
+SELECT id, name,
+  CASE WHEN embedding IS NULL THEN 'NULL' ELSE SVECTOR_TO_STRING(embedding) END AS embedding_display
+FROM vector_nullable_test ORDER BY id;
+
+--echo # Clean up
+DROP TABLE vector_test;
+DROP TABLE vector_nullable_test;
+
+--echo # SVECTOR select test completed
+
+UNINSTALL EXTENSION vsql_vector;

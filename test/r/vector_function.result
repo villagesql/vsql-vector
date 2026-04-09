@@ -1,0 +1,127 @@
+INSTALL EXTENSION vsql_vector;
+# Create tables for function tests
+CREATE TABLE func_single (
+id INT PRIMARY KEY,
+v SVECTOR(4) NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO func_single VALUES
+(1, '[3.0, 4.0, 0.0, 0.0]'),
+(2, '[5.0, 12.0, 0.0, 0.0]'),
+(3, '[0.0, 0.0, 0.0, 0.0]'),
+(4, '[1.0, 0.0, 0.0, 0.0]');
+CREATE TABLE func_pairs (
+id INT PRIMARY KEY,
+v1 SVECTOR(4) NOT NULL,
+v2 SVECTOR(4) NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO func_pairs VALUES
+(1, '[3.0, 4.0, 0.0, 0.0]', '[0.0, 0.0, 0.0, 0.0]'),
+(2, '[3.0, 4.0, 0.0, 0.0]', '[3.0, 4.0, 0.0, 0.0]'),
+(3, '[3.0, 4.0, 0.0, 0.0]', '[-3.0, -4.0, 0.0, 0.0]'),
+(4, '[3.0, 4.0, 0.0, 0.0]', '[0.0, 0.0, 3.0, 4.0]'),
+(5, '[1.0, 0.0, 0.0, 0.0]', '[-1.0, 0.0, 0.0, 0.0]'),
+(6, '[1.0, 0.0, 0.0, 0.0]', '[2.0, 0.0, 0.0, 0.0]');
+CREATE TABLE func_nullable (
+id INT PRIMARY KEY,
+v1 SVECTOR(4) NULL,
+v2 SVECTOR(4) NULL
+) ENGINE=InnoDB;
+INSERT INTO func_nullable VALUES
+(1, '[3.0, 4.0, 0.0, 0.0]', '[0.0, 0.0, 0.0, 0.0]'),
+(2, NULL, '[0.0, 0.0, 0.0, 0.0]'),
+(3, '[3.0, 4.0, 0.0, 0.0]', NULL),
+(4, NULL, NULL);
+# Test 1: SVECTOR_MAX_DIMENSION - global constant, no arguments
+SELECT SVECTOR_MAX_DIMENSION() AS max_dim;
+max_dim
+3072
+# Test 2: SVECTOR_DIMENSION - returns the declared dimension of a vector column
+SELECT id, SVECTOR_DIMENSION(v) AS dims FROM func_single ORDER BY id;
+id	dims
+1	4
+2	4
+3	4
+4	4
+# Test 3: SVECTOR_NORM - L2 (Euclidean) norm of a single vector
+SELECT id, SVECTOR_NORM(v) AS norm FROM func_single ORDER BY id;
+id	norm
+1	5
+2	13
+3	0
+4	1
+# Test 4: SVECTOR_DISTANCE_L1 - Manhattan distance
+SELECT id, SVECTOR_DISTANCE_L1(v1, v2) AS l1 FROM func_pairs ORDER BY id;
+id	l1
+1	7
+2	0
+3	14
+4	14
+5	2
+6	1
+# Test 5: SVECTOR_DISTANCE_L2 - Euclidean distance (pairs with integer result)
+SELECT id, SVECTOR_DISTANCE_L2(v1, v2) AS l2
+FROM func_pairs WHERE id IN (1, 2, 3, 5, 6) ORDER BY id;
+id	l2
+1	5
+2	0
+3	10
+5	2
+6	1
+# Test 6: SVECTOR_DISTANCE_COSINE - cosine distance (0=same dir, 1=orthogonal, 2=opposite)
+SELECT id, SVECTOR_DISTANCE_COSINE(v1, v2) AS cos FROM func_pairs ORDER BY id;
+id	cos
+1	1
+2	0
+3	2
+4	1
+5	2
+6	0
+# Test 7: SVECTOR_INNER_PRODUCT - dot product
+SELECT id, SVECTOR_INNER_PRODUCT(v1, v2) AS ip FROM func_pairs ORDER BY id;
+id	ip
+1	0
+2	25
+3	-25
+4	0
+5	-1
+6	2
+# Test 8: NULL handling - single-vector functions return NULL when input is NULL
+SELECT id, SVECTOR_NORM(v1) AS norm, SVECTOR_DIMENSION(v1) AS dims
+FROM func_nullable ORDER BY id;
+id	norm	dims
+1	5	4
+2	NULL	NULL
+3	5	4
+4	NULL	NULL
+# Test 9: NULL handling - distance functions return NULL when either input is NULL
+SELECT id,
+SVECTOR_DISTANCE_L1(v1, v2) AS l1,
+SVECTOR_DISTANCE_L2(v1, v2) AS l2,
+SVECTOR_DISTANCE_COSINE(v1, v2) AS cos,
+SVECTOR_INNER_PRODUCT(v1, v2) AS ip
+FROM func_nullable ORDER BY id;
+id	l1	l2	cos	ip
+1	7	5	1	0
+2	NULL	NULL	NULL	NULL
+3	NULL	NULL	NULL	NULL
+4	NULL	NULL	NULL	NULL
+# Test 10: Distance from a fixed inline vector using SVECTOR_FROM_STRING
+# TODO: Enable after decode works with constants for parameterized types
+SELECT id, SVECTOR_DISTANCE_COSINE(v, SVECTOR_FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS cos_dist
+FROM func_single ORDER BY id;
+ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
+SELECT id, SVECTOR_DISTANCE_L2(v, SVECTOR_FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l2_dist
+FROM func_single ORDER BY id;
+ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
+SELECT id, SVECTOR_DISTANCE_L1(v, SVECTOR_FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l1_dist
+FROM func_single ORDER BY id;
+ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
+SELECT id, SVECTOR_INNER_PRODUCT(v, SVECTOR_FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS ip
+FROM func_single ORDER BY id;
+ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
+# Clean up
+DROP TABLE func_single;
+DROP TABLE func_pairs;
+DROP TABLE func_nullable;
+# SVECTOR function test completed
+UNINSTALL EXTENSION vsql_vector;

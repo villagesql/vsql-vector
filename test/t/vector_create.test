@@ -1,0 +1,63 @@
+# Install vsql-svector extension
+INSTALL EXTENSION vsql_vector;
+
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+--replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
+
+########################################################################
+#
+# Test SVECTOR table creation, metadata, and schema operations
+#
+########################################################################
+
+--echo # Create table with multiple SVECTOR columns and integer primary key
+CREATE TABLE vector_test (
+  id INT PRIMARY KEY,
+  embedding1 SVECTOR(6) NOT NULL,
+  embedding2 SVECTOR(6) NOT NULL,
+  name VARCHAR(50)
+) ENGINE=InnoDB;
+
+--echo # Show create table
+SHOW CREATE TABLE vector_test;
+
+--echo # Query table metadata from information_schema.COLUMNS
+SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_TYPE
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vector_test'
+ORDER BY ORDINAL_POSITION;
+
+--echo # Query table metadata from information_schema.TABLES
+SELECT TABLE_NAME, ENGINE, TABLE_ROWS, TABLE_TYPE
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vector_test';
+
+--echo # Test creating table with nullable SVECTOR column
+CREATE TABLE vector_nullable_test (
+  id INT PRIMARY KEY,
+  embedding SVECTOR(6) NULL
+) ENGINE=InnoDB;
+
+SHOW CREATE TABLE vector_nullable_test;
+
+--echo # Test creating table with default values
+CREATE TABLE vector_default_test (
+  id INT PRIMARY KEY,
+  embedding SVECTOR(6) DEFAULT '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]'
+) ENGINE=InnoDB;
+
+SHOW CREATE TABLE vector_default_test;
+
+--echo # Drop tables
+DROP TABLE vector_test;
+DROP TABLE vector_nullable_test;
+DROP TABLE vector_default_test;
+
+--echo # Verify tables are dropped
+SELECT COUNT(*) AS table_count
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('vector_test', 'vector_nullable_test', 'vector_default_test');
+
+--echo # SVECTOR create test completed
+
+UNINSTALL EXTENSION vsql_vector;

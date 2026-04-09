@@ -1,0 +1,155 @@
+INSTALL EXTENSION vsql_vector;
+# Create table with SVECTOR columns, primary key, and secondary key
+CREATE TABLE vector_test (
+id INT PRIMARY KEY,
+embedding1 SVECTOR(6) NOT NULL,
+embedding2 SVECTOR(6) NOT NULL,
+name VARCHAR(50),
+category INT,
+INDEX idx_category (category)
+) ENGINE=InnoDB;
+# Insert initial records
+INSERT INTO vector_test VALUES
+(1, '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', '[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]', 'row1', 10),
+(2, '[1.1, 2.1, 3.1, 4.1, 5.1, 6.1]', '[0.11, 0.21, 0.31, 0.41, 0.51, 0.61]', 'row2', 20),
+(3, '[1.2, 2.2, 3.2, 4.2, 5.2, 6.2]', '[0.12, 0.22, 0.32, 0.42, 0.52, 0.62]', 'row3', 30),
+(4, '[-1.0, -2.0, -3.0, -4.0, -5.0, -6.0]', '[-0.1, -0.2, -0.3, -0.4, -0.5, -0.6]', 'row4', 40),
+(5, '[0, 0, 0, 0, 0, 0]', '[1, 1, 1, 1, 1, 1]', 'row5', 50),
+(6, '[100.5, 200.5, 300.5, 400.5, 500.5, 600.5]', '[10.05, 20.05, 30.05, 40.05, 50.05, 60.05]', 'row6', 60),
+(7, '[1e-5, 2e-5, 3e-5, 4e-5, 5e-5, 6e-5]', '[1e5, 2e5, 3e5, 4e5, 5e5, 6e5]', 'row7', 70);
+# Test 1: Update only SVECTOR column (embedding1)
+UPDATE vector_test
+SET embedding1 = '[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]'
+WHERE id = 1;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+FROM vector_test WHERE id = 1;
+id	embedding1_str	embedding2_str	name	category
+1	[10,20,30,40,50,60]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]	row1	10
+# Test 2: Update only Primary Key
+UPDATE vector_test
+SET id = 101
+WHERE id = 1;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name, category
+FROM vector_test WHERE id = 101;
+id	embedding1_str	name	category
+101	[10,20,30,40,50,60]	row1	10
+# Verify old id doesn't exist
+SELECT COUNT(*) AS count_old_id FROM vector_test WHERE id = 1;
+count_old_id
+0
+# Test 3: Update only non-vector and non-key column (name)
+UPDATE vector_test
+SET name = 'updated_row2'
+WHERE id = 2;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+FROM vector_test WHERE id = 2;
+id	embedding1_str	embedding2_str	name	category
+2	[1.10000002,2.0999999,3.0999999,4.0999999,5.0999999,6.0999999]	[0.109999999,0.209999993,0.310000002,0.409999996,0.50999999,0.610000014]	updated_row2	20
+# Test 4: Update Primary Key and SVECTOR together
+UPDATE vector_test
+SET id = 102,
+embedding1 = '[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]'
+WHERE id = 2;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name, category
+FROM vector_test WHERE id = 102;
+id	embedding1_str	name	category
+102	[100,200,300,400,500,600]	updated_row2	20
+# Test 5: Update secondary key only (category)
+UPDATE vector_test
+SET category = 35
+WHERE id = 3;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+FROM vector_test WHERE id = 3;
+id	embedding1_str	embedding2_str	name	category
+3	[1.20000005,2.20000005,3.20000005,4.19999981,5.19999981,6.19999981]	[0.119999997,0.219999999,0.319999993,0.419999987,0.519999981,0.620000005]	row3	35
+# Test 6: Update secondary key and SVECTOR
+UPDATE vector_test
+SET category = 45,
+embedding2 = '[4.1, 4.2, 4.3, 4.4, 4.5, 4.6]'
+WHERE id = 4;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+FROM vector_test WHERE id = 4;
+id	embedding1_str	embedding2_str	name	category
+4	[-1,-2,-3,-4,-5,-6]	[4.0999999,4.19999981,4.30000019,4.4000001,4.5,4.5999999]	row4	45
+# Test 7: Update all columns
+UPDATE vector_test
+SET id = 105,
+embedding1 = '[50.0, 51.0, 52.0, 53.0, 54.0, 55.0]',
+embedding2 = '[5.1, 5.2, 5.3, 5.4, 5.5, 5.6]',
+name = 'fully_updated_row5',
+category = 555
+WHERE id = 5;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+FROM vector_test WHERE id = 105;
+id	embedding1_str	embedding2_str	name	category
+105	[50,51,52,53,54,55]	[5.0999999,5.19999981,5.30000019,5.4000001,5.5,5.5999999]	fully_updated_row5	555
+# Test 8: Update multiple SVECTOR columns at once
+UPDATE vector_test
+SET embedding1 = '[6.0, 6.1, 6.2, 6.3, 6.4, 6.5]',
+embedding2 = '[0.6, 0.61, 0.62, 0.63, 0.64, 0.65]'
+WHERE id = 6;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+FROM vector_test WHERE id = 6;
+id	embedding1_str	embedding2_str	name	category
+6	[6,6.0999999,6.19999981,6.30000019,6.4000001,6.5]	[0.600000024,0.610000014,0.620000005,0.629999995,0.639999986,0.649999976]	row6	60
+# Test 9: Update with SVECTOR_FROM_STRING UDF
+# TODO: Enable after decode works with constants for parameterized types
+UPDATE vector_test
+SET embedding1 = SVECTOR_FROM_STRING('[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]')
+WHERE id = 7;
+ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]'
+UPDATE vector_test
+SET embedding1 = '[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]'
+WHERE id = 7;
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+FROM vector_test WHERE id = 7;
+id	embedding1_str	name
+7	[7.5,8.5,9.5,10.5,11.5,12.5]	row7
+# Test 10: Update multiple rows at once
+UPDATE vector_test
+SET name = CONCAT(name, '_batch_updated')
+WHERE id IN (101, 102, 3);
+SELECT id, name FROM vector_test WHERE id IN (101, 102, 3) ORDER BY id;
+id	name
+3	row3_batch_updated
+101	row1_batch_updated
+102	updated_row2_batch_updated
+# Test 11: Update using secondary key in WHERE clause
+UPDATE vector_test
+SET name = 'updated_via_category'
+WHERE category = 35;
+SELECT id, name, category FROM vector_test WHERE category = 35;
+id	name	category
+3	updated_via_category	35
+# Test 12: Update with NULL for nullable column
+CREATE TABLE vector_nullable_test (
+id INT PRIMARY KEY,
+embedding SVECTOR(6) NULL,
+name VARCHAR(50)
+) ENGINE=InnoDB;
+INSERT INTO vector_nullable_test VALUES
+(1, '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', 'has_vector'),
+(2, NULL, 'null_vector');
+UPDATE vector_nullable_test SET embedding = NULL WHERE id = 1;
+UPDATE vector_nullable_test SET embedding = '[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]' WHERE id = 2;
+SELECT id, embedding IS NULL AS is_null, SVECTOR_TO_STRING(embedding) AS embedding_str, name
+FROM vector_nullable_test ORDER BY id;
+id	is_null	embedding_str	name
+1	1	NULL	has_vector
+2	0	[7,8,9,10,11,12]	null_vector
+# Final state of all records
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+FROM vector_test ORDER BY id;
+id	embedding1_str	embedding2_str	name	category
+3	[1.20000005,2.20000005,3.20000005,4.19999981,5.19999981,6.19999981]	[0.119999997,0.219999999,0.319999993,0.419999987,0.519999981,0.620000005]	updated_via_category	35
+4	[-1,-2,-3,-4,-5,-6]	[4.0999999,4.19999981,4.30000019,4.4000001,4.5,4.5999999]	row4	45
+6	[6,6.0999999,6.19999981,6.30000019,6.4000001,6.5]	[0.600000024,0.610000014,0.620000005,0.629999995,0.639999986,0.649999976]	row6	60
+7	[7.5,8.5,9.5,10.5,11.5,12.5]	[100000,200000,300000,400000,500000,600000]	row7	70
+101	[10,20,30,40,50,60]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]	row1_batch_updated	10
+102	[100,200,300,400,500,600]	[0.109999999,0.209999993,0.310000002,0.409999996,0.50999999,0.610000014]	updated_row2_batch_updated	20
+105	[50,51,52,53,54,55]	[5.0999999,5.19999981,5.30000019,5.4000001,5.5,5.5999999]	fully_updated_row5	555
+# Clean up
+DROP TABLE vector_test;
+DROP TABLE vector_nullable_test;
+# SVECTOR update test completed
+UNINSTALL EXTENSION vsql_vector;

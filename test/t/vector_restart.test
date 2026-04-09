@@ -1,0 +1,181 @@
+# Install vsql-svector extension
+INSTALL EXTENSION vsql_vector;
+
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+--replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
+
+########################################################################
+#
+# Test SVECTOR persistence across server restarts
+#
+########################################################################
+
+--echo #
+--echo # Scenario 1: Restart with committed SVECTOR data
+--echo #
+
+--echo # Create table with SVECTOR columns
+CREATE TABLE vector_restart_test (
+  id INT PRIMARY KEY,
+  name VARCHAR(50),
+  embedding SVECTOR(6) NOT NULL,
+  metadata_vec SVECTOR(6) NOT NULL,
+  value INT
+) ENGINE=InnoDB;
+
+--echo # Insert and commit data
+INSERT INTO vector_restart_test VALUES
+  (1, 'row1', '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', '[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]', 100),
+  (2, 'row2', '[2.0, 3.0, 4.0, 5.0, 6.0, 7.0]', '[0.2, 0.3, 0.4, 0.5, 0.6, 0.7]', 200),
+  (3, 'row3', '[3.0, 4.0, 5.0, 6.0, 7.0, 8.0]', '[0.3, 0.4, 0.5, 0.6, 0.7, 0.8]', 300);
+
+--echo # Verify data before restart
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+--echo # Restart server
+--source include/restart_mysqld.inc
+
+--echo # Verify data persists after restart
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+--echo # Verify row count
+SELECT COUNT(*) AS record_count FROM vector_restart_test;
+
+--echo #
+--echo # Scenario 2: Restart with committed and uncommitted data
+--echo #
+
+--echo # Insert more committed data
+INSERT INTO vector_restart_test VALUES
+  (4, 'row4', '[4.0, 5.0, 6.0, 7.0, 8.0, 9.0]', '[0.4, 0.5, 0.6, 0.7, 0.8, 0.9]', 400),
+  (5, 'row5', '[5.0, 6.0, 7.0, 8.0, 9.0, 10.0]', '[0.5, 0.6, 0.7, 0.8, 0.9, 1.0]', 500);
+COMMIT;
+
+--echo # Start transaction with uncommitted data
+START TRANSACTION;
+INSERT INTO vector_restart_test VALUES
+  (6, 'row6', '[6.0, 7.0, 8.0, 9.0, 10.0, 11.0]', '[0.6, 0.7, 0.8, 0.9, 1.0, 1.1]', 600),
+  (7, 'row7', '[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]', '[0.7, 0.8, 0.9, 1.0, 1.1, 1.2]', 700);
+
+--echo # Verify uncommitted data is visible in current transaction
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+--echo # Restart server (will rollback uncommitted transaction)
+--source include/restart_mysqld.inc
+
+--echo # Verify only committed data persists (rows 6-7 should be gone)
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+--echo # Verify row count (should be 5, not 7)
+SELECT COUNT(*) AS record_count FROM vector_restart_test;
+
+--echo #
+--echo # Scenario 3: Restart with UPDATE operations
+--echo #
+
+--echo # Update some SVECTOR data and commit
+UPDATE vector_restart_test
+SET embedding = '[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]',
+    metadata_vec = '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]',
+    value = 999
+WHERE id = 1;
+COMMIT;
+
+--echo # Verify update before restart
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test WHERE id = 1;
+
+--echo # Restart server
+--source include/restart_mysqld.inc
+
+--echo # Verify update persists after restart
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test WHERE id = 1;
+
+--echo #
+--echo # Scenario 4: Restart with DELETE operations
+--echo #
+
+--echo # Delete a row and commit
+DELETE FROM vector_restart_test WHERE id = 5;
+COMMIT;
+
+--echo # Verify deletion before restart (row 5 should be gone)
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+--echo # Restart server
+--source include/restart_mysqld.inc
+
+--echo # Verify deletion persists after restart (row 5 should still be gone)
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+--echo # Verify final row count
+SELECT COUNT(*) AS record_count FROM vector_restart_test;
+
+--echo #
+--echo # Scenario 5: Restart with mixed committed and uncommitted changes
+--echo #
+
+--echo # Start transaction with mixed operations
+START TRANSACTION;
+--echo # Insert new row
+INSERT INTO vector_restart_test VALUES
+  (8, 'row8', '[8.0, 9.0, 10.0, 11.0, 12.0, 13.0]', '[0.8, 0.9, 1.0, 1.1, 1.2, 1.3]', 800);
+--echo # Update existing row
+UPDATE vector_restart_test SET value = 777 WHERE id = 3;
+--echo # Delete existing row
+DELETE FROM vector_restart_test WHERE id = 2;
+
+--echo # Verify changes in current transaction
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+--echo # Restart server (will rollback all uncommitted changes)
+--source include/restart_mysqld.inc
+
+--echo # Verify all uncommitted changes are rolled back
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+
+--echo # Cleanup
+DROP TABLE vector_restart_test;
+
+--echo # SVECTOR restart test completed
+
+UNINSTALL EXTENSION vsql_vector;

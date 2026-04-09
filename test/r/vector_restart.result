@@ -1,0 +1,234 @@
+INSTALL EXTENSION vsql_vector;
+#
+# Scenario 1: Restart with committed SVECTOR data
+#
+# Create table with SVECTOR columns
+CREATE TABLE vector_restart_test (
+id INT PRIMARY KEY,
+name VARCHAR(50),
+embedding SVECTOR(6) NOT NULL,
+metadata_vec SVECTOR(6) NOT NULL,
+value INT
+) ENGINE=InnoDB;
+# Insert and commit data
+INSERT INTO vector_restart_test VALUES
+(1, 'row1', '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', '[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]', 100),
+(2, 'row2', '[2.0, 3.0, 4.0, 5.0, 6.0, 7.0]', '[0.2, 0.3, 0.4, 0.5, 0.6, 0.7]', 200),
+(3, 'row3', '[3.0, 4.0, 5.0, 6.0, 7.0, 8.0]', '[0.3, 0.4, 0.5, 0.6, 0.7, 0.8]', 300);
+# Verify data before restart
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[1,2,3,4,5,6]	[0.1,0.2,0.3,0.4,0.5,0.6]	100
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[1,2,3,4,5,6]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]	100
+2	row2	[2,3,4,5,6,7]	[0.200000003,0.300000012,0.400000006,0.5,0.600000024,0.699999988]	200
+3	row3	[3,4,5,6,7,8]	[0.300000012,0.400000006,0.5,0.600000024,0.699999988,0.800000012]	300
+# Restart server
+# restart
+# Verify data persists after restart
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[1,2,3,4,5,6]	[0.1,0.2,0.3,0.4,0.5,0.6]	100
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[1,2,3,4,5,6]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]	100
+2	row2	[2,3,4,5,6,7]	[0.200000003,0.300000012,0.400000006,0.5,0.600000024,0.699999988]	200
+3	row3	[3,4,5,6,7,8]	[0.300000012,0.400000006,0.5,0.600000024,0.699999988,0.800000012]	300
+# Verify row count
+SELECT COUNT(*) AS record_count FROM vector_restart_test;
+record_count
+3
+#
+# Scenario 2: Restart with committed and uncommitted data
+#
+# Insert more committed data
+INSERT INTO vector_restart_test VALUES
+(4, 'row4', '[4.0, 5.0, 6.0, 7.0, 8.0, 9.0]', '[0.4, 0.5, 0.6, 0.7, 0.8, 0.9]', 400),
+(5, 'row5', '[5.0, 6.0, 7.0, 8.0, 9.0, 10.0]', '[0.5, 0.6, 0.7, 0.8, 0.9, 1.0]', 500);
+COMMIT;
+# Start transaction with uncommitted data
+START TRANSACTION;
+INSERT INTO vector_restart_test VALUES
+(6, 'row6', '[6.0, 7.0, 8.0, 9.0, 10.0, 11.0]', '[0.6, 0.7, 0.8, 0.9, 1.0, 1.1]', 600),
+(7, 'row7', '[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]', '[0.7, 0.8, 0.9, 1.0, 1.1, 1.2]', 700);
+# Verify uncommitted data is visible in current transaction
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[1,2,3,4,5,6]	[0.1,0.2,0.3,0.4,0.5,0.6]	100
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+4	row4	[4,5,6,7,8,9]	[0.4,0.5,0.6,0.7,0.8,0.9]	400
+5	row5	[5,6,7,8,9,10]	[0.5,0.6,0.7,0.8,0.9,1]	500
+6	row6	[6,7,8,9,10,11]	[0.6,0.7,0.8,0.9,1,1.1]	600
+7	row7	[7,8,9,10,11,12]	[0.7,0.8,0.9,1,1.1,1.2]	700
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[1,2,3,4,5,6]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]	100
+2	row2	[2,3,4,5,6,7]	[0.200000003,0.300000012,0.400000006,0.5,0.600000024,0.699999988]	200
+3	row3	[3,4,5,6,7,8]	[0.300000012,0.400000006,0.5,0.600000024,0.699999988,0.800000012]	300
+4	row4	[4,5,6,7,8,9]	[0.400000006,0.5,0.600000024,0.699999988,0.800000012,0.899999976]	400
+5	row5	[5,6,7,8,9,10]	[0.5,0.600000024,0.699999988,0.800000012,0.899999976,1]	500
+6	row6	[6,7,8,9,10,11]	[0.600000024,0.699999988,0.800000012,0.899999976,1,1.10000002]	600
+7	row7	[7,8,9,10,11,12]	[0.699999988,0.800000012,0.899999976,1,1.10000002,1.20000005]	700
+# Restart server (will rollback uncommitted transaction)
+# restart
+# Verify only committed data persists (rows 6-7 should be gone)
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[1,2,3,4,5,6]	[0.1,0.2,0.3,0.4,0.5,0.6]	100
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+4	row4	[4,5,6,7,8,9]	[0.4,0.5,0.6,0.7,0.8,0.9]	400
+5	row5	[5,6,7,8,9,10]	[0.5,0.6,0.7,0.8,0.9,1]	500
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[1,2,3,4,5,6]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]	100
+2	row2	[2,3,4,5,6,7]	[0.200000003,0.300000012,0.400000006,0.5,0.600000024,0.699999988]	200
+3	row3	[3,4,5,6,7,8]	[0.300000012,0.400000006,0.5,0.600000024,0.699999988,0.800000012]	300
+4	row4	[4,5,6,7,8,9]	[0.400000006,0.5,0.600000024,0.699999988,0.800000012,0.899999976]	400
+5	row5	[5,6,7,8,9,10]	[0.5,0.600000024,0.699999988,0.800000012,0.899999976,1]	500
+# Verify row count (should be 5, not 7)
+SELECT COUNT(*) AS record_count FROM vector_restart_test;
+record_count
+5
+#
+# Scenario 3: Restart with UPDATE operations
+#
+# Update some SVECTOR data and commit
+UPDATE vector_restart_test
+SET embedding = '[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]',
+metadata_vec = '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]',
+value = 999
+WHERE id = 1;
+COMMIT;
+# Verify update before restart
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+4	row4	[4,5,6,7,8,9]	[0.4,0.5,0.6,0.7,0.8,0.9]	400
+5	row5	[5,6,7,8,9,10]	[0.5,0.6,0.7,0.8,0.9,1]	500
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test WHERE id = 1;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+# Restart server
+# restart
+# Verify update persists after restart
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+4	row4	[4,5,6,7,8,9]	[0.4,0.5,0.6,0.7,0.8,0.9]	400
+5	row5	[5,6,7,8,9,10]	[0.5,0.6,0.7,0.8,0.9,1]	500
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test WHERE id = 1;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+#
+# Scenario 4: Restart with DELETE operations
+#
+# Delete a row and commit
+DELETE FROM vector_restart_test WHERE id = 5;
+COMMIT;
+# Verify deletion before restart (row 5 should be gone)
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+4	row4	[4,5,6,7,8,9]	[0.4,0.5,0.6,0.7,0.8,0.9]	400
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+2	row2	[2,3,4,5,6,7]	[0.200000003,0.300000012,0.400000006,0.5,0.600000024,0.699999988]	200
+3	row3	[3,4,5,6,7,8]	[0.300000012,0.400000006,0.5,0.600000024,0.699999988,0.800000012]	300
+4	row4	[4,5,6,7,8,9]	[0.400000006,0.5,0.600000024,0.699999988,0.800000012,0.899999976]	400
+# Restart server
+# restart
+# Verify deletion persists after restart (row 5 should still be gone)
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+4	row4	[4,5,6,7,8,9]	[0.4,0.5,0.6,0.7,0.8,0.9]	400
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+2	row2	[2,3,4,5,6,7]	[0.200000003,0.300000012,0.400000006,0.5,0.600000024,0.699999988]	200
+3	row3	[3,4,5,6,7,8]	[0.300000012,0.400000006,0.5,0.600000024,0.699999988,0.800000012]	300
+4	row4	[4,5,6,7,8,9]	[0.400000006,0.5,0.600000024,0.699999988,0.800000012,0.899999976]	400
+# Verify final row count
+SELECT COUNT(*) AS record_count FROM vector_restart_test;
+record_count
+4
+#
+# Scenario 5: Restart with mixed committed and uncommitted changes
+#
+# Start transaction with mixed operations
+START TRANSACTION;
+# Insert new row
+INSERT INTO vector_restart_test VALUES
+(8, 'row8', '[8.0, 9.0, 10.0, 11.0, 12.0, 13.0]', '[0.8, 0.9, 1.0, 1.1, 1.2, 1.3]', 800);
+# Update existing row
+UPDATE vector_restart_test SET value = 777 WHERE id = 3;
+# Delete existing row
+DELETE FROM vector_restart_test WHERE id = 2;
+# Verify changes in current transaction
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	777
+4	row4	[4,5,6,7,8,9]	[0.4,0.5,0.6,0.7,0.8,0.9]	400
+8	row8	[8,9,10,11,12,13]	[0.8,0.9,1,1.1,1.2,1.3]	800
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+3	row3	[3,4,5,6,7,8]	[0.300000012,0.400000006,0.5,0.600000024,0.699999988,0.800000012]	777
+4	row4	[4,5,6,7,8,9]	[0.400000006,0.5,0.600000024,0.699999988,0.800000012,0.899999976]	400
+8	row8	[8,9,10,11,12,13]	[0.800000012,0.899999976,1,1.10000002,1.20000005,1.29999995]	800
+# Restart server (will rollback all uncommitted changes)
+# restart
+# Verify all uncommitted changes are rolled back
+SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+2	row2	[2,3,4,5,6,7]	[0.2,0.3,0.4,0.5,0.6,0.7]	200
+3	row3	[3,4,5,6,7,8]	[0.3,0.4,0.5,0.6,0.7,0.8]	300
+4	row4	[4,5,6,7,8,9]	[0.4,0.5,0.6,0.7,0.8,0.9]	400
+SELECT id, name, SVECTOR_TO_STRING(embedding) AS embedding_str, SVECTOR_TO_STRING(metadata_vec) AS metadata_str, value
+FROM vector_restart_test ORDER BY id;
+id	name	embedding_str	metadata_str	value
+1	row1	[10,20,30,40,50,60]	[1,2,3,4,5,6]	999
+2	row2	[2,3,4,5,6,7]	[0.200000003,0.300000012,0.400000006,0.5,0.600000024,0.699999988]	200
+3	row3	[3,4,5,6,7,8]	[0.300000012,0.400000006,0.5,0.600000024,0.699999988,0.800000012]	300
+4	row4	[4,5,6,7,8,9]	[0.400000006,0.5,0.600000024,0.699999988,0.800000012,0.899999976]	400
+# Cleanup
+DROP TABLE vector_restart_test;
+# SVECTOR restart test completed
+UNINSTALL EXTENSION vsql_vector;

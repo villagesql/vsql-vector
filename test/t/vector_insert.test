@@ -1,0 +1,80 @@
+# Install vsql-svector extension
+INSTALL EXTENSION vsql_vector;
+
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+--replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
+
+########################################################################
+#
+# Test SVECTOR INSERT operations
+#
+########################################################################
+
+--echo # Create table with multiple SVECTOR columns
+CREATE TABLE vector_test (
+  id INT PRIMARY KEY,
+  embedding1 SVECTOR(6) NOT NULL,
+  embedding2 SVECTOR(6) NOT NULL,
+  name VARCHAR(50)
+) ENGINE=InnoDB;
+
+--echo # Insert single record
+INSERT INTO vector_test VALUES
+  (1, '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', '[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]', 'row1');
+
+SELECT COUNT(*) AS record_count FROM vector_test;
+
+--echo # Insert multiple records with various vector values
+INSERT INTO vector_test VALUES
+  (2, '[1.1, 2.1, 3.1, 4.1, 5.1, 6.1]', '[0.11, 0.21, 0.31, 0.41, 0.51, 0.61]', 'row2'),
+  (3, '[1.2, 2.2, 3.2, 4.2, 5.2, 6.2]', '[0.12, 0.22, 0.32, 0.42, 0.52, 0.62]', 'row3'),
+  (4, '[-1.0, -2.0, -3.0, -4.0, -5.0, -6.0]', '[-0.1, -0.2, -0.3, -0.4, -0.5, -0.6]', 'row4'),
+  (5, '[0, 0, 0, 0, 0, 0]', '[1, 1, 1, 1, 1, 1]', 'row5');
+
+SELECT COUNT(*) AS record_count FROM vector_test;
+
+--echo # Insert records with edge case values
+INSERT INTO vector_test VALUES
+  (6, '[100.5, 200.5, 300.5, 400.5, 500.5, 600.5]', '[10.05, 20.05, 30.05, 40.05, 50.05, 60.05]', 'row6'),
+  (7, '[1e-5, 2e-5, 3e-5, 4e-5, 5e-5, 6e-5]', '[1e5, 2e5, 3e5, 4e5, 5e5, 6e5]', 'row7'),
+  (8, '[3.14159, 2.71828, 1.41421, 1.73205, 0.57721, 1.61803]', '[0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625]', 'row8'),
+  (9, '[-0.5, 0.5, -0.5, 0.5, -0.5, 0.5]', '[7.7, 8.8, 9.9, 10.1, 11.2, 12.3]', 'row9'),
+  (10, '[999.999, 888.888, 777.777, 666.666, 555.555, 444.444]', '[0.001, 0.002, 0.003, 0.004, 0.005, 0.006]', 'row10');
+
+SELECT COUNT(*) AS record_count FROM vector_test;
+
+--echo # Test INSERT with SVECTOR_FROM_STRING UDF
+--echo # TODO: Enable after decode works with constants for parameterized types
+--error ER_UDF_ERROR
+INSERT INTO vector_test VALUES
+  (11, SVECTOR_FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'), SVECTOR_FROM_STRING('[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]'), 'row11');
+INSERT INTO vector_test VALUES
+  (11, '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]', '[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]', 'row11');
+
+SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+FROM vector_test WHERE id = 11;
+
+--echo # Test INSERT with NULL for nullable column
+CREATE TABLE vector_nullable_test (
+  id INT PRIMARY KEY,
+  embedding SVECTOR(6) NULL,
+  name VARCHAR(50)
+) ENGINE=InnoDB;
+
+INSERT INTO vector_nullable_test VALUES (1, NULL, 'null_vector');
+INSERT INTO vector_nullable_test VALUES (2, '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', 'valid_vector');
+
+SELECT id, embedding IS NULL AS is_null, name FROM vector_nullable_test ORDER BY id;
+
+--echo # Test duplicate key error
+--error ER_DUP_ENTRY
+INSERT INTO vector_test VALUES
+  (1, '[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]', '[0.7, 0.8, 0.9, 1.0, 1.1, 1.2]', 'duplicate');
+
+--echo # Clean up
+DROP TABLE vector_test;
+DROP TABLE vector_nullable_test;
+
+--echo # SVECTOR insert test completed
+
+UNINSTALL EXTENSION vsql_vector;

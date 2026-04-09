@@ -1,0 +1,70 @@
+INSTALL EXTENSION vsql_vector;
+# Create table with multiple SVECTOR columns and integer primary key
+CREATE TABLE vector_test (
+id INT PRIMARY KEY,
+embedding1 SVECTOR(6) NOT NULL,
+embedding2 SVECTOR(6) NOT NULL,
+name VARCHAR(50)
+) ENGINE=InnoDB;
+# Show create table
+SHOW CREATE TABLE vector_test;
+Table	Create Table
+vector_test	CREATE TABLE `vector_test` (
+  `id` int NOT NULL,
+  `embedding1` vsql_vector.SVECTOR(6) NOT NULL,
+  `embedding2` vsql_vector.SVECTOR(6) NOT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# Query table metadata from information_schema.COLUMNS
+SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_TYPE
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vector_test'
+ORDER BY ORDINAL_POSITION;
+TABLE_NAME	COLUMN_NAME	DATA_TYPE	IS_NULLABLE	COLUMN_TYPE
+vector_test	id	int	NO	int
+vector_test	embedding1	vsql_vector.SVECTOR	NO	vsql_vector.SVECTOR
+vector_test	embedding2	vsql_vector.SVECTOR	NO	vsql_vector.SVECTOR
+vector_test	name	varchar	YES	varchar(50)
+# Query table metadata from information_schema.TABLES
+SELECT TABLE_NAME, ENGINE, TABLE_ROWS, TABLE_TYPE
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'vector_test';
+TABLE_NAME	ENGINE	TABLE_ROWS	TABLE_TYPE
+vector_test	InnoDB	0	BASE TABLE
+# Test creating table with nullable SVECTOR column
+CREATE TABLE vector_nullable_test (
+id INT PRIMARY KEY,
+embedding SVECTOR(6) NULL
+) ENGINE=InnoDB;
+SHOW CREATE TABLE vector_nullable_test;
+Table	Create Table
+vector_nullable_test	CREATE TABLE `vector_nullable_test` (
+  `id` int NOT NULL,
+  `embedding` vsql_vector.SVECTOR(6) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# Test creating table with default values
+CREATE TABLE vector_default_test (
+id INT PRIMARY KEY,
+embedding SVECTOR(6) DEFAULT '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]'
+) ENGINE=InnoDB;
+SHOW CREATE TABLE vector_default_test;
+Table	Create Table
+vector_default_test	CREATE TABLE `vector_default_test` (
+  `id` int NOT NULL,
+  `embedding` vsql_vector.SVECTOR(6) DEFAULT '[1,2,3,4,5,6]',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# Drop tables
+DROP TABLE vector_test;
+DROP TABLE vector_nullable_test;
+DROP TABLE vector_default_test;
+# Verify tables are dropped
+SELECT COUNT(*) AS table_count
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('vector_test', 'vector_nullable_test', 'vector_default_test');
+table_count
+0
+# SVECTOR create test completed
+UNINSTALL EXTENSION vsql_vector;

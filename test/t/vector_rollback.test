@@ -1,0 +1,166 @@
+# Install vsql-svector extension
+INSTALL EXTENSION vsql_vector;
+
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+--replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
+
+########################################################################
+#
+# Test SVECTOR ROLLBACK operations for INSERT, UPDATE, and DELETE
+#
+########################################################################
+
+--echo # Create table with two SVECTOR columns
+CREATE TABLE vector_rollback_test (
+  id INT PRIMARY KEY,
+  name VARCHAR(50),
+  vec1 SVECTOR(6) NOT NULL,
+  vec2 SVECTOR(6) NOT NULL,
+  value INT
+) ENGINE=InnoDB;
+
+--echo #
+--echo # Test 1: Rollback INSERT operations
+--echo #
+START TRANSACTION;
+INSERT INTO vector_rollback_test VALUES (1, 'row1', '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', '[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]', 100);
+INSERT INTO vector_rollback_test VALUES (2, 'row2', '[2.0, 3.0, 4.0, 5.0, 6.0, 7.0]', '[0.2, 0.3, 0.4, 0.5, 0.6, 0.7]', 200);
+INSERT INTO vector_rollback_test VALUES (3, 'row3', '[3.0, 4.0, 5.0, 6.0, 7.0, 8.0]', '[0.3, 0.4, 0.5, 0.6, 0.7, 0.8]', 300);
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+ROLLBACK;
+
+--echo # Verify table is empty after rollback
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+
+--echo #
+--echo # Test 2: Rollback DELETE operations
+--echo #
+--echo # Insert data first
+INSERT INTO vector_rollback_test VALUES (1, 'row1', '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]', '[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]', 100);
+INSERT INTO vector_rollback_test VALUES (2, 'row2', '[2.0, 3.0, 4.0, 5.0, 6.0, 7.0]', '[0.2, 0.3, 0.4, 0.5, 0.6, 0.7]', 200);
+INSERT INTO vector_rollback_test VALUES (3, 'row3', '[3.0, 4.0, 5.0, 6.0, 7.0, 8.0]', '[0.3, 0.4, 0.5, 0.6, 0.7, 0.8]', 300);
+
+START TRANSACTION;
+DELETE FROM vector_rollback_test WHERE id = 2;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+ROLLBACK;
+
+--echo # Verify all rows are restored after rollback
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+
+--echo #
+--echo # Test 3: Rollback UPDATE - only SVECTOR columns
+--echo #
+START TRANSACTION;
+UPDATE vector_rollback_test SET vec1 = '[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]', vec2 = '[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]' WHERE id = 1;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 1;
+ROLLBACK;
+
+--echo # Verify SVECTOR columns are restored after rollback
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 1;
+
+--echo #
+--echo # Test 4: Rollback UPDATE - only Primary Key column
+--echo #
+START TRANSACTION;
+UPDATE vector_rollback_test SET id = 10 WHERE id = 1;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+ROLLBACK;
+
+--echo # Verify PK is restored after rollback
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+
+--echo #
+--echo # Test 5: Rollback UPDATE - only non-PK and non-SVECTOR columns
+--echo #
+START TRANSACTION;
+UPDATE vector_rollback_test SET name = 'updated_row1', value = 999 WHERE id = 1;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 1;
+ROLLBACK;
+
+--echo # Verify non-SVECTOR columns are restored after rollback
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 1;
+
+--echo #
+--echo # Test 6: Rollback UPDATE - PK, SVECTOR, and other columns
+--echo #
+START TRANSACTION;
+UPDATE vector_rollback_test SET id = 20, name = 'updated_row2', vec1 = '[20.0, 30.0, 40.0, 50.0, 60.0, 70.0]', vec2 = '[2.0, 3.0, 4.0, 5.0, 6.0, 7.0]', value = 2000 WHERE id = 2;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+ROLLBACK;
+
+--echo # Verify all columns are restored after rollback
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+
+--echo #
+--echo # Test 7: Rollback mixed operations (INSERT, UPDATE, DELETE)
+--echo #
+START TRANSACTION;
+--echo # Insert new row
+INSERT INTO vector_rollback_test VALUES (4, 'row4', '[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]', '[0.7, 0.8, 0.9, 1.0, 1.1, 1.2]', 400);
+--echo # Update existing row
+UPDATE vector_rollback_test SET vec1 = '[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]', value = 9999 WHERE id = 3;
+--echo # Delete existing row
+DELETE FROM vector_rollback_test WHERE id = 1;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+ROLLBACK;
+
+--echo # Verify all operations are rolled back
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+
+--echo #
+--echo # Test 8: Rollback UPDATE with SVECTOR_FROM_STRING UDF
+--echo #
+START TRANSACTION;
+--echo # TODO: Enable after decode works with constants for parameterized types
+--error ER_UDF_ERROR
+UPDATE vector_rollback_test SET vec1 = SVECTOR_FROM_STRING('[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]') WHERE id = 2;
+UPDATE vector_rollback_test SET vec1 = '[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]' WHERE id = 2;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 2;
+ROLLBACK;
+
+--echo # Verify SVECTOR column is restored after rollback
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 2;
+
+--echo #
+--echo # Test 9: Rollback multiple UPDATEs on same row
+--echo #
+START TRANSACTION;
+UPDATE vector_rollback_test SET vec1 = '[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]' WHERE id = 1;
+UPDATE vector_rollback_test SET vec2 = '[1.1, 1.2, 1.3, 1.4, 1.5, 1.6]' WHERE id = 1;
+UPDATE vector_rollback_test SET value = 1111 WHERE id = 1;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 1;
+ROLLBACK;
+
+--echo # Verify all updates are rolled back
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 1;
+
+--echo #
+--echo # Test 10: Rollback with both SVECTOR columns updated separately
+--echo #
+START TRANSACTION;
+UPDATE vector_rollback_test SET vec1 = '[50.0, 60.0, 70.0, 80.0, 90.0, 100.0]' WHERE id = 3;
+UPDATE vector_rollback_test SET vec2 = '[5.0, 6.0, 7.0, 8.0, 9.0, 10.0]' WHERE id = 3;
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 3;
+ROLLBACK;
+
+--echo # Verify both SVECTOR columns are restored
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 3;
+
+--echo #
+--echo # Test 11: Rollback DELETE all rows
+--echo #
+START TRANSACTION;
+DELETE FROM vector_rollback_test;
+SELECT COUNT(*) AS record_count FROM vector_rollback_test;
+ROLLBACK;
+
+--echo # Verify all rows are restored after rollback
+SELECT id, name, SVECTOR_TO_STRING(vec1) AS vec1_str, SVECTOR_TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test ORDER BY id;
+
+--echo # Cleanup
+DROP TABLE vector_rollback_test;
+
+--echo # SVECTOR rollback test completed
+
+UNINSTALL EXTENSION vsql_vector;
