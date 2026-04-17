@@ -289,27 +289,31 @@ static bool svector_resolve_params(
   return false;
 }
 
-// Intrinsic default for SVECTOR: writes N zero floats preceded by the
-// vef_storage_ref_t header into the buffer.
-static bool svector_default(const SVectorParams &p,
-                            villagesql::Span<unsigned char> buffer,
-                            size_t *length, char *error_msg) {
-  if (p.dimension <= 0 || p.dimension > native::MAX_VECTOR_DIMENSION) {
-    snprintf(error_msg, VEF_MAX_ERROR_LEN,
-             "SVECTOR intrinsic_default: invalid dimension %" PRId64,
-             p.dimension);
-    return true;
+// Intrinsic default for SVECTOR: string representation
+static std::string svector_default(const SVectorParams &p, char *error_msg) {
+  if (svector_validate_dimension(p.dimension, error_msg)) {
+    return "[]";
   }
-  const size_t vector_size = sizeof(vef_storage_ref_t) +
-                             static_cast<size_t>(p.dimension) * sizeof(float);
-  if (vector_size > buffer.size()) {
-    snprintf(error_msg, VEF_MAX_ERROR_LEN,
-             "SVECTOR intrinsic_default: buffer too small");
-    return true;
+  const int64_t n = p.dimension;
+  std::string buf;
+
+  assert(n > 0);
+  size_t buf_len = 2 * n + 1;
+
+  buf.resize(buf_len);
+
+  char *ptr = buf.data();
+  *ptr++ = '[';
+  *ptr++ = '0';
+
+  for (int64_t i = 1; i < n; ++i) {
+    *ptr++ = ',';
+    *ptr++ = '0';
   }
-  std::memset(buffer.data(), 0, vector_size);
-  *length = vector_size;
-  return false;
+  *ptr++ = ']';
+
+  assert(ptr == buf.data() + buf_len);
+  return buf;
 }
 
 // SQL Functions (VDF) - Implementations
@@ -599,5 +603,4 @@ VEF_GENERATE_ENTRY_POINTS(
         .func(make_int_to_params<&svector_get_params>("svector_get_params"))
         .func(make_resolve_params<&svector_resolve_params>(
             "svector_resolve_params"))
-        .func(make_intrinsic_default<&svector_default>("svector_default",
-                                                       SVECTOR)))
+        .func(make_intrinsic_default<&svector_default>("svector_default")))
