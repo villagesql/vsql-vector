@@ -7,8 +7,7 @@ jobs:
     strategy:
       matrix:
         vsql:
-          - "0.0.2"
-          - "main"
+          - "main"  # Current server development version 0.0.4
     runs-on: ubuntu-latest
     steps:
       - name: Checkout villagesql-server ${{ matrix.vsql }}
