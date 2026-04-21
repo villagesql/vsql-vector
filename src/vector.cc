@@ -25,7 +25,8 @@
 // external column storage for SVECTOR columns. External storage enables more
 // efficient construction and traversal of HNSW indexes for ANN search.
 
-#include <villagesql/extension.h>
+#include <villagesql/vsql.h>
+#include <villagesql/experimental/storage_builder.h>
 
 #include <cassert>
 #include <cctype>
@@ -37,11 +38,12 @@
 #include "native_vector.h"
 #include "storage/storage.h"
 
-using villagesql::CustomArgWith;
-using villagesql::IntArg;
-using villagesql::IntResult;
-using villagesql::RealResult;
-using villagesql::StringResult;
+using vsql::CustomArgWith;
+using vsql::IntArg;
+using vsql::IntResult;
+using vsql::RealResult;
+using vsql::Span;
+using vsql::StringResult;
 
 namespace native = svector::native;
 
@@ -56,7 +58,7 @@ struct SVectorParams {
 };
 
 // Vector type with separate column storage.
-constexpr const char *SVECTOR = "SVECTOR";
+static constexpr const char kSVectorTypeName[] = "SVECTOR";
 
 // Enough for sign + decimal + exponent + round-trip precision + NaN/Inf
 constexpr size_t MAX_FLOAT_STR_LENGTH = 16;
@@ -80,7 +82,7 @@ static_assert(native::MAX_VECTOR_DIMENSION <=
               "MAX_VECTOR_DIMENSION would overflow native vector allocation");
 
 static bool svector_from_string(const SVectorParams &p, std::string_view from,
-                                villagesql::Span<unsigned char> buf,
+                                Span<unsigned char> buf,
                                 size_t *length) {
   std::string_view sv = from;
 
@@ -124,15 +126,16 @@ static bool svector_from_string(const SVectorParams &p, std::string_view from,
 
     float value;
     const char *begin = parse.data();
-    const char *end = begin + parse.size();
 
-    auto [next, ec] = std::from_chars(begin, end, value);
-    if (ec != std::errc()) return true;
+    char *next = nullptr;
+    errno = 0;
+    value = std::strtof(begin, &next);
+    if (next == begin || errno == ERANGE) return true;
     native::float4store(dst, value);
     dst += sizeof(float);
     ++count;
 
-    parse.remove_prefix(next - begin);
+    parse.remove_prefix(static_cast<size_t>(next - begin));
 
     skip_ws(parse);
     if (parse.empty()) break;
@@ -150,9 +153,9 @@ static bool svector_from_string(const SVectorParams &p, std::string_view from,
 }
 
 static bool svector_format_impl(const SVectorParams &p,
-                                villagesql::Span<const unsigned char> data,
+                                Span<const unsigned char> data,
                                 std::chars_format fmt, int precision,
-                                villagesql::Span<char> out, size_t *out_len) {
+                                Span<char> out, size_t *out_len) {
   if (p.dimension <= 0 || p.dimension > native::MAX_VECTOR_DIMENSION)
     return true;
 
@@ -199,16 +202,16 @@ static bool svector_format_impl(const SVectorParams &p,
 }
 
 static bool svector_to_string(const SVectorParams &p,
-                              villagesql::Span<const unsigned char> data,
-                              villagesql::Span<char> out, size_t *out_len) {
+                              Span<const unsigned char> data,
+                              Span<char> out, size_t *out_len) {
   return svector_format_impl(p, data, std::chars_format::general,
                              std::numeric_limits<float>::max_digits10, out,
                              out_len);
 }
 
 static int svector_compare(const SVectorParams &p,
-                           villagesql::Span<const unsigned char> a,
-                           villagesql::Span<const unsigned char> b) {
+                           Span<const unsigned char> a,
+                           Span<const unsigned char> b) {
   assert(p.dimension > 0 && p.dimension <= native::MAX_VECTOR_DIMENSION);
 
   const size_t expected = sizeof(vef_storage_ref_t) +
@@ -505,41 +508,40 @@ void svector_inner_product(CustomArgWith<SVectorParams> vec1,
   svector_distance_impl(vec1, vec2, out, native::dist_inner_product);
 }
 
-VEF_GENERATE_ENTRY_POINTS(
-    make_extension("vsql_vector", "0.0.1")
-        .type(make_type(SVECTOR)
+// Declared at namespace scope so it has a fixed address, which is required
+// by column_storage<&kSVectorStorageIntf>(). See that overload for details.
+static constexpr auto kSVectorStorageIntf =
+    villagesql::storage_builder::make_storage<svector::ColumnStorageContext>()
+        .create<&svector::ColumnStorage::create>()
+        .drop<&svector::ColumnStorage::drop>()
+        .load<&svector::ColumnStorage::load>()
+        .insert<&svector::ColumnStorage::insert>()
+        .select<&svector::ColumnStorage::select>()
+        .mark_delete<&svector::ColumnStorage::mark_delete>()
+        .purge<&svector::ColumnStorage::purge>()
+        .build();
+
+constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                   // Data length related functions
                   .persisted_length(-1)
                   .max_decode_buffer_length(DECODE_BUFFER_SIZE<16>)
 
                   // Data conversion and compare
                   .params<SVectorParams, &SVectorParams::parse>()
-                  .encode("svector_from_string")
-                  .decode("svector_to_string")
-                  .compare("svector_compare")
-                  .int_to_params("svector_get_params")
-                  .resolve_params("svector_resolve_params")
-                  .intrinsic_default("svector_default")
+                  .from_string<svector_from_string>()
+                  .to_string<svector_to_string>()
+                  .compare<svector_compare>()
+                  .int_to_params<svector_get_params>()
+                  .resolve_params<svector_resolve_params>()
+                  .intrinsic_default_vdf("svector_default")
 
                   // Storage interface
-                  .column_storage(
-                      make_storage<svector::ColumnStorageContext>()
-                          .create<&svector::ColumnStorage::create>()
-                          .drop<&svector::ColumnStorage::drop>()
-                          .load<&svector::ColumnStorage::load>()
-                          .insert<&svector::ColumnStorage::insert>()
-                          .select<&svector::ColumnStorage::select>()
-                          .mark_delete<&svector::ColumnStorage::mark_delete>()
-                          .purge<&svector::ColumnStorage::purge>()
-                          .build())
-                  .build())
+                  .column_storage<&kSVectorStorageIntf>()
+                  .build();
 
-        // Type conversion functions (SQL)
-        .func(make_type_encode<&svector_from_string>("svector_from_string",
-                                                     SVECTOR))
-        .func(make_type_decode<&svector_to_string>("svector_to_string",
-                                                   SVECTOR))
-        .func(make_type_compare<&svector_compare>("svector_compare", SVECTOR))
+VEF_GENERATE_ENTRY_POINTS(
+    make_extension("vsql_vector", "0.0.1")
+        .type(SVECTOR)
 
         // Hex encoding of raw vector float bytes (SQL)
         .func(make_func<&svector_hex>("svector_hex")
@@ -600,7 +602,4 @@ VEF_GENERATE_ENTRY_POINTS(
                   .param(SVECTOR)
                   .deterministic()
                   .build())
-        .func(make_int_to_params<&svector_get_params>("svector_get_params"))
-        .func(make_resolve_params<&svector_resolve_params>(
-            "svector_resolve_params"))
         .func(make_intrinsic_default<&svector_default>("svector_default")))

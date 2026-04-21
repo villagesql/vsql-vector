@@ -105,20 +105,20 @@ id	l1	l2	cos	ip
 2	NULL	NULL	NULL	NULL
 3	NULL	NULL	NULL	NULL
 4	NULL	NULL	NULL	NULL
-# Test 10: Distance from a fixed inline vector using SVECTOR_FROM_STRING
+# Test 10: Distance from a fixed inline vector using SVECTOR::FROM_STRING
 # TODO: Enable after decode works with constants for parameterized types
-SELECT id, SVECTOR_DISTANCE_COSINE(v, SVECTOR_FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS cos_dist
+SELECT id, SVECTOR_DISTANCE_COSINE(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS cos_dist
 FROM func_single ORDER BY id;
-ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
-SELECT id, SVECTOR_DISTANCE_L2(v, SVECTOR_FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l2_dist
+ERROR HY000: VDF error in function 'SVECTOR::from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
+SELECT id, SVECTOR_DISTANCE_L2(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l2_dist
 FROM func_single ORDER BY id;
-ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
-SELECT id, SVECTOR_DISTANCE_L1(v, SVECTOR_FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l1_dist
+ERROR HY000: VDF error in function 'SVECTOR::from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
+SELECT id, SVECTOR_DISTANCE_L1(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l1_dist
 FROM func_single ORDER BY id;
-ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
-SELECT id, SVECTOR_INNER_PRODUCT(v, SVECTOR_FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS ip
+ERROR HY000: VDF error in function 'SVECTOR::from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
+SELECT id, SVECTOR_INNER_PRODUCT(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS ip
 FROM func_single ORDER BY id;
-ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
+ERROR HY000: VDF error in function 'SVECTOR::from_string': failed to encode '[1.0, 0.0, 0.0, 0.0]'
 # Clean up
 DROP TABLE func_single;
 DROP TABLE func_pairs;

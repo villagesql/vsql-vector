@@ -115,7 +115,7 @@ The root page number is stored in the table's metadata. You can find it by:
 
 - The tool reads pages directly from the `.ibd` file using standard file I/O
 - It uses the same page format constants as defined in `../root_page.h` and `../data_page.h`
-- Requires the VillageSQL SDK headers (`villagesql/storage_api.h`) for page offset constants
+- Requires the VillageSQL SDK headers (`villagesql/experimental/storage_api.h`) for page offset constants
 - Assumes default InnoDB page size of 16KB
 - Safety limit of 100 pages when using `--all-pages` to prevent infinite loops
 
