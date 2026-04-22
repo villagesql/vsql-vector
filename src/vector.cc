@@ -30,6 +30,7 @@
 
 #include <cassert>
 #include <cctype>
+#include <cerrno>
 #include <charconv>
 #include <cstdint>
 #include <cstring>
@@ -44,6 +45,7 @@ using vsql::IntResult;
 using vsql::RealResult;
 using vsql::Span;
 using vsql::StringResult;
+using villagesql::storage_builder::make_storage;
 
 namespace native = svector::native;
 
@@ -511,7 +513,7 @@ void svector_inner_product(CustomArgWith<SVectorParams> vec1,
 // Declared at namespace scope so it has a fixed address, which is required
 // by column_storage<&kSVectorStorageIntf>(). See that overload for details.
 static constexpr auto kSVectorStorageIntf =
-    villagesql::storage_builder::make_storage<svector::ColumnStorageContext>()
+  make_storage<svector::ColumnStorageContext>()
         .create<&svector::ColumnStorage::create>()
         .drop<&svector::ColumnStorage::drop>()
         .load<&svector::ColumnStorage::load>()
