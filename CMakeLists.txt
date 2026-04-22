@@ -37,6 +37,10 @@ if(APPLE)
   target_link_options(svector PRIVATE -undefined dynamic_lookup)
 endif()
 
+if(WITH_DEBUG)
+    target_compile_options(svector PRIVATE -g -O0 -DDEBUG)
+endif()
+
 # Create the VEB package
 VEF_CREATE_VEB(
     NAME ${EXTENSION_NAME}
@@ -55,3 +59,7 @@ add_executable(svector_page_dump
 target_include_directories(svector_page_dump PRIVATE
     ${VillageSQLExtensionFramework_INCLUDE_DIR}
 )
+
+if(WITH_DEBUG)
+    target_compile_options(svector_page_dump PRIVATE -g -O0 -DDEBUG)
+endif()

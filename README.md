@@ -39,6 +39,11 @@ An extension for VillageSQL Server that adds a vector data type with external co
 
    This produces `vsql_vector.veb` in the build directory.
 
+   To build with debug symbols and assertions (no optimization):
+   ```bash
+   cmake .. -DVillageSQL_BUILD_DIR=/path/to/villagesql/build -DWITH_DEBUG=ON
+   ```
+
 3. Install the VEB into the VillageSQL build tree (optional):
    ```bash
    make install
