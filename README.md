@@ -144,7 +144,7 @@ DELETE FROM embeddings WHERE id = 2;
 
 ### Known Limitations
 
-- **Inline constant vectors**: Using `SVECTOR_FROM_STRING(...)` as a direct function argument (e.g., `SVECTOR_DISTANCE_L2(col, SVECTOR_FROM_STRING('[1,2,3,4]'))`) currently fails because constant folding for parameterized custom types is not yet supported. As a workaround, store the query vector in a table row and join against it (as shown in the nearest-neighbour example above).
+- **Inline constant vectors**: Using `SVECTOR::FROM_STRING(...)` as a direct function argument (e.g., `SVECTOR_DISTANCE_L2(col, SVECTOR::FROM_STRING('[1,2,3,4]'))`) currently fails because constant folding for parameterized custom types is not yet supported. As a workaround, store the query vector in a table row and join against it (as shown in the nearest-neighbour example above).
 
 ## Testing
 

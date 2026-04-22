@@ -35,7 +35,7 @@ UPDATE vector_test
 SET embedding1 = '[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]'
 WHERE id = 1;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(embedding2) AS embedding2_str, name, category
 FROM vector_test WHERE id = 1;
 
 --echo # Test 2: Update only Primary Key
@@ -43,7 +43,7 @@ UPDATE vector_test
 SET id = 101
 WHERE id = 1;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name, category
 FROM vector_test WHERE id = 101;
 
 --echo # Verify old id doesn't exist
@@ -54,7 +54,7 @@ UPDATE vector_test
 SET name = 'updated_row2'
 WHERE id = 2;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(embedding2) AS embedding2_str, name, category
 FROM vector_test WHERE id = 2;
 
 --echo # Test 4: Update Primary Key and SVECTOR together
@@ -63,7 +63,7 @@ SET id = 102,
     embedding1 = '[100.0, 200.0, 300.0, 400.0, 500.0, 600.0]'
 WHERE id = 2;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name, category
 FROM vector_test WHERE id = 102;
 
 --echo # Test 5: Update secondary key only (category)
@@ -71,7 +71,7 @@ UPDATE vector_test
 SET category = 35
 WHERE id = 3;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(embedding2) AS embedding2_str, name, category
 FROM vector_test WHERE id = 3;
 
 --echo # Test 6: Update secondary key and SVECTOR
@@ -80,7 +80,7 @@ SET category = 45,
     embedding2 = '[4.1, 4.2, 4.3, 4.4, 4.5, 4.6]'
 WHERE id = 4;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(embedding2) AS embedding2_str, name, category
 FROM vector_test WHERE id = 4;
 
 --echo # Test 7: Update all columns
@@ -92,7 +92,7 @@ SET id = 105,
     category = 555
 WHERE id = 5;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(embedding2) AS embedding2_str, name, category
 FROM vector_test WHERE id = 105;
 
 --echo # Test 8: Update multiple SVECTOR columns at once
@@ -101,21 +101,21 @@ SET embedding1 = '[6.0, 6.1, 6.2, 6.3, 6.4, 6.5]',
     embedding2 = '[0.6, 0.61, 0.62, 0.63, 0.64, 0.65]'
 WHERE id = 6;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(embedding2) AS embedding2_str, name, category
 FROM vector_test WHERE id = 6;
 
---echo # Test 9: Update with SVECTOR_FROM_STRING UDF
+--echo # Test 9: Update with SVECTOR::FROM_STRING UDF
 --echo # TODO: Enable after decode works with constants for parameterized types
 --error ER_UDF_ERROR
 UPDATE vector_test
-SET embedding1 = SVECTOR_FROM_STRING('[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]')
+SET embedding1 = SVECTOR::FROM_STRING('[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]')
 WHERE id = 7;
 
 UPDATE vector_test
 SET embedding1 = '[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]'
 WHERE id = 7;
 
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test WHERE id = 7;
 
 --echo # Test 10: Update multiple rows at once
@@ -146,11 +146,11 @@ INSERT INTO vector_nullable_test VALUES
 UPDATE vector_nullable_test SET embedding = NULL WHERE id = 1;
 UPDATE vector_nullable_test SET embedding = '[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]' WHERE id = 2;
 
-SELECT id, embedding IS NULL AS is_null, SVECTOR_TO_STRING(embedding) AS embedding_str, name
+SELECT id, embedding IS NULL AS is_null, SVECTOR::TO_STRING(embedding) AS embedding_str, name
 FROM vector_nullable_test ORDER BY id;
 
 --echo # Final state of all records
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(embedding2) AS embedding2_str, name, category
 FROM vector_test ORDER BY id;
 
 --echo # Clean up

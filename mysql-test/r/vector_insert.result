@@ -31,14 +31,14 @@ INSERT INTO vector_test VALUES
 SELECT COUNT(*) AS record_count FROM vector_test;
 record_count
 10
-# Test INSERT with SVECTOR_FROM_STRING UDF
+# Test INSERT with SVECTOR::FROM_STRING UDF
 # TODO: Enable after decode works with constants for parameterized types
 INSERT INTO vector_test VALUES
-(11, SVECTOR_FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'), SVECTOR_FROM_STRING('[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]'), 'row11');
-ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'
+(11, SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'), SVECTOR::FROM_STRING('[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]'), 'row11');
+ERROR HY000: VDF error in function 'SVECTOR::from_string': failed to encode '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'
 INSERT INTO vector_test VALUES
 (11, '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]', '[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]', 'row11');
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test WHERE id = 11;
 id	embedding1_str	name
 11	[1.5,2.5,3.5,4.5,5.5,6.5]	row11

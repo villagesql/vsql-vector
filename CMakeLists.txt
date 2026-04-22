@@ -31,6 +31,12 @@ target_include_directories(svector PRIVATE
 
 target_compile_options(svector PRIVATE -fPIC)
 
+# On macOS the linker requires all symbols to be resolved at link time by default,
+# but vef_storage_* symbols are provided by the server at dlopen time.
+if(APPLE)
+  target_link_options(svector PRIVATE -undefined dynamic_lookup)
+endif()
+
 # Create the VEB package
 VEF_CREATE_VEB(
     NAME ${EXTENSION_NAME}

@@ -35,8 +35,8 @@ id	embedding1_hex	embedding2_hex	name
 8	D00F49404DF82D40D504B53FD0B3DD3F09C4133F9B1BCF3F	0000003F0000803E0000003E0000803D0000003D0000803C	row8
 9	000000BF0000003F000000BF0000003F000000BF0000003F	6666F640CDCC0C4166661E419A99214133333341CDCC4441	row9
 10	F0FF7944D5385E44BA714244A0AA264485E30A44D538DE43	6F12833A6F12033BA69B443B6F12833B0AD7A33BA69BC43B	row10
-# Test 2: Select all records with SVECTOR_TO_STRING()
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, SVECTOR_TO_STRING(embedding2) AS embedding2_str, name
+# Test 2: Select all records with SVECTOR::TO_STRING()
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(embedding2) AS embedding2_str, name
 FROM vector_test ORDER BY id;
 id	embedding1_str	embedding2_str	name
 1	[1,2,3,4,5,6]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]	row1
@@ -76,7 +76,7 @@ id	name
 9	row9
 10	row10
 # Test 4: Select only SVECTOR columns
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str FROM vector_test ORDER BY id;
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str FROM vector_test ORDER BY id;
 id	embedding1_str
 1	[1,2,3,4,5,6]
 2	[1.10000002,2.0999999,3.0999999,4.0999999,5.0999999,6.0999999]
@@ -101,7 +101,7 @@ id	embedding1_str
 9	[-0.5,0.5,-0.5,0.5,-0.5,0.5]
 10	[999.999,888.888,777.777,666.666,555.555,444.444]
 # Test 5: Select with WHERE clause on primary key
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test WHERE id = 5;
 id	embedding1_str	name
 5	[0,0,0,0,0,0]	row5
@@ -114,7 +114,7 @@ FROM vector_test WHERE id = 5;
 id	embedding1_str	name
 5	[0,0,0,0,0,0]	row5
 # Test 6: Select with WHERE clause using IN list
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test WHERE id IN (1, 5, 10) ORDER BY id;
 id	embedding1_str	name
 1	[1,2,3,4,5,6]	row1
@@ -127,7 +127,7 @@ id	embedding1_str	name
 5	[0,0,0,0,0,0]	row5
 10	[999.999,888.888,777.777,666.666,555.555,444.444]	row10
 # Test 7: Select with WHERE clause on non-vector column
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test WHERE name LIKE 'row%' AND id <= 5 ORDER BY id;
 id	embedding1_str	name
 1	[1,2,3,4,5,6]	row1
@@ -144,7 +144,7 @@ id	embedding1_str	name
 4	[-1,-2,-3,-4,-5,-6]	row4
 5	[0,0,0,0,0,0]	row5
 # Test 8: Select with WHERE clause on secondary key
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, category
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, category
 FROM vector_test WHERE category >= 50 ORDER BY id;
 id	embedding1_str	category
 5	[0,0,0,0,0,0]	50
@@ -184,7 +184,7 @@ id	name	category
 2	row2	20
 1	row1	10
 # Test 12: Select with LIMIT
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test ORDER BY id LIMIT 3;
 id	embedding1_str	name
 1	[1,2,3,4,5,6]	row1
@@ -197,7 +197,7 @@ id	embedding1_str	name
 2	[1.1,2.1,3.1,4.1,5.1,6.1]	row2
 3	[1.2,2.2,3.2,4.2,5.2,6.2]	row3
 # Test 13: Select with LIMIT and OFFSET
-SELECT id, SVECTOR_TO_STRING(embedding1) AS embedding1_str, name
+SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test ORDER BY id LIMIT 3 OFFSET 5;
 id	embedding1_str	name
 6	[100.5,200.5,300.5,400.5,500.5,600.5]	row6
@@ -222,8 +222,8 @@ category	count
 80	1
 90	1
 100	1
-# Test 15: Test SVECTOR_TO_STRING UDF with specific rows
-SELECT id, SVECTOR_TO_STRING(embedding1) AS emb1_str, SVECTOR_TO_STRING(embedding2) AS emb2_str
+# Test 15: Test SVECTOR::TO_STRING UDF with specific rows
+SELECT id, SVECTOR::TO_STRING(embedding1) AS emb1_str, SVECTOR::TO_STRING(embedding2) AS emb2_str
 FROM vector_test WHERE id IN (1, 5, 10) ORDER BY id;
 id	emb1_str	emb2_str
 1	[1,2,3,4,5,6]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]
@@ -235,18 +235,18 @@ id	emb1_str	emb2_str
 1	[1,2,3,4,5,6]	[0.1,0.2,0.3,0.4,0.5,0.6]
 5	[0,0,0,0,0,0]	[1,1,1,1,1,1]
 10	[999.999,888.888,777.777,666.666,555.555,444.444]	[0.001,0.002,0.003,0.004,0.005,0.006]
-# Test 16: Test SVECTOR_FROM_STRING UDF with HEX()
+# Test 16: Test SVECTOR::FROM_STRING UDF with HEX()
 # TODO: Enable after decode works with constants for parameterized types
-SELECT SVECTOR_HEX(SVECTOR_FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS test_vector_hex;
-ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'
+SELECT SVECTOR_HEX(SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS test_vector_hex;
+ERROR HY000: VDF error in function 'SVECTOR::from_string': failed to encode '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'
 # Test 17: Test round-trip conversion: FROM_STRING -> TO_STRING
 # TODO: Enable after decode works with constants for parameterized types
-SELECT SVECTOR_TO_STRING(SVECTOR_FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS roundtrip_test;
-ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'
+SELECT SVECTOR::TO_STRING(SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS roundtrip_test;
+ERROR HY000: VDF error in function 'SVECTOR::from_string': failed to encode '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'
 # Test 18: Test round-trip with edge case values
 # TODO: Enable after decode works with constants for parameterized types
-SELECT SVECTOR_TO_STRING(SVECTOR_FROM_STRING('[0, -1.5, 1e5, 1e-5, 999.999, -999.999]')) AS roundtrip_edge_cases;
-ERROR HY000: VDF error in function 'svector_from_string': failed to encode '[0, -1.5, 1e5, 1e-5, 999.999, -999.999]'
+SELECT SVECTOR::TO_STRING(SVECTOR::FROM_STRING('[0, -1.5, 1e5, 1e-5, 999.999, -999.999]')) AS roundtrip_edge_cases;
+ERROR HY000: VDF error in function 'SVECTOR::from_string': failed to encode '[0, -1.5, 1e5, 1e-5, 999.999, -999.999]'
 # Test 19: Select with DISTINCT on non-vector column
 SELECT DISTINCT category FROM vector_test ORDER BY category;
 category
@@ -307,7 +307,7 @@ INSERT INTO vector_nullable_test VALUES
 (3, '[3.0, 3.1, 3.2, 3.3, 3.4, 3.5]', 'another_vector'),
 (4, NULL, 'another_null');
 # Select with IS NULL check
-SELECT id, embedding IS NULL AS is_null, SVECTOR_TO_STRING(embedding) AS embedding_str, name
+SELECT id, embedding IS NULL AS is_null, SVECTOR::TO_STRING(embedding) AS embedding_str, name
 FROM vector_nullable_test ORDER BY id;
 id	is_null	embedding_str	name
 1	0	[1,2,3,4,5,6]	has_vector
@@ -320,14 +320,14 @@ id	name
 2	null_vector
 4	another_null
 # Select only non-NULL SVECTOR rows
-SELECT id, SVECTOR_TO_STRING(embedding) AS embedding_str, name
+SELECT id, SVECTOR::TO_STRING(embedding) AS embedding_str, name
 FROM vector_nullable_test WHERE embedding IS NOT NULL ORDER BY id;
 id	embedding_str	name
 1	[1,2,3,4,5,6]	has_vector
 3	[3,3.0999999,3.20000005,3.29999995,3.4000001,3.5]	another_vector
 # Test 24: Select with COALESCE on nullable SVECTOR
 SELECT id, name,
-CASE WHEN embedding IS NULL THEN 'NULL' ELSE SVECTOR_TO_STRING(embedding) END AS embedding_display
+CASE WHEN embedding IS NULL THEN 'NULL' ELSE SVECTOR::TO_STRING(embedding) END AS embedding_display
 FROM vector_nullable_test ORDER BY id;
 id	name	embedding_display
 1	has_vector	[1,2,3,4,5,6]
