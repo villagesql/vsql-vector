@@ -1,0 +1,74 @@
+INSTALL EXTENSION vsql_vector;
+# --- Test 1: Simple rebuild of table with two SVECTOR columns ---
+CREATE TABLE t_rebuild_simple (
+id INT PRIMARY KEY,
+v1 SVECTOR(4) NOT NULL,
+v2 SVECTOR(4) NOT NULL,
+label VARCHAR(20)
+) ENGINE=InnoDB;
+INSERT INTO t_rebuild_simple VALUES
+(1, '[1.0, 2.0, 3.0, 4.0]',   '[0.5, 0.25, 0.125, 0.0625]', 'first'),
+(2, '[-1.0, -2.0, -3.0, -4.0]', '[1.0, 1.0, 1.0, 1.0]',     'second'),
+(3, '[0.0, 0.0, 0.0, 0.0]',   '[2.0, 4.0, 8.0, 16.0]',      'third');
+# Verify data before rebuild
+SELECT id, SVECTOR_FORMAT(v1, 4) AS v1, SVECTOR_FORMAT(v2, 4) AS v2, label
+FROM t_rebuild_simple ORDER BY id;
+id	v1	v2	label
+1	[1,2,3,4]	[0.5,0.25,0.125,0.0625]	first
+2	[-1,-2,-3,-4]	[1,1,1,1]	second
+3	[0,0,0,0]	[2,4,8,16]	third
+# Rebuild the table
+ALTER TABLE t_rebuild_simple ENGINE=InnoDB;
+# Verify data is intact after rebuild
+SELECT id, SVECTOR_FORMAT(v1, 4) AS v1, SVECTOR_FORMAT(v2, 4) AS v2, label
+FROM t_rebuild_simple ORDER BY id;
+id	v1	v2	label
+1	[1,2,3,4]	[0.5,0.25,0.125,0.0625]	first
+2	[-1,-2,-3,-4]	[1,1,1,1]	second
+3	[0,0,0,0]	[2,4,8,16]	third
+DROP TABLE t_rebuild_simple;
+# --- Test 2: Rebuild after columns added and dropped before and after SVECTOR ---
+CREATE TABLE t_rebuild_altered (
+id INT PRIMARY KEY,
+vec SVECTOR(4) NOT NULL,
+name VARCHAR(20)
+) ENGINE=InnoDB;
+INSERT INTO t_rebuild_altered VALUES
+(1, '[1.0, 2.0, 3.0, 4.0]',     'alpha'),
+(2, '[-1.0, -2.0, -3.0, -4.0]', 'beta'),
+(3, '[0.5, 0.25, 0.125, 0.0625]', 'gamma');
+# Add a column before vec and a column after vec
+ALTER TABLE t_rebuild_altered ADD COLUMN pre_col VARCHAR(10) DEFAULT 'pre' AFTER id;
+ALTER TABLE t_rebuild_altered ADD COLUMN post_col INT DEFAULT 99 AFTER vec;
+SHOW CREATE TABLE t_rebuild_altered;
+Table	Create Table
+t_rebuild_altered	CREATE TABLE `t_rebuild_altered` (
+  `id` int NOT NULL,
+  `pre_col` varchar(10) DEFAULT 'pre',
+  `vec` vsql_vector.SVECTOR(4) NOT NULL,
+  `post_col` int DEFAULT '99',
+  `name` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# Verify data with added columns
+SELECT id, pre_col, SVECTOR_FORMAT(vec, 4) AS vec, post_col, name
+FROM t_rebuild_altered ORDER BY id;
+id	pre_col	vec	post_col	name
+1	pre	[1,2,3,4]	99	alpha
+2	pre	[-1,-2,-3,-4]	99	beta
+3	pre	[0.5,0.25,0.125,0.0625]	99	gamma
+# Drop the added columns (one before vec, one after vec)
+ALTER TABLE t_rebuild_altered DROP COLUMN pre_col;
+ALTER TABLE t_rebuild_altered DROP COLUMN post_col;
+# Rebuild the table after the schema changes
+ALTER TABLE t_rebuild_altered ENGINE=InnoDB;
+# Verify data is intact after rebuild
+SELECT id, SVECTOR_FORMAT(vec, 4) AS vec, name
+FROM t_rebuild_altered ORDER BY id;
+id	vec	name
+1	[1,2,3,4]	alpha
+2	[-1,-2,-3,-4]	beta
+3	[0.5,0.25,0.125,0.0625]	gamma
+DROP TABLE t_rebuild_altered;
+# SVECTOR rebuild test completed
+UNINSTALL EXTENSION vsql_vector;

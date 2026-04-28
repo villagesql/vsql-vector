@@ -1,0 +1,70 @@
+# Shared body for ALTER TABLE add/drop vector and non-vector column tests.
+# Sourced by alter_table_vector_{copy,inplace,instant}.test with $algo set.
+
+if (!$algo) {
+  let $algo = DEFAULT;
+}
+
+INSTALL EXTENSION vsql_vector;
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  name VARCHAR(20)
+) ENGINE=InnoDB;
+
+SHOW CREATE TABLE t1;
+
+INSERT INTO t1 VALUES (4, 'row4');
+
+--echo # Add a non-vector column
+eval ALTER TABLE t1 ADD COLUMN score INT NOT NULL DEFAULT 0, ALGORITHM = $algo;
+
+SHOW CREATE TABLE t1;
+
+INSERT INTO t1 VALUES (5, 'row5', 50);
+
+--echo # Add a SVECTOR column
+if ($algo == INSTANT) {
+  --error ER_VILLAGESQL_GENERIC_ERROR
+  ALTER TABLE t1 ADD COLUMN vec SVECTOR(4), ALGORITHM = INSTANT;
+  ALTER TABLE t1 ADD COLUMN vec SVECTOR(4);
+}
+if ($algo != INSTANT) {
+  eval ALTER TABLE t1 ADD COLUMN vec SVECTOR(4), ALGORITHM = $algo;
+}
+
+SHOW CREATE TABLE t1;
+
+INSERT INTO t1 VALUES (1, 'row1', 10, '[1.0, 2.0, 3.0, 4.0]');
+INSERT INTO t1 VALUES (2, 'row2', 20, '[-1.0, -2.0, -3.0, -4.0]');
+INSERT INTO t1 VALUES (3, 'row3', 30, '[0.5, 0.25, 0.125, 0.0625]');
+INSERT INTO t1 VALUES (6, 'row6', 60, '[1.0, 1.0, 1.0, 1.0]');
+
+SELECT id, name, score, SVECTOR_FORMAT(vec, 4) AS vec FROM t1 ORDER BY id;
+
+--echo # Drop the non-vector column
+eval ALTER TABLE t1 DROP COLUMN score, ALGORITHM = $algo;
+
+SHOW CREATE TABLE t1;
+
+SELECT id, name, SVECTOR_FORMAT(vec, 4) AS vec FROM t1 ORDER BY id;
+
+INSERT INTO t1 VALUES (7, 'row7', '[2.0, 2.0, 2.0, 2.0]');
+
+--echo # Drop the SVECTOR column
+if ($algo == INSTANT) {
+  --error ER_VILLAGESQL_GENERIC_ERROR
+  ALTER TABLE t1 DROP COLUMN vec, ALGORITHM = INSTANT;
+  ALTER TABLE t1 DROP COLUMN vec;
+}
+if ($algo != INSTANT) {
+  eval ALTER TABLE t1 DROP COLUMN vec, ALGORITHM = $algo;
+}
+
+SHOW CREATE TABLE t1;
+
+SELECT id, name FROM t1 ORDER BY id;
+
+DROP TABLE t1;
+
+UNINSTALL EXTENSION vsql_vector;

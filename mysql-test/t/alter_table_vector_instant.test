@@ -1,0 +1,4 @@
+# Test ALTER TABLE add/drop vector and non-vector columns with ALGORITHM = INSTANT
+
+let $algo = INSTANT;
+--source alter_table_vector.test

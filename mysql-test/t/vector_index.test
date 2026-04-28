@@ -1,0 +1,40 @@
+# Install vsql-vector extension
+INSTALL EXTENSION vsql_vector;
+
+########################################################################
+#
+# Test that primary key and secondary index creation on SVECTOR column
+# are not supported
+#
+########################################################################
+
+--echo # Creating a table with SVECTOR primary key must fail
+--error ER_VILLAGESQL_GENERIC_ERROR
+CREATE TABLE t1 (
+  id INT,
+  vec SVECTOR(4) NOT NULL,
+  PRIMARY KEY (vec)
+) ENGINE=InnoDB;
+
+--echo # Creating a table with inline secondary index on SVECTOR must fail
+--error ER_VILLAGESQL_GENERIC_ERROR
+CREATE TABLE t2 (
+  id INT PRIMARY KEY,
+  vec SVECTOR(4) NOT NULL,
+  KEY idx_vec (vec)
+) ENGINE=InnoDB;
+
+--echo # Adding a secondary index on SVECTOR via ALTER TABLE must fail
+CREATE TABLE t3 (
+  id INT PRIMARY KEY,
+  vec SVECTOR(4) NOT NULL
+) ENGINE=InnoDB;
+
+--error ER_VILLAGESQL_GENERIC_ERROR
+ALTER TABLE t3 ADD INDEX idx_vec (vec);
+
+DROP TABLE t3;
+
+--echo # SVECTOR index test completed
+
+UNINSTALL EXTENSION vsql_vector;

@@ -25,8 +25,8 @@
 // external column storage for SVECTOR columns. External storage enables more
 // efficient construction and traversal of HNSW indexes for ANN search.
 
-#include <villagesql/vsql.h>
 #include <villagesql/experimental/storage_builder.h>
+#include <villagesql/vsql.h>
 
 #include <cassert>
 #include <cctype>
@@ -39,13 +39,13 @@
 #include "native_vector.h"
 #include "storage/storage.h"
 
+using villagesql::storage_builder::make_storage;
 using vsql::CustomArgWith;
 using vsql::IntArg;
 using vsql::IntResult;
 using vsql::RealResult;
 using vsql::Span;
 using vsql::StringResult;
-using villagesql::storage_builder::make_storage;
 
 namespace native = svector::native;
 
@@ -84,8 +84,7 @@ static_assert(native::MAX_VECTOR_DIMENSION <=
               "MAX_VECTOR_DIMENSION would overflow native vector allocation");
 
 static bool svector_from_string(const SVectorParams &p, std::string_view from,
-                                Span<unsigned char> buf,
-                                size_t *length) {
+                                Span<unsigned char> buf, size_t *length) {
   std::string_view sv = from;
 
   auto is_space = [](char c) {
@@ -204,15 +203,14 @@ static bool svector_format_impl(const SVectorParams &p,
 }
 
 static bool svector_to_string(const SVectorParams &p,
-                              Span<const unsigned char> data,
-                              Span<char> out, size_t *out_len) {
+                              Span<const unsigned char> data, Span<char> out,
+                              size_t *out_len) {
   return svector_format_impl(p, data, std::chars_format::general,
                              std::numeric_limits<float>::max_digits10, out,
                              out_len);
 }
 
-static int svector_compare(const SVectorParams &p,
-                           Span<const unsigned char> a,
+static int svector_compare(const SVectorParams &p, Span<const unsigned char> a,
                            Span<const unsigned char> b) {
   assert(p.dimension > 0 && p.dimension <= native::MAX_VECTOR_DIMENSION);
 
@@ -513,7 +511,7 @@ void svector_inner_product(CustomArgWith<SVectorParams> vec1,
 // Declared at namespace scope so it has a fixed address, which is required
 // by column_storage<&kSVectorStorageIntf>(). See that overload for details.
 static constexpr auto kSVectorStorageIntf =
-  make_storage<svector::ColumnStorageContext>()
+    make_storage<svector::ColumnStorageContext>()
         .create<&svector::ColumnStorage::create>()
         .drop<&svector::ColumnStorage::drop>()
         .load<&svector::ColumnStorage::load>()
@@ -524,22 +522,22 @@ static constexpr auto kSVectorStorageIntf =
         .build();
 
 constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
-                  // Data length related functions
-                  .persisted_length(-1)
-                  .max_decode_buffer_length(DECODE_BUFFER_SIZE<16>)
+                             // Data length related functions
+                             .persisted_length(-1)
+                             .max_decode_buffer_length(DECODE_BUFFER_SIZE<16>)
 
-                  // Data conversion and compare
-                  .params<SVectorParams, &SVectorParams::parse>()
-                  .from_string<svector_from_string>()
-                  .to_string<svector_to_string>()
-                  .compare<svector_compare>()
-                  .int_to_params<svector_get_params>()
-                  .resolve_params<svector_resolve_params>()
-                  .intrinsic_default_vdf("svector_default")
+                             // Data conversion and compare
+                             .params<SVectorParams, &SVectorParams::parse>()
+                             .from_string<svector_from_string>()
+                             .to_string<svector_to_string>()
+                             .compare<svector_compare>()
+                             .int_to_params<svector_get_params>()
+                             .resolve_params<svector_resolve_params>()
+                             .intrinsic_default_vdf("svector_default")
 
-                  // Storage interface
-                  .column_storage<&kSVectorStorageIntf>()
-                  .build();
+                             // Storage interface
+                             .column_storage<&kSVectorStorageIntf>()
+                             .build();
 
 VEF_GENERATE_ENTRY_POINTS(
     make_extension()
