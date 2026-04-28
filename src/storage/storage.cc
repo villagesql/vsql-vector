@@ -318,8 +318,7 @@ bool ColumnStorageContext::fetch(MtrCtx::Ref mctx, Column::Ref col_ref,
 
   // Step 8: Set column data pointer to the column data in the page
   Page::Offset col_data_offset = rec_offset + DataPage::TRX_REF_SIZE;
-  col_data.data =
-      static_cast<const Page &>(data_page).get_data() + col_data_offset;
+  col_data.data = data_page.get_data() + col_data_offset;
   col_data.length = m_root.get_column_size();
 
   // Step 9: We don't store rowid_prefix for SVECTOR
