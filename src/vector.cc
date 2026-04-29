@@ -542,7 +542,7 @@ constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                   .build();
 
 VEF_GENERATE_ENTRY_POINTS(
-    make_extension("vsql_vector", "0.0.1")
+    make_extension()
         .type(SVECTOR)
 
         // Hex encoding of raw vector float bytes (SQL)
