@@ -1,0 +1,90 @@
+INSTALL EXTENSION vsql_vector;
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+name VARCHAR(20)
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `name` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+INSERT INTO t1 VALUES (4, 'row4');
+# Add a non-vector column
+ALTER TABLE t1 ADD COLUMN score INT NOT NULL DEFAULT 0, ALGORITHM = INSTANT;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `name` varchar(20) DEFAULT NULL,
+  `score` int NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+INSERT INTO t1 VALUES (5, 'row5', 50);
+# Add a SVECTOR column
+ALTER TABLE t1 ADD COLUMN vec SVECTOR(4), ALGORITHM = INSTANT;
+ERROR HY000: ALGORITHM=INSTANT is not supported for columns with extended storage.
+ALTER TABLE t1 ADD COLUMN vec SVECTOR(4);
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `name` varchar(20) DEFAULT NULL,
+  `score` int NOT NULL DEFAULT '0',
+  `vec` vsql_vector.SVECTOR(4) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+INSERT INTO t1 VALUES (1, 'row1', 10, '[1.0, 2.0, 3.0, 4.0]');
+INSERT INTO t1 VALUES (2, 'row2', 20, '[-1.0, -2.0, -3.0, -4.0]');
+INSERT INTO t1 VALUES (3, 'row3', 30, '[0.5, 0.25, 0.125, 0.0625]');
+INSERT INTO t1 VALUES (6, 'row6', 60, '[1.0, 1.0, 1.0, 1.0]');
+SELECT id, name, score, SVECTOR_FORMAT(vec, 4) AS vec FROM t1 ORDER BY id;
+id	name	score	vec
+1	row1	10	[1,2,3,4]
+2	row2	20	[-1,-2,-3,-4]
+3	row3	30	[0.5,0.25,0.125,0.0625]
+4	row4	0	NULL
+5	row5	50	NULL
+6	row6	60	[1,1,1,1]
+# Drop the non-vector column
+ALTER TABLE t1 DROP COLUMN score, ALGORITHM = INSTANT;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `name` varchar(20) DEFAULT NULL,
+  `vec` vsql_vector.SVECTOR(4) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+SELECT id, name, SVECTOR_FORMAT(vec, 4) AS vec FROM t1 ORDER BY id;
+id	name	vec
+1	row1	[1,2,3,4]
+2	row2	[-1,-2,-3,-4]
+3	row3	[0.5,0.25,0.125,0.0625]
+4	row4	NULL
+5	row5	NULL
+6	row6	[1,1,1,1]
+INSERT INTO t1 VALUES (7, 'row7', '[2.0, 2.0, 2.0, 2.0]');
+# Drop the SVECTOR column
+ALTER TABLE t1 DROP COLUMN vec, ALGORITHM = INSTANT;
+ERROR HY000: ALGORITHM=INSTANT is not supported for columns with extended storage.
+ALTER TABLE t1 DROP COLUMN vec;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `name` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+SELECT id, name FROM t1 ORDER BY id;
+id	name
+1	row1
+2	row2
+3	row3
+4	row4
+5	row5
+6	row6
+7	row7
+DROP TABLE t1;
+UNINSTALL EXTENSION vsql_vector;
