@@ -44,6 +44,7 @@ using vsql::CustomArgWith;
 using vsql::IntArg;
 using vsql::IntResult;
 using vsql::RealResult;
+using vsql::ResolvedTypeParams;
 using vsql::Span;
 using vsql::StringResult;
 
@@ -260,7 +261,7 @@ static bool svector_get_params(int64_t dimension,
 
 static bool svector_resolve_params(
     const std::map<std::string, std::string> &params,
-    villagesql::ResolvedTypeParams *result, char *error_msg) {
+    ResolvedTypeParams *result, char *error_msg) {
   // Ensure only "dimension" is present
   if (params.size() != 1 || params.find("dimension") == params.end()) {
     snprintf(error_msg, VEF_MAX_ERROR_LEN,
@@ -398,7 +399,7 @@ void svector_max_dims(IntResult out) { out.set(native::MAX_VECTOR_DIMENSION); }
 
 // Format a vector as string with fixed-point notation and given precision
 void svector_format(CustomArgWith<SVectorParams> vec, IntArg precision,
-                    villagesql::StringResult out) {
+                    StringResult out) {
   if (vec.is_null()) {
     out.set_null();
     return;
