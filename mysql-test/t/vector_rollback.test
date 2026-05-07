@@ -1,6 +1,11 @@
 # Install vsql-svector extension
 INSTALL EXTENSION vsql_vector;
 
+# The "UPDATE ... SVECTOR::FROM_STRING(...)" case below logs a decode-failure
+# warning to the error log because constant-string inferred params don't yet
+# propagate to column validation (TODO above the UPDATE).
+call mtr.add_suppression("VillageSQL.*Invalid value in column.*SVECTOR.*failed to decode value");
+
 --replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
 --replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
 
@@ -113,7 +118,7 @@ SELECT id, name, SVECTOR::TO_STRING(vec1) AS vec1_str, SVECTOR::TO_STRING(vec2) 
 --echo #
 START TRANSACTION;
 --echo # TODO: Enable after decode works with constants for parameterized types
---error ER_UDF_ERROR
+--error ER_VILLAGESQL_GENERIC_ERROR
 UPDATE vector_rollback_test SET vec1 = SVECTOR::FROM_STRING('[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]') WHERE id = 2;
 UPDATE vector_rollback_test SET vec1 = '[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]' WHERE id = 2;
 SELECT id, name, SVECTOR::TO_STRING(vec1) AS vec1_str, SVECTOR::TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 2;
