@@ -118,6 +118,8 @@ SELECT id, name, SVECTOR::TO_STRING(vec1) AS vec1_str, SVECTOR::TO_STRING(vec2) 
 --echo #
 START TRANSACTION;
 --echo # TODO: Enable after decode works with constants for parameterized types
+# TODO(villagesql-beta): the error message here needs to be improved, but we have to finish making type propagation work for these
+# cases first. Decode will likely also need an update.
 --error ER_VILLAGESQL_GENERIC_ERROR
 UPDATE vector_rollback_test SET vec1 = SVECTOR::FROM_STRING('[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]') WHERE id = 2;
 UPDATE vector_rollback_test SET vec1 = '[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]' WHERE id = 2;

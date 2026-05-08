@@ -28,6 +28,7 @@
 #include <villagesql/experimental/storage_builder.h>
 #include <villagesql/vsql.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <cerrno>
@@ -122,7 +123,8 @@ static void svector_from_string(MaybeParams<SVectorParams> &p,
     return;
   }
   const size_t max_supportable =
-      (buf.size() - sizeof(vef_storage_ref_t)) / sizeof(float);
+      std::min((buf.size() - sizeof(vef_storage_ref_t)) / sizeof(float),
+               static_cast<const size_t>(native::MAX_VECTOR_DIMENSION));
 
   // expected: known dimension when p is_known; otherwise SIZE_MAX (unbounded
   // until the buffer cap kicks in).
@@ -138,7 +140,11 @@ static void svector_from_string(MaybeParams<SVectorParams> &p,
       out.warning("svector_from_string: buffer too small");
       return;
     }
+  } else {
+    expected = max_supportable;
   }
+  // expected is now either the "known" expected amount, or the max we can
+  // accept for an unknown dimension.
 
   std::memset(buf.data(), 0, sizeof(vef_storage_ref_t));
   unsigned char *dst = buf.data() + sizeof(vef_storage_ref_t);
@@ -153,7 +159,7 @@ static void svector_from_string(MaybeParams<SVectorParams> &p,
       return;
     }
 
-    if (count >= expected || count >= max_supportable) {
+    if (count >= expected) {
       out.warning(p.is_known() ? "svector_from_string: too many elements"
                                : "svector_from_string: buffer too small");
       return;
