@@ -28,6 +28,7 @@
 #include <villagesql/experimental/storage_builder.h>
 #include <villagesql/vsql.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <cerrno>
@@ -41,8 +42,10 @@
 
 using villagesql::storage_builder::make_storage;
 using vsql::CustomArgWith;
+using vsql::CustomResult;
 using vsql::IntArg;
 using vsql::IntResult;
+using vsql::MaybeParams;
 using vsql::RealResult;
 using vsql::ResolvedTypeParams;
 using vsql::Span;
@@ -84,8 +87,12 @@ static_assert(native::MAX_VECTOR_DIMENSION <=
                   (SIZE_MAX - sizeof(native::Data)) / sizeof(float),
               "MAX_VECTOR_DIMENSION would overflow native vector allocation");
 
-static bool svector_from_string(const SVectorParams &p, std::string_view from,
-                                Span<unsigned char> buf, size_t *length) {
+// When p is known, dimension is taken from p; the parsed element count must
+// match p.value().dimension. When p is unknown, the element count from the
+// string sets p.dimension. The loop is capped by what the output buffer can
+// hold; expected-dimension mismatch is checked once at the end.
+static void svector_from_string(MaybeParams<SVectorParams> &p,
+                                std::string_view from, CustomResult out) {
   std::string_view sv = from;
 
   auto is_space = [](char c) {
@@ -103,16 +110,41 @@ static bool svector_from_string(const SVectorParams &p, std::string_view from,
 
   trim(sv);
 
-  if (sv.size() < 2 || sv.front() != '[' || sv.back() != ']') return true;
+  if (sv.size() < 2 || sv.front() != '[' || sv.back() != ']') {
+    out.warning("svector_from_string: missing '[' or ']'");
+    return;
+  }
 
   std::string_view inner = sv.substr(1, sv.size() - 2);
 
-  if (p.dimension <= 0 || p.dimension > native::MAX_VECTOR_DIMENSION)
-    return true;
+  auto buf = out.buffer();
+  if (buf.size() < sizeof(vef_storage_ref_t)) {
+    out.warning("svector_from_string: buffer too small");
+    return;
+  }
+  const size_t max_supportable =
+      std::min((buf.size() - sizeof(vef_storage_ref_t)) / sizeof(float),
+               static_cast<const size_t>(native::MAX_VECTOR_DIMENSION));
 
-  const size_t vector_size = sizeof(vef_storage_ref_t) +
-                             static_cast<size_t>(p.dimension) * sizeof(float);
-  if (buf.size() < vector_size) return true;
+  // expected: known dimension when p is_known; otherwise SIZE_MAX (unbounded
+  // until the buffer cap kicks in).
+  size_t expected = SIZE_MAX;
+  if (p.is_known()) {
+    int64_t d = p.value().dimension;
+    if (d <= 0 || d > native::MAX_VECTOR_DIMENSION) {
+      out.warning("svector_from_string: invalid dimension");
+      return;
+    }
+    expected = static_cast<size_t>(d);
+    if (max_supportable < expected) {
+      out.warning("svector_from_string: buffer too small");
+      return;
+    }
+  } else {
+    expected = max_supportable;
+  }
+  // expected is now either the "known" expected amount, or the max we can
+  // accept for an unknown dimension.
 
   std::memset(buf.data(), 0, sizeof(vef_storage_ref_t));
   unsigned char *dst = buf.data() + sizeof(vef_storage_ref_t);
@@ -122,9 +154,16 @@ static bool svector_from_string(const SVectorParams &p, std::string_view from,
 
   while (true) {
     skip_ws(parse);
-    if (parse.empty()) return true;
+    if (parse.empty()) {
+      out.warning("svector_from_string: missing value");
+      return;
+    }
 
-    if (count >= static_cast<size_t>(p.dimension)) return true;
+    if (count >= expected) {
+      out.warning(p.is_known() ? "svector_from_string: too many elements"
+                               : "svector_from_string: buffer too small");
+      return;
+    }
 
     float value;
     const char *begin = parse.data();
@@ -132,7 +171,10 @@ static bool svector_from_string(const SVectorParams &p, std::string_view from,
     char *next = nullptr;
     errno = 0;
     value = std::strtof(begin, &next);
-    if (next == begin || errno == ERANGE) return true;
+    if (next == begin || errno == ERANGE) {
+      out.warning("svector_from_string: parse error");
+      return;
+    }
     native::float4store(dst, value);
     dst += sizeof(float);
     ++count;
@@ -142,16 +184,28 @@ static bool svector_from_string(const SVectorParams &p, std::string_view from,
     skip_ws(parse);
     if (parse.empty()) break;
 
-    if (count >= static_cast<size_t>(p.dimension)) return true;
-
-    if (parse.front() != ',') return true;
+    if (parse.front() != ',') {
+      out.warning("svector_from_string: expected ','");
+      return;
+    }
     parse.remove_prefix(1);
   }
 
-  if (count != static_cast<size_t>(p.dimension)) return true;
+  if (p.is_known()) {
+    if (count != expected) {
+      out.warning("svector_from_string: dimension mismatch");
+      return;
+    }
+  } else {
+    if (count == 0 ||
+        count > static_cast<size_t>(native::MAX_VECTOR_DIMENSION)) {
+      out.warning("svector_from_string: invalid dimension");
+      return;
+    }
+    p.set(SVectorParams{static_cast<int64_t>(count)});
+  }
 
-  *length = vector_size;
-  return false;
+  out.set_length(sizeof(vef_storage_ref_t) + count * sizeof(float));
 }
 
 static bool svector_format_impl(const SVectorParams &p,

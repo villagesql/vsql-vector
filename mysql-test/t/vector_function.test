@@ -93,20 +93,15 @@ SVECTOR_INNER_PRODUCT(v1, v2) AS ip
 FROM func_nullable ORDER BY id;
 
 --echo # Test 10: Distance from a fixed inline vector using SVECTOR::FROM_STRING
---echo # TODO: Enable after decode works with constants for parameterized types
---error ER_UDF_ERROR
 SELECT id, SVECTOR_DISTANCE_COSINE(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS cos_dist
 FROM func_single ORDER BY id;
 
---error ER_UDF_ERROR
 SELECT id, SVECTOR_DISTANCE_L2(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l2_dist
 FROM func_single ORDER BY id;
 
---error ER_UDF_ERROR
 SELECT id, SVECTOR_DISTANCE_L1(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l1_dist
 FROM func_single ORDER BY id;
 
---error ER_UDF_ERROR
 SELECT id, SVECTOR_INNER_PRODUCT(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS ip
 FROM func_single ORDER BY id;
 
