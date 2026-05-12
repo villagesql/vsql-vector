@@ -61,6 +61,14 @@ struct SVectorParams {
     p.dimension = (it != params.end()) ? std::stoll(it->second) : 0;
     return p;
   }
+  // Inverse of parse: render a typed SVectorParams back into canonical
+  // key/value strings. Used by paths that produce a typed P at runtime (e.g.,
+  // constant-string from_string pre-execute at fix_fields time) and need to
+  // publish the equivalent string-form params back to the server.
+  static void to_strings(const SVectorParams &p,
+                         std::map<std::string, std::string> &out) {
+    out["dimension"] = std::to_string(p.dimension);
+  }
 };
 
 // Vector type with separate column storage.
@@ -582,7 +590,8 @@ constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                              .max_decode_buffer_length(DECODE_BUFFER_SIZE<16>)
 
                              // Data conversion and compare
-                             .params<SVectorParams, &SVectorParams::parse>()
+                             .params<SVectorParams, &SVectorParams::parse,
+                                     &SVectorParams::to_strings>()
                              .from_string<svector_from_string>()
                              .to_string<svector_to_string>()
                              .compare<svector_compare>()
