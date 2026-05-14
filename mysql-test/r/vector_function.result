@@ -1,3 +1,4 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 # Create tables for function tests
 CREATE TABLE func_single (
@@ -140,3 +141,5 @@ DROP TABLE func_pairs;
 DROP TABLE func_nullable;
 # SVECTOR function test completed
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

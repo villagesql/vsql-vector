@@ -1,3 +1,4 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 # Creating a table with SVECTOR primary key must fail
 CREATE TABLE t1 (
@@ -23,3 +24,5 @@ ERROR HY000: InnoDB: Indexing for types with column storage is not supported.
 DROP TABLE t3;
 # SVECTOR index test completed
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

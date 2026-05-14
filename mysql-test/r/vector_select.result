@@ -1,3 +1,4 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 # Create table with multiple SVECTOR columns
 CREATE TABLE vector_test (
@@ -339,3 +340,5 @@ DROP TABLE vector_test;
 DROP TABLE vector_nullable_test;
 # SVECTOR select test completed
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

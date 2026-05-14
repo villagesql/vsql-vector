@@ -31,7 +31,7 @@
 
 namespace svector {
 
-using villagesql::storage::Error;
+using vsql::preview_storage::Error;
 
 // RAII guard to automatically track insert concurrency
 class ConcurrencyGuard {
@@ -58,7 +58,7 @@ void ColumnStorageContext::fill_error(const char *info, char *msg, uint32_t len,
   if (local) {
     snprintf(msg, len, "SVECTOR: %s", info);
   } else {
-    auto detail = villagesql::storage::last_error();
+    auto detail = vsql::preview_storage::last_error();
     snprintf(msg, len, "SVECTOR: %s: %.*s", info,
              static_cast<int>(detail.size()), detail.data());
   }

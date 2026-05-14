@@ -31,7 +31,7 @@
 
 namespace svector {
 
-using villagesql::storage::Error;
+using vsql::preview_storage::Error;
 
 // Helper function to convert bits to bytes (ceiling division)
 inline uint32_t bits_to_bytes_ceil(uint32_t bits) { return (bits + 7) >> 3; }

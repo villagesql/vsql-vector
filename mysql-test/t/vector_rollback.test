@@ -1,4 +1,5 @@
 # Install vsql-svector extension
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 
 # The "UPDATE ... SVECTOR::FROM_STRING(...)" case below logs a decode-failure
@@ -171,3 +172,5 @@ DROP TABLE vector_rollback_test;
 --echo # SVECTOR rollback test completed
 
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

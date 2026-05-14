@@ -1,3 +1,4 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 # --- Test 1: Simple rebuild of table with two SVECTOR columns ---
 CREATE TABLE t_rebuild_simple (
@@ -72,3 +73,5 @@ id	vec	name
 DROP TABLE t_rebuild_altered;
 # SVECTOR rebuild test completed
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

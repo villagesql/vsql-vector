@@ -1,3 +1,4 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 CREATE TABLE t1 (
 id INT PRIMARY KEY,
@@ -84,3 +85,5 @@ id	name
 7	row7
 DROP TABLE t1;
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

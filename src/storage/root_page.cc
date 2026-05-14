@@ -30,7 +30,7 @@
 
 namespace svector {
 
-using villagesql::storage::Error;
+using vsql::preview_storage::Error;
 
 // Define the thread_local static member
 thread_local RootPage::LastSlotInfo RootPage::s_last_slot_info;

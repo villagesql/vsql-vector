@@ -27,18 +27,18 @@
 #include <atomic>
 #include <cstdint>
 
-#include <villagesql/experimental/storage_api.h>
+#include <villagesql/preview/storage_api.h>
 
 #include "data_page.h"
 #include "root_page.h"
 
 namespace svector {
 
-using villagesql::storage::Column;
-using villagesql::storage::MtrCtx;
-using villagesql::storage::Page;
-using villagesql::storage::Segment;
-using villagesql::storage::Space;
+using vsql::preview_storage::Column;
+using vsql::preview_storage::MtrCtx;
+using vsql::preview_storage::Page;
+using vsql::preview_storage::Segment;
+using vsql::preview_storage::Space;
 
 struct ColumnStorageContext {
   static constexpr uint8_t FORMAT_VERSION = 1;

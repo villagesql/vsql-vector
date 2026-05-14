@@ -28,15 +28,15 @@
 #include <cstdint>
 #include <utility>
 
-#include <villagesql/experimental/storage_api.h>
+#include <villagesql/preview/storage_api.h>
 
 namespace svector {
 
-using villagesql::storage::Column;
-using villagesql::storage::MtrCtx;
-using villagesql::storage::Page;
-using villagesql::storage::Segment;
-using villagesql::storage::Space;
+using vsql::preview_storage::Column;
+using vsql::preview_storage::MtrCtx;
+using vsql::preview_storage::Page;
+using vsql::preview_storage::Segment;
+using vsql::preview_storage::Space;
 
 // Data Page structure for SVECTOR column storage
 struct DataPage {
