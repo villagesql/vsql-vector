@@ -1,6 +1,5 @@
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
-call mtr.add_suppression("VillageSQL.*Invalid value in column.*SVECTOR.*failed to decode value");
 # Create table with two SVECTOR columns
 CREATE TABLE vector_rollback_test (
 id INT PRIMARY KEY,
@@ -131,9 +130,7 @@ id	name	vec1_str	vec2_str	value
 # Test 8: Rollback UPDATE with SVECTOR::FROM_STRING UDF
 #
 START TRANSACTION;
-# TODO: Enable after decode works with constants for parameterized types
 UPDATE vector_rollback_test SET vec1 = SVECTOR::FROM_STRING('[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]') WHERE id = 2;
-ERROR HY000: Invalid value in column '???' of type 'vsql_vector.SVECTOR' at row 1: check server log for details
 UPDATE vector_rollback_test SET vec1 = '[11.0, 12.0, 13.0, 14.0, 15.0, 16.0]' WHERE id = 2;
 SELECT id, name, SVECTOR::TO_STRING(vec1) AS vec1_str, SVECTOR::TO_STRING(vec2) AS vec2_str, value FROM vector_rollback_test WHERE id = 2;
 id	name	vec1_str	vec2_str	value

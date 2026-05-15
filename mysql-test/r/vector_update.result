@@ -1,6 +1,5 @@
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
-call mtr.add_suppression("VillageSQL.*Invalid value in column.*SVECTOR.*failed to decode value");
 # Create table with SVECTOR columns, primary key, and secondary key
 CREATE TABLE vector_test (
 id INT PRIMARY KEY,
@@ -95,11 +94,9 @@ FROM vector_test WHERE id = 6;
 id	embedding1_str	embedding2_str	name	category
 6	[6,6.0999999,6.19999981,6.30000019,6.4000001,6.5]	[0.600000024,0.610000014,0.620000005,0.629999995,0.639999986,0.649999976]	row6	60
 # Test 9: Update with SVECTOR::FROM_STRING UDF
-# TODO: Enable after decode works with constants for parameterized types
 UPDATE vector_test
 SET embedding1 = SVECTOR::FROM_STRING('[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]')
 WHERE id = 7;
-ERROR HY000: Invalid value in column '???' of type 'vsql_vector.SVECTOR' at row 1: check server log for details
 UPDATE vector_test
 SET embedding1 = '[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]'
 WHERE id = 7;

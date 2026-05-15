@@ -2,11 +2,6 @@
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 
-# The "INSERT IGNORE ... SVECTOR::FROM_STRING(...)" case below logs a
-# decode-failure warning to the error log because constant-string inferred
-# params don't yet propagate to column validation (TODO above the INSERT).
-call mtr.add_suppression("VillageSQL.*Invalid value in column.*SVECTOR.*failed to decode value");
-
 --replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
 --replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
 
@@ -50,10 +45,9 @@ INSERT INTO vector_test VALUES
 SELECT COUNT(*) AS record_count FROM vector_test;
 
 --echo # Test INSERT with SVECTOR::FROM_STRING UDF
---echo # TODO: Enable after decode works with constants for parameterized types
---error ER_VILLAGESQL_GENERIC_ERROR
 INSERT IGNORE INTO vector_test VALUES
   (11, SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'), SVECTOR::FROM_STRING('[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]'), 'row11');
+--error ER_DUP_ENTRY
 INSERT INTO vector_test VALUES
   (11, '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]', '[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]', 'row11');
 
