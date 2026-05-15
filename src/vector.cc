@@ -267,24 +267,32 @@ static bool svector_format_impl(const SVectorParams &p,
   return false;
 }
 
-static bool svector_to_string(const SVectorParams &p,
-                              Span<const unsigned char> data, Span<char> out,
-                              size_t *out_len) {
-  return svector_format_impl(p, data, std::chars_format::general,
-                             std::numeric_limits<float>::max_digits10, out,
-                             out_len);
+static void svector_to_string(CustomArgWith<SVectorParams> in,
+                              StringResult out) {
+  auto buf = out.buffer();
+  size_t len;
+  if (svector_format_impl(in.params(), in.value(), std::chars_format::general,
+                          std::numeric_limits<float>::max_digits10, buf,
+                          &len)) {
+    return; // wrapper default ERROR
+  }
+  out.set_length(len);
 }
 
-static int svector_compare(const SVectorParams &p, Span<const unsigned char> a,
-                           Span<const unsigned char> b) {
+static int svector_compare(CustomArgWith<SVectorParams> a,
+                           CustomArgWith<SVectorParams> b) {
+  const SVectorParams &p = a.params();
   assert(p.dimension > 0 && p.dimension <= native::MAX_VECTOR_DIMENSION);
 
+  auto va = a.value();
+  auto vb = b.value();
   const size_t expected = sizeof(vef_storage_ref_t) +
                           static_cast<size_t>(p.dimension) * sizeof(float);
-  if (a.size() < expected || b.size() < expected) return 0;
+  if (va.size() < expected || vb.size() < expected)
+    return 0;
 
-  const unsigned char *p_l = a.data() + sizeof(vef_storage_ref_t);
-  const unsigned char *p_r = b.data() + sizeof(vef_storage_ref_t);
+  const unsigned char *p_l = va.data() + sizeof(vef_storage_ref_t);
+  const unsigned char *p_r = vb.data() + sizeof(vef_storage_ref_t);
 
   for (int64_t i = 0; i < p.dimension; ++i) {
     float f_l = native::float4get(p_l);
