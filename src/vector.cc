@@ -65,8 +65,8 @@ struct SVectorParams {
   }
   // Inverse of parse: render a typed SVectorParams back into canonical
   // key/value strings. Used by paths that produce a typed P at runtime (e.g.,
-  // constant-string from_string pre-execute at fix_fields time) and need to
-  // publish the equivalent string-form params back to the server.
+  // constant-string from_string) and need to publish the equivalent string-form
+  // params back to the server.
   static void to_strings(const SVectorParams &p,
                          std::map<std::string, std::string> &out) {
     out["dimension"] = std::to_string(p.dimension);
@@ -581,10 +581,18 @@ void svector_inner_product(CustomArgWith<SVectorParams> vec1,
   svector_distance_impl(vec1, vec2, out, native::dist_inner_product);
 }
 
+// Upper bound on SVECTOR's persisted byte size: storage-ref header plus
+// MAX_VECTOR_DIMENSION float elements. Used only on the fix_fields-time
+// constant-string inference path; row-time encoding uses the params-resolved
+// persisted_length set by svector_resolve_params.
+constexpr int64_t kSVectorMaxPersistedLength = static_cast<int64_t>(
+    sizeof(vef_storage_ref_t) + native::MAX_VECTOR_DIMENSION * sizeof(float));
+
 constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                              // Data length related functions
                              .persisted_length(-1)
                              .max_decode_buffer_length(DECODE_BUFFER_SIZE<16>)
+                             .max_persisted_length(kSVectorMaxPersistedLength)
 
                              // Data conversion and compare
                              .params<SVectorParams, &SVectorParams::parse,

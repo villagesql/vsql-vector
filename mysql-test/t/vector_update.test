@@ -2,11 +2,6 @@
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 
-# The "UPDATE ... SVECTOR::FROM_STRING(...)" case below logs a decode-failure
-# warning to the error log because constant-string inferred params don't yet
-# propagate to column validation (TODO above the UPDATE).
-call mtr.add_suppression("VillageSQL.*Invalid value in column.*SVECTOR.*failed to decode value");
-
 --replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
 --replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
 
@@ -111,8 +106,6 @@ SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, SVECTOR::TO_STRING(
 FROM vector_test WHERE id = 6;
 
 --echo # Test 9: Update with SVECTOR::FROM_STRING UDF
---echo # TODO: Enable after decode works with constants for parameterized types
---error ER_VILLAGESQL_GENERIC_ERROR
 UPDATE vector_test
 SET embedding1 = SVECTOR::FROM_STRING('[7.5, 8.5, 9.5, 10.5, 11.5, 12.5]')
 WHERE id = 7;

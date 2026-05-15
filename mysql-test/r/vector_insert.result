@@ -1,6 +1,5 @@
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
-call mtr.add_suppression("VillageSQL.*Invalid value in column.*SVECTOR.*failed to decode value");
 # Create table with multiple SVECTOR columns
 CREATE TABLE vector_test (
 id INT PRIMARY KEY,
@@ -34,12 +33,11 @@ SELECT COUNT(*) AS record_count FROM vector_test;
 record_count
 10
 # Test INSERT with SVECTOR::FROM_STRING UDF
-# TODO: Enable after decode works with constants for parameterized types
 INSERT IGNORE INTO vector_test VALUES
 (11, SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]'), SVECTOR::FROM_STRING('[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]'), 'row11');
-ERROR HY000: Invalid value in column '???' of type 'vsql_vector.SVECTOR' at row 1: check server log for details
 INSERT INTO vector_test VALUES
 (11, '[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]', '[0.15, 0.25, 0.35, 0.45, 0.55, 0.65]', 'row11');
+ERROR 23000: Duplicate entry '11' for key 'vector_test.PRIMARY'
 SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test WHERE id = 11;
 id	embedding1_str	name

@@ -237,17 +237,17 @@ id	emb1_str	emb2_str
 5	[0,0,0,0,0,0]	[1,1,1,1,1,1]
 10	[999.999,888.888,777.777,666.666,555.555,444.444]	[0.001,0.002,0.003,0.004,0.005,0.006]
 # Test 16: Test SVECTOR::FROM_STRING UDF with HEX()
-# TODO: Enable after decode works with constants for parameterized types
 SELECT SVECTOR_HEX(SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS test_vector_hex;
-ERROR HY000: Cannot initialize function 'svector_hex': cannot determine type parameters for vsql_vector.SVECTOR in argument 1
+test_vector_hex
+00000000000000000000C03F0000204000006040000090400000B0400000D040
 # Test 17: Test round-trip conversion: FROM_STRING -> TO_STRING
-# TODO: Enable after decode works with constants for parameterized types
 SELECT SVECTOR::TO_STRING(SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS roundtrip_test;
-ERROR HY000: Cannot initialize function 'SVECTOR::to_string': cannot determine type parameters for vsql_vector.SVECTOR in argument 1
+roundtrip_test
+[1.5,2.5,3.5,4.5,5.5,6.5]
 # Test 18: Test round-trip with edge case values
-# TODO: Enable after decode works with constants for parameterized types
 SELECT SVECTOR::TO_STRING(SVECTOR::FROM_STRING('[0, -1.5, 1e5, 1e-5, 999.999, -999.999]')) AS roundtrip_edge_cases;
-ERROR HY000: Cannot initialize function 'SVECTOR::to_string': cannot determine type parameters for vsql_vector.SVECTOR in argument 1
+roundtrip_edge_cases
+[0,-1.5,100000,9.99999975e-06,999.999023,-999.999023]
 # Test 19: Select with DISTINCT on non-vector column
 SELECT DISTINCT category FROM vector_test ORDER BY category;
 category
