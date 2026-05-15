@@ -1,3 +1,4 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 #
 # Scenario 1: Restart with committed SVECTOR data
@@ -232,3 +233,5 @@ id	name	embedding_str	metadata_str	value
 DROP TABLE vector_restart_test;
 # SVECTOR restart test completed
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

@@ -1,3 +1,4 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 # Create table with multiple SVECTOR columns and integer primary key
 CREATE TABLE vector_test (
@@ -68,3 +69,5 @@ table_count
 0
 # SVECTOR create test completed
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

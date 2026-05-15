@@ -1,3 +1,4 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 call mtr.add_suppression("VillageSQL.*Invalid value in column.*SVECTOR.*failed to decode value");
 # Create table with multiple SVECTOR columns
@@ -64,3 +65,5 @@ DROP TABLE vector_test;
 DROP TABLE vector_nullable_test;
 # SVECTOR insert test completed
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

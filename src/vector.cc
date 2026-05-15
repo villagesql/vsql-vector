@@ -25,7 +25,7 @@
 // external column storage for SVECTOR columns. External storage enables more
 // efficient construction and traversal of HNSW indexes for ANN search.
 
-#include <villagesql/experimental/storage_builder.h>
+#include <villagesql/preview/storage_builder.h>
 #include <villagesql/vsql.h>
 
 #include <algorithm>
@@ -40,7 +40,9 @@
 #include "native_vector.h"
 #include "storage/storage.h"
 
-using villagesql::storage_builder::make_storage;
+using vsql::preview_storage_builder::ColumnStoreCapability;
+using vsql::preview_storage_builder::StorageCapability;
+using vsql::preview_storage_builder::make_column_store;
 using vsql::CustomArgWith;
 using vsql::CustomResult;
 using vsql::IntArg;
@@ -571,19 +573,6 @@ void svector_inner_product(CustomArgWith<SVectorParams> vec1,
   svector_distance_impl(vec1, vec2, out, native::dist_inner_product);
 }
 
-// Declared at namespace scope so it has a fixed address, which is required
-// by column_storage<&kSVectorStorageIntf>(). See that overload for details.
-static constexpr auto kSVectorStorageIntf =
-    make_storage<svector::ColumnStorageContext>()
-        .create<&svector::ColumnStorage::create>()
-        .drop<&svector::ColumnStorage::drop>()
-        .load<&svector::ColumnStorage::load>()
-        .insert<&svector::ColumnStorage::insert>()
-        .select<&svector::ColumnStorage::select>()
-        .mark_delete<&svector::ColumnStorage::mark_delete>()
-        .purge<&svector::ColumnStorage::purge>()
-        .build();
-
 constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                              // Data length related functions
                              .persisted_length(-1)
@@ -598,13 +587,26 @@ constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                              .int_to_params<svector_get_params>()
                              .resolve_params<svector_resolve_params>()
                              .intrinsic_default_vdf("svector_default")
-
-                             // Storage interface
-                             .column_storage<&kSVectorStorageIntf>()
                              .build();
+
+static constexpr auto kSVectorStorageIntf =
+    make_column_store<svector::ColumnStorageContext>(SVECTOR)
+        .create<&svector::ColumnStorage::create>()
+        .drop<&svector::ColumnStorage::drop>()
+        .load<&svector::ColumnStorage::load>()
+        .insert<&svector::ColumnStorage::insert>()
+        .select<&svector::ColumnStorage::select>()
+        .mark_delete<&svector::ColumnStorage::mark_delete>()
+        .purge<&svector::ColumnStorage::purge>()
+        .build();
+
+static auto STORAGE = StorageCapability{};
+static auto COLUMN_STORE = ColumnStoreCapability().column_store(kSVectorStorageIntf);
 
 VEF_GENERATE_ENTRY_POINTS(
     make_extension()
+        .with(STORAGE)
+        .with(COLUMN_STORE)
         .type(SVECTOR)
 
         // Hex encoding of raw vector float bytes (SQL)

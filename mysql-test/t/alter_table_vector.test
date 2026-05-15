@@ -5,6 +5,7 @@ if (!$algo) {
   let $algo = DEFAULT;
 }
 
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 
 CREATE TABLE t1 (
@@ -68,3 +69,5 @@ SELECT id, name FROM t1 ORDER BY id;
 DROP TABLE t1;
 
 UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;
