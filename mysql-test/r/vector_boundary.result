@@ -29,7 +29,9 @@ id	dims
 # Verify roundtrip on first and last row
 SELECT id, SVECTOR::TO_STRING(v) = @v1024 AS matches
 FROM t_large WHERE id IN (1, 10) ORDER BY id;
-ERROR HY000: VDF error in function 'SVECTOR::to_string': failed to decode value
+id	matches
+1	1
+10	1
 SELECT id, SVECTOR::FROM_STRING(@v1024) = v AS matches
 FROM t_large WHERE id IN (1, 10) ORDER BY id;
 ERROR HY000: Cannot compare types vsql_vector.SVECTOR and vsql_vector.SVECTOR(1024) in =
@@ -62,7 +64,9 @@ id	dims
 # Verify roundtrip on first and last row
 SELECT id, SVECTOR::TO_STRING(v) = @v3072 AS matches
 FROM t_max WHERE id IN (1, 5) ORDER BY id;
-ERROR HY000: VDF error in function 'SVECTOR::to_string': failed to decode value
+id	matches
+1	1
+5	1
 # === Part 2b: Delete + purge + re-insert cycle for SVECTOR(3072) ===
 # Each delete frees a single-slot page; after purge that page must return
 # to the free list so subsequent inserts can reuse it.  We cannot directly
