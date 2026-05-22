@@ -34,7 +34,9 @@ id	matches
 10	1
 SELECT id, SVECTOR::FROM_STRING(@v1024) = v AS matches
 FROM t_large WHERE id IN (1, 10) ORDER BY id;
-ERROR HY000: Cannot compare types vsql_vector.SVECTOR and vsql_vector.SVECTOR(1024) in =
+id	matches
+1	1
+10	1
 DROP TABLE t_large;
 # === Part 2: Maximum dimension SVECTOR(3072) (1 record per page) ===
 # Inserting 5 rows each on a separate page exercises new-page allocation.
