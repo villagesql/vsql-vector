@@ -648,6 +648,7 @@ VEF_GENERATE_ENTRY_POINTS(
         // Maximum supported dimension function (SQL)
         .func(make_func<&svector_max_dims>("svector_max_dimension")
                   .returns(INT)
+                  .no_params()
                   .deterministic()
                   .build())
 
