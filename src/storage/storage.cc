@@ -233,7 +233,17 @@ bool ColumnStorageContext::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
 
       m_data.format(data_page, mtr, FORMAT_VERSION);
 
-      if (m_root.add_data_page(root_page, data_page, space_ref, mtr) ||
+      if (m_root.add_data_page(root_page, data_page, space_ref, mtr)) {
+        fill_error("insert: failed to register new data page", error_msg,
+                   error_msg_len, true);
+        return true;
+      }
+
+      // Skip adding to free list if the page is already at its last slot.
+      // This handles large vector dimensions (e.g. SVECTOR(3072)) where a
+      // single vector occupies the whole page; the page will be full after
+      // this insert and must never appear in the free list.
+      if (!m_data.has_last_free_slot(data_page) &&
           m_root.add_free_page(root_page, data_page, &m_data, space_ref,
                                RootPage::s_last_slot_info.slot_number, mtr)) {
         fill_error("insert: failed to register new data page", error_msg,
@@ -248,7 +258,7 @@ bool ColumnStorageContext::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
         return true;
       }
 
-      if (!m_data.has_last_free_slot(data_page)) {
+      if (m_data.has_last_free_slot(data_page)) {
         if (m_root.remove_free_page(root_page, data_page, &m_data, space_ref,
                                     mtr)) {
           fill_error("insert: failed to remove full page from free list",
@@ -400,7 +410,7 @@ bool ColumnStorageContext::purge(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
   }
 
   // Step 5: Check if page will need to be added to free list after purge
-  bool need_pessimistic = m_data.needs_add_to_free_list(data_page);
+  bool need_pessimistic = m_data.needs_add_to_free_list(data_page, true);
   Page root_page;
 
   // Step 6: If page needs to be added to free list, follow pessimistic path

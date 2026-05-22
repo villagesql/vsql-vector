@@ -188,7 +188,7 @@ bool DataPage::has_last_free_slot(Page &data_page) const {
   return (num_free_recs == 1);
 }
 
-bool DataPage::needs_add_to_free_list(Page &data_page) const {
+bool DataPage::needs_add_to_free_list(Page &data_page, bool pre_purge) const {
   assert(data_page.is_loaded(Page::Latch::EXCLUSIVE) ||
          data_page.is_loaded(Page::Latch::SHARED));
 
@@ -208,6 +208,12 @@ bool DataPage::needs_add_to_free_list(Page &data_page) const {
   // Avoid division by zero (should not happen if assert passes)
   if (max_num_recs == 0) {
     return false;
+  }
+
+  // Simulate freeing one record so the caller can determine whether the
+  // pessimistic path is needed before the purge actually executes.
+  if (pre_purge && num_free_recs < max_num_recs) {
+    ++num_free_recs;
   }
 
   // Calculate free percentage: (num_free_recs * 100) / max_num_recs

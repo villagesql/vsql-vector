@@ -172,8 +172,12 @@ struct DataPage {
   // Returns true if:
   // 1. The page is not in the free list (free_slot_number == INVALID_SLOT)
   // 2. The free percentage is greater than MIN_FREE_PERCENT_FOR_FREE_LIST (20%)
+  // When pre_purge is true, simulates one record being freed (adds 1 to
+  // num_free_recs) so the caller can decide whether to take the pessimistic
+  // path before the purge actually happens. Only applies when at least one
+  // record is occupied.
   // The page must be latched (S or X).
-  bool needs_add_to_free_list(Page &data_page) const;
+  bool needs_add_to_free_list(Page &data_page, bool pre_purge = false) const;
 
   // Get the delete mark and free status for a record.
   // Returns pair<delete_marked, is_free>

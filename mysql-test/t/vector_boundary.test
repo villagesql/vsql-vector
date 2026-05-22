@@ -1,0 +1,120 @@
+# Install vsql-svector extension
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+--replace_result $MYSQL_TEST_DIR MYSQL_TEST_DIR
+
+########################################################################
+#
+# Test SVECTOR boundary conditions:
+#   1. Multi-page storage: SVECTOR(1024) holds 3 records per 16K page.
+#      Inserting 10 rows spans 4 data pages.
+#   2. Maximum dimension: SVECTOR(3072) holds exactly 1 record per page.
+#      Inserting 5 rows spans 5 data pages.
+#   3. Error case: SVECTOR(3073) exceeds MAX_VECTOR_DIMENSION and must fail.
+#
+# Page capacity derivation (16K page):
+#   available = 16384 - FREE_BITMAP_OFF(54) - TRAILER(8) = 16322 bytes
+#   dim=1024: rec_size = 8(trx_ref) + 8(storage_ref) + 1024*4 = 4112 -> 3/page
+#   dim=3072: rec_size = 8 + 8 + 3072*4 = 12304 -> 1/page
+#
+########################################################################
+
+--echo # === Part 1: Multi-page inserts with SVECTOR(1024) (3 records per page) ===
+--echo # Inserting 10 rows fills 4 data pages (3+3+3+1).
+
+CREATE TABLE t_large (
+  id INT PRIMARY KEY,
+  v SVECTOR(1024) NOT NULL
+) ENGINE=InnoDB;
+
+# Build a 1024-element vector "[1,1,...,1]" without spaces (matches TO_STRING output).
+SET @v1024 = CONCAT('[', REPEAT('1,', 1023), '1]');
+
+INSERT INTO t_large VALUES
+  (1, @v1024), (2, @v1024), (3, @v1024), (4, @v1024), (5, @v1024),
+  (6, @v1024), (7, @v1024), (8, @v1024), (9, @v1024), (10, @v1024);
+
+--echo # Verify all 10 rows inserted
+SELECT COUNT(*) AS total FROM t_large;
+
+--echo # Verify dimension on first 3 rows (page 1)
+SELECT id, svector_dimension(v) AS dims FROM t_large ORDER BY id LIMIT 3;
+
+--echo # Verify dimension on last 3 rows (pages 3-4)
+SELECT id, svector_dimension(v) AS dims FROM t_large ORDER BY id DESC LIMIT 3;
+
+--echo # Verify roundtrip on first and last row
+--error ER_UDF_ERROR
+SELECT id, SVECTOR::TO_STRING(v) = @v1024 AS matches
+FROM t_large WHERE id IN (1, 10) ORDER BY id;
+
+--error ER_VILLAGESQL_GENERIC_ERROR
+SELECT id, SVECTOR::FROM_STRING(@v1024) = v AS matches
+FROM t_large WHERE id IN (1, 10) ORDER BY id;
+
+DROP TABLE t_large;
+
+--echo # === Part 2: Maximum dimension SVECTOR(3072) (1 record per page) ===
+--echo # Inserting 5 rows each on a separate page exercises new-page allocation.
+
+CREATE TABLE t_max (
+  id INT PRIMARY KEY,
+  v SVECTOR(3072) NOT NULL
+) ENGINE=InnoDB;
+
+--echo # Confirm the engine-reported maximum
+SELECT svector_max_dimension() AS max_dim;
+
+# Build a 3072-element vector "[1,1,...,1]".
+SET @v3072 = CONCAT('[', REPEAT('1,', 3071), '1]');
+
+INSERT INTO t_max VALUES
+  (1, @v3072), (2, @v3072), (3, @v3072), (4, @v3072), (5, @v3072);
+
+--echo # Verify all 5 rows inserted
+SELECT COUNT(*) AS total FROM t_max;
+
+--echo # Verify dimension on all rows
+SELECT id, svector_dimension(v) AS dims FROM t_max ORDER BY id;
+
+--echo # Verify roundtrip on first and last row
+--error ER_UDF_ERROR
+SELECT id, SVECTOR::TO_STRING(v) = @v3072 AS matches
+FROM t_max WHERE id IN (1, 5) ORDER BY id;
+
+--echo # === Part 2b: Delete + purge + re-insert cycle for SVECTOR(3072) ===
+--echo # Each delete frees a single-slot page; after purge that page must return
+--echo # to the free list so subsequent inserts can reuse it.  We cannot directly
+--echo # observe page reuse here, but exercising the path verifies no crash/error.
+
+--echo # Round 1: delete two rows, wait for purge, re-insert two rows
+DELETE FROM t_max WHERE id IN (1, 2);
+--source include/wait_innodb_all_purged.inc
+INSERT INTO t_max VALUES (6, @v3072), (7, @v3072);
+SELECT COUNT(*) AS total FROM t_max;
+SELECT id FROM t_max ORDER BY id;
+
+--echo # Round 2: delete all current rows, wait for purge, re-insert fresh rows
+DELETE FROM t_max;
+--source include/wait_innodb_all_purged.inc
+INSERT INTO t_max VALUES (11, @v3072), (12, @v3072), (13, @v3072);
+SELECT COUNT(*) AS total FROM t_max;
+SELECT id FROM t_max ORDER BY id;
+
+DROP TABLE t_max;
+
+--echo # === Part 3: Error case - dimension 3073 exceeds MAX_VECTOR_DIMENSION (3072) ===
+
+--error ER_PARSE_ERROR
+CREATE TABLE t_over (
+  id INT PRIMARY KEY,
+  v SVECTOR(3073) NOT NULL
+) ENGINE=InnoDB;
+
+--echo # Boundary test completed
+
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;
