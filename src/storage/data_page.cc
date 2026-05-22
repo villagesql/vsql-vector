@@ -188,7 +188,7 @@ bool DataPage::has_last_free_slot(Page &data_page) const {
   return (num_free_recs == 1);
 }
 
-bool DataPage::needs_add_to_free_list(Page &data_page) const {
+bool DataPage::needs_add_to_free_list(Page &data_page, bool pre_purge) const {
   assert(data_page.is_loaded(Page::Latch::EXCLUSIVE) ||
          data_page.is_loaded(Page::Latch::SHARED));
 
@@ -208,6 +208,17 @@ bool DataPage::needs_add_to_free_list(Page &data_page) const {
   // Avoid division by zero (should not happen if assert passes)
   if (max_num_recs == 0) {
     return false;
+  }
+
+  // Latch ordering requires root to be latched before data. If this page will
+  // need to be added to the free list after purge (which requires writing the
+  // root page), the caller must release the data latch, acquire root, then
+  // re-acquire data — before the purge happens. pre_purge accounts for the
+  // record that is about to be freed so this pre-check can answer "will the
+  // page qualify post-purge?" without actually purging yet. The caller then
+  // re-checks without pre_purge after the purge to make the final decision.
+  if (pre_purge && num_free_recs < max_num_recs) {
+    ++num_free_recs;
   }
 
   // Calculate free percentage: (num_free_recs * 100) / max_num_recs

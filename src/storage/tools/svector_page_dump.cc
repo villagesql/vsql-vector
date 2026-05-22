@@ -148,8 +148,8 @@ class SvectorPageDump {
           break;
         }
 
-        // Move to next page
-        page_num = page_info.next_free_page;
+        // Move to next page in the all-pages list
+        page_num = page_info.fil_page_next;
         count++;
 
         if (page_num != RootPage::NULL_FREE_PAGE_REF) {
