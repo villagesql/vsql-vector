@@ -46,10 +46,12 @@ SELECT id, svector_dimension(v) AS dims FROM t_large ORDER BY id LIMIT 3;
 SELECT id, svector_dimension(v) AS dims FROM t_large ORDER BY id DESC LIMIT 3;
 
 --echo # Verify roundtrip on first and last row
+# TODO(villagesql-indexing): Remove --error once decode is fixed in server.
 --error ER_UDF_ERROR
 SELECT id, SVECTOR::TO_STRING(v) = @v1024 AS matches
 FROM t_large WHERE id IN (1, 10) ORDER BY id;
 
+# TODO(villagesql-indexing): Remove --error once parameterized type comparison is fixed in server.
 --error ER_VILLAGESQL_GENERIC_ERROR
 SELECT id, SVECTOR::FROM_STRING(@v1024) = v AS matches
 FROM t_large WHERE id IN (1, 10) ORDER BY id;
@@ -80,6 +82,7 @@ SELECT COUNT(*) AS total FROM t_max;
 SELECT id, svector_dimension(v) AS dims FROM t_max ORDER BY id;
 
 --echo # Verify roundtrip on first and last row
+# TODO(villagesql-indexing): Remove --error once decode is fixed in server.
 --error ER_UDF_ERROR
 SELECT id, SVECTOR::TO_STRING(v) = @v3072 AS matches
 FROM t_max WHERE id IN (1, 5) ORDER BY id;

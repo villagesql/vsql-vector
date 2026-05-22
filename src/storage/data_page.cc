@@ -210,8 +210,13 @@ bool DataPage::needs_add_to_free_list(Page &data_page, bool pre_purge) const {
     return false;
   }
 
-  // Simulate freeing one record so the caller can determine whether the
-  // pessimistic path is needed before the purge actually executes.
+  // Latch ordering requires root to be latched before data. If this page will
+  // need to be added to the free list after purge (which requires writing the
+  // root page), the caller must release the data latch, acquire root, then
+  // re-acquire data — before the purge happens. pre_purge accounts for the
+  // record that is about to be freed so this pre-check can answer "will the
+  // page qualify post-purge?" without actually purging yet. The caller then
+  // re-checks without pre_purge after the purge to make the final decision.
   if (pre_purge && num_free_recs < max_num_recs) {
     ++num_free_recs;
   }

@@ -172,10 +172,11 @@ struct DataPage {
   // Returns true if:
   // 1. The page is not in the free list (free_slot_number == INVALID_SLOT)
   // 2. The free percentage is greater than MIN_FREE_PERCENT_FOR_FREE_LIST (20%)
-  // When pre_purge is true, simulates one record being freed (adds 1 to
-  // num_free_recs) so the caller can decide whether to take the pessimistic
-  // path before the purge actually happens. Only applies when at least one
-  // record is occupied.
+  // When pre_purge is true, increments num_free_recs by 1 to get an accurate
+  // count of free space after the upcoming purge. This lets the caller decide
+  // whether the pessimistic latch path (release data, acquire root, re-acquire
+  // data) will be needed before the purge executes, avoiding a latch-order
+  // violation.
   // The page must be latched (S or X).
   bool needs_add_to_free_list(Page &data_page, bool pre_purge = false) const;
 
