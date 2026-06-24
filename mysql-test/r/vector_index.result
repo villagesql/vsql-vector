@@ -6,21 +6,21 @@ id INT,
 vec SVECTOR(4) NOT NULL,
 PRIMARY KEY (vec)
 ) ENGINE=InnoDB;
-ERROR HY000: InnoDB: Indexing for types with column storage is not supported.
+ERROR HY000: InnoDB: Indexing for types with column storage is supported only with custom index.
 # Creating a table with inline secondary index on SVECTOR must fail
 CREATE TABLE t2 (
 id INT PRIMARY KEY,
 vec SVECTOR(4) NOT NULL,
 KEY idx_vec (vec)
 ) ENGINE=InnoDB;
-ERROR HY000: InnoDB: Indexing for types with column storage is not supported.
+ERROR HY000: InnoDB: Indexing for types with column storage is supported only with custom index.
 # Adding a secondary index on SVECTOR via ALTER TABLE must fail
 CREATE TABLE t3 (
 id INT PRIMARY KEY,
 vec SVECTOR(4) NOT NULL
 ) ENGINE=InnoDB;
 ALTER TABLE t3 ADD INDEX idx_vec (vec);
-ERROR HY000: InnoDB: Indexing for types with column storage is not supported.
+ERROR HY000: InnoDB: Indexing for types with column storage is supported only with custom index.
 DROP TABLE t3;
 # SVECTOR index test completed
 UNINSTALL EXTENSION vsql_vector;
