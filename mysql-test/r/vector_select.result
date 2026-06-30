@@ -22,8 +22,8 @@ INSERT INTO vector_test VALUES
 (9, '[-0.5, 0.5, -0.5, 0.5, -0.5, 0.5]', '[7.7, 8.8, 9.9, 10.1, 11.2, 12.3]', 'row9', 90),
 (10, '[999.999, 888.888, 777.777, 666.666, 555.555, 444.444]', '[0.001, 0.002, 0.003, 0.004, 0.005, 0.006]', 'row10', 100);
 # Test 1: Select all records with HEX() to avoid binary dump (skip first 8 bytes)
-SELECT id, SUBSTRING(SVECTOR_HEX(embedding1), 17) AS embedding1_hex,
-SUBSTRING(SVECTOR_HEX(embedding2), 17) AS embedding2_hex, name
+SELECT id, SUBSTRING(VECTOR_HEX(embedding1), 17) AS embedding1_hex,
+SUBSTRING(VECTOR_HEX(embedding2), 17) AS embedding2_hex, name
 FROM vector_test ORDER BY id;
 id	embedding1_hex	embedding2_hex	name
 1	0000803F0000004000004040000080400000A0400000C040	CDCCCC3DCDCC4C3E9A99993ECDCCCC3E0000003F9A99193F	row1
@@ -50,7 +50,7 @@ id	embedding1_str	embedding2_str	name
 8	[3.14159012,2.71828008,1.41420996,1.73204994,0.577210009,1.61802995]	[0.5,0.25,0.125,0.0625,0.03125,0.015625]	row8
 9	[-0.5,0.5,-0.5,0.5,-0.5,0.5]	[7.69999981,8.80000019,9.89999962,10.1000004,11.1999998,12.3000002]	row9
 10	[999.999023,888.888,777.776978,666.666016,555.554993,444.444]	[0.00100000005,0.00200000009,0.00300000003,0.00400000019,0.00499999989,0.00600000005]	row10
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, SVECTOR_FORMAT(embedding2, 6) AS embedding2_str, name
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str, VECTOR_FORMAT(embedding2, 6) AS embedding2_str, name
 FROM vector_test ORDER BY id;
 id	embedding1_str	embedding2_str	name
 1	[1,2,3,4,5,6]	[0.1,0.2,0.3,0.4,0.5,0.6]	row1
@@ -89,7 +89,7 @@ id	embedding1_str
 8	[3.14159012,2.71828008,1.41420996,1.73204994,0.577210009,1.61802995]
 9	[-0.5,0.5,-0.5,0.5,-0.5,0.5]
 10	[999.999023,888.888,777.776978,666.666016,555.554993,444.444]
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str FROM vector_test ORDER BY id;
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str FROM vector_test ORDER BY id;
 id	embedding1_str
 1	[1,2,3,4,5,6]
 2	[1.1,2.1,3.1,4.1,5.1,6.1]
@@ -106,11 +106,11 @@ SELECT id, SVECTOR::TO_STRING(embedding1) AS embedding1_str, name
 FROM vector_test WHERE id = 5;
 id	embedding1_str	name
 5	[0,0,0,0,0,0]	row5
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
 FROM vector_test WHERE id = 5;
 id	embedding1_str	name
 5	[0,0,0,0,0,0]	row5
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
 FROM vector_test WHERE id = 5;
 id	embedding1_str	name
 5	[0,0,0,0,0,0]	row5
@@ -121,7 +121,7 @@ id	embedding1_str	name
 1	[1,2,3,4,5,6]	row1
 5	[0,0,0,0,0,0]	row5
 10	[999.999023,888.888,777.776978,666.666016,555.554993,444.444]	row10
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
 FROM vector_test WHERE id IN (1, 5, 10) ORDER BY id;
 id	embedding1_str	name
 1	[1,2,3,4,5,6]	row1
@@ -136,7 +136,7 @@ id	embedding1_str	name
 3	[1.20000005,2.20000005,3.20000005,4.19999981,5.19999981,6.19999981]	row3
 4	[-1,-2,-3,-4,-5,-6]	row4
 5	[0,0,0,0,0,0]	row5
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
 FROM vector_test WHERE name LIKE 'row%' AND id <= 5 ORDER BY id;
 id	embedding1_str	name
 1	[1,2,3,4,5,6]	row1
@@ -154,7 +154,7 @@ id	embedding1_str	category
 8	[3.14159012,2.71828008,1.41420996,1.73204994,0.577210009,1.61802995]	80
 9	[-0.5,0.5,-0.5,0.5,-0.5,0.5]	90
 10	[999.999023,888.888,777.776978,666.666016,555.554993,444.444]	100
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, category
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str, category
 FROM vector_test WHERE category >= 50 ORDER BY id;
 id	embedding1_str	category
 5	[0,0,0,0,0,0]	50
@@ -191,7 +191,7 @@ id	embedding1_str	name
 1	[1,2,3,4,5,6]	row1
 2	[1.10000002,2.0999999,3.0999999,4.0999999,5.0999999,6.0999999]	row2
 3	[1.20000005,2.20000005,3.20000005,4.19999981,5.19999981,6.19999981]	row3
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
 FROM vector_test ORDER BY id LIMIT 3;
 id	embedding1_str	name
 1	[1,2,3,4,5,6]	row1
@@ -204,7 +204,7 @@ id	embedding1_str	name
 6	[100.5,200.5,300.5,400.5,500.5,600.5]	row6
 7	[9.99999975e-06,1.99999995e-05,2.99999992e-05,3.9999999e-05,4.99999987e-05,5.99999985e-05]	row7
 8	[3.14159012,2.71828008,1.41420996,1.73204994,0.577210009,1.61802995]	row8
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS embedding1_str, name
 FROM vector_test ORDER BY id LIMIT 3 OFFSET 5;
 id	embedding1_str	name
 6	[100.5,200.5,300.5,400.5,500.5,600.5]	row6
@@ -230,14 +230,14 @@ id	emb1_str	emb2_str
 1	[1,2,3,4,5,6]	[0.100000001,0.200000003,0.300000012,0.400000006,0.5,0.600000024]
 5	[0,0,0,0,0,0]	[1,1,1,1,1,1]
 10	[999.999023,888.888,777.776978,666.666016,555.554993,444.444]	[0.00100000005,0.00200000009,0.00300000003,0.00400000019,0.00499999989,0.00600000005]
-SELECT id, SVECTOR_FORMAT(embedding1, 6) AS emb1_str, SVECTOR_FORMAT(embedding2, 6) AS emb2_str
+SELECT id, VECTOR_FORMAT(embedding1, 6) AS emb1_str, VECTOR_FORMAT(embedding2, 6) AS emb2_str
 FROM vector_test WHERE id IN (1, 5, 10) ORDER BY id;
 id	emb1_str	emb2_str
 1	[1,2,3,4,5,6]	[0.1,0.2,0.3,0.4,0.5,0.6]
 5	[0,0,0,0,0,0]	[1,1,1,1,1,1]
 10	[999.999,888.888,777.777,666.666,555.555,444.444]	[0.001,0.002,0.003,0.004,0.005,0.006]
 # Test 16: Test SVECTOR::FROM_STRING UDF with HEX()
-SELECT SVECTOR_HEX(SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS test_vector_hex;
+SELECT VECTOR_HEX(SVECTOR::FROM_STRING('[1.5, 2.5, 3.5, 4.5, 5.5, 6.5]')) AS test_vector_hex;
 test_vector_hex
 00000000000000000000C03F0000204000006040000090400000B0400000D040
 # Test 17: Test round-trip conversion: FROM_STRING -> TO_STRING

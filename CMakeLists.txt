@@ -1,3 +1,18 @@
+# Copyright (c) 2026 VillageSQL Contributors
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see <https://www.gnu.org/licenses/>.
+
 cmake_minimum_required(VERSION 3.16)
 project(vsql_vector_extension)
 
@@ -18,6 +33,7 @@ message(STATUS "VillageSQL include dir: ${VillageSQL_INCLUDE_DIR}")
 
 # Create the vector shared library
 add_library(svector SHARED
+    src/index/hnsw.cc
     src/storage/data_page.cc
     src/storage/root_page.cc
     src/storage/storage.cc

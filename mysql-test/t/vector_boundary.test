@@ -40,10 +40,10 @@ INSERT INTO t_large VALUES
 SELECT COUNT(*) AS total FROM t_large;
 
 --echo # Verify dimension on first 3 rows (page 1)
-SELECT id, svector_dimension(v) AS dims FROM t_large ORDER BY id LIMIT 3;
+SELECT id, vector_dimension(v) AS dims FROM t_large ORDER BY id LIMIT 3;
 
 --echo # Verify dimension on last 3 rows (pages 3-4)
-SELECT id, svector_dimension(v) AS dims FROM t_large ORDER BY id DESC LIMIT 3;
+SELECT id, vector_dimension(v) AS dims FROM t_large ORDER BY id DESC LIMIT 3;
 
 --echo # Verify roundtrip on first and last row
 SELECT id, SVECTOR::TO_STRING(v) = @v1024 AS matches
@@ -63,7 +63,7 @@ CREATE TABLE t_max (
 ) ENGINE=InnoDB;
 
 --echo # Confirm the engine-reported maximum
-SELECT svector_max_dimension() AS max_dim;
+SELECT vector_max_dimension() AS max_dim;
 
 # Build a 3072-element vector "[1,1,...,1]".
 SET @v3072 = CONCAT('[', REPEAT('1,', 3071), '1]');
@@ -75,7 +75,7 @@ INSERT INTO t_max VALUES
 SELECT COUNT(*) AS total FROM t_max;
 
 --echo # Verify dimension on all rows
-SELECT id, svector_dimension(v) AS dims FROM t_max ORDER BY id;
+SELECT id, vector_dimension(v) AS dims FROM t_max ORDER BY id;
 
 --echo # Verify roundtrip on first and last row
 SELECT id, SVECTOR::TO_STRING(v) = @v3072 AS matches

@@ -12,7 +12,7 @@ INSERT INTO t_rebuild_simple VALUES
 (2, '[-1.0, -2.0, -3.0, -4.0]', '[1.0, 1.0, 1.0, 1.0]',     'second'),
 (3, '[0.0, 0.0, 0.0, 0.0]',   '[2.0, 4.0, 8.0, 16.0]',      'third');
 # Verify data before rebuild
-SELECT id, SVECTOR_FORMAT(v1, 4) AS v1, SVECTOR_FORMAT(v2, 4) AS v2, label
+SELECT id, VECTOR_FORMAT(v1, 4) AS v1, VECTOR_FORMAT(v2, 4) AS v2, label
 FROM t_rebuild_simple ORDER BY id;
 id	v1	v2	label
 1	[1,2,3,4]	[0.5,0.25,0.125,0.0625]	first
@@ -21,7 +21,7 @@ id	v1	v2	label
 # Rebuild the table
 ALTER TABLE t_rebuild_simple ENGINE=InnoDB;
 # Verify data is intact after rebuild
-SELECT id, SVECTOR_FORMAT(v1, 4) AS v1, SVECTOR_FORMAT(v2, 4) AS v2, label
+SELECT id, VECTOR_FORMAT(v1, 4) AS v1, VECTOR_FORMAT(v2, 4) AS v2, label
 FROM t_rebuild_simple ORDER BY id;
 id	v1	v2	label
 1	[1,2,3,4]	[0.5,0.25,0.125,0.0625]	first
@@ -52,7 +52,7 @@ t_rebuild_altered	CREATE TABLE `t_rebuild_altered` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 # Verify data with added columns
-SELECT id, pre_col, SVECTOR_FORMAT(vec, 4) AS vec, post_col, name
+SELECT id, pre_col, VECTOR_FORMAT(vec, 4) AS vec, post_col, name
 FROM t_rebuild_altered ORDER BY id;
 id	pre_col	vec	post_col	name
 1	pre	[1,2,3,4]	99	alpha
@@ -64,7 +64,7 @@ ALTER TABLE t_rebuild_altered DROP COLUMN post_col;
 # Rebuild the table after the schema changes
 ALTER TABLE t_rebuild_altered ENGINE=InnoDB;
 # Verify data is intact after rebuild
-SELECT id, SVECTOR_FORMAT(vec, 4) AS vec, name
+SELECT id, VECTOR_FORMAT(vec, 4) AS vec, name
 FROM t_rebuild_altered ORDER BY id;
 id	vec	name
 1	[1,2,3,4]	alpha

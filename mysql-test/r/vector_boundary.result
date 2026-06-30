@@ -15,13 +15,13 @@ SELECT COUNT(*) AS total FROM t_large;
 total
 10
 # Verify dimension on first 3 rows (page 1)
-SELECT id, svector_dimension(v) AS dims FROM t_large ORDER BY id LIMIT 3;
+SELECT id, vector_dimension(v) AS dims FROM t_large ORDER BY id LIMIT 3;
 id	dims
 1	1024
 2	1024
 3	1024
 # Verify dimension on last 3 rows (pages 3-4)
-SELECT id, svector_dimension(v) AS dims FROM t_large ORDER BY id DESC LIMIT 3;
+SELECT id, vector_dimension(v) AS dims FROM t_large ORDER BY id DESC LIMIT 3;
 id	dims
 10	1024
 9	1024
@@ -45,7 +45,7 @@ id INT PRIMARY KEY,
 v SVECTOR(3072) NOT NULL
 ) ENGINE=InnoDB;
 # Confirm the engine-reported maximum
-SELECT svector_max_dimension() AS max_dim;
+SELECT vector_max_dimension() AS max_dim;
 max_dim
 3072
 SET @v3072 = CONCAT('[', REPEAT('1,', 3071), '1]');
@@ -56,7 +56,7 @@ SELECT COUNT(*) AS total FROM t_max;
 total
 5
 # Verify dimension on all rows
-SELECT id, svector_dimension(v) AS dims FROM t_max ORDER BY id;
+SELECT id, vector_dimension(v) AS dims FROM t_max ORDER BY id;
 id	dims
 1	3072
 2	3072

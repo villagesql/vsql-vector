@@ -25,6 +25,7 @@
 // external column storage for SVECTOR columns. External storage enables more
 // efficient construction and traversal of HNSW indexes for ANN search.
 
+#include <villagesql/preview/index_builder.h>
 #include <villagesql/preview/storage_builder.h>
 #include <villagesql/vsql.h>
 
@@ -37,12 +38,10 @@
 #include <cstring>
 #include <limits>
 
+#include "index/hnsw.h"
 #include "native_vector.h"
 #include "storage/storage.h"
 
-using vsql::preview_storage_builder::ColumnStoreCapability;
-using vsql::preview_storage_builder::StorageCapability;
-using vsql::preview_storage_builder::make_column_store;
 using vsql::CustomArgWith;
 using vsql::CustomResult;
 using vsql::IntArg;
@@ -52,6 +51,15 @@ using vsql::RealResult;
 using vsql::ResolvedTypeParams;
 using vsql::Span;
 using vsql::StringResult;
+using vsql::preview_index_builder::Index;
+using vsql::preview_index_builder::IndexProfileCapability;
+using vsql::preview_index_builder::IndexTypeCapability;
+using vsql::preview_index_builder::make_index_function;
+using vsql::preview_index_builder::make_index_profile;
+using vsql::preview_index_builder::make_index_type;
+using vsql::preview_storage_builder::ColumnStoreCapability;
+using vsql::preview_storage_builder::make_column_store;
+using vsql::preview_storage_builder::StorageCapability;
 
 namespace native = svector::native;
 
@@ -568,6 +576,13 @@ void svector_distance_l2(CustomArgWith<SVectorParams> vec1,
   svector_distance_impl(vec1, vec2, out, native::dist_l2);
 }
 
+// Squared L2 distance (skips sqrt; cheaper for comparisons inside HNSW)
+void svector_distance_l2_squared(CustomArgWith<SVectorParams> vec1,
+                                 CustomArgWith<SVectorParams> vec2,
+                                 RealResult out) {
+  svector_distance_impl(vec1, vec2, out, native::dist_squared_l2);
+}
+
 // Calculate cosine distance between two vectors
 void svector_distance_cosine(CustomArgWith<SVectorParams> vec1,
                              CustomArgWith<SVectorParams> vec2,
@@ -602,7 +617,7 @@ constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                              .compare<svector_compare>()
                              .int_to_params<svector_get_params>()
                              .resolve_params<svector_resolve_params>()
-                             .intrinsic_default_vdf("svector_default")
+                             .intrinsic_default_vdf("vector_default")
                              .build();
 
 static constexpr auto kSVectorStorageIntf =
@@ -619,41 +634,172 @@ static constexpr auto kSVectorStorageIntf =
 static auto STORAGE = StorageCapability{};
 static auto COLUMN_STORE = ColumnStoreCapability().column_store(kSVectorStorageIntf);
 
+// ============================================================================
+// HNSW index type, profiles, and capabilities
+// ============================================================================
+
+static constexpr const char kHNSWIndexName[] = "hnsw";
+static constexpr const char kHNSWProfileL1[] = "hnsw_l1";
+static constexpr const char kHNSWProfileL2[] = "hnsw_l2";
+static constexpr const char kHNSWProfileCosine[] = "hnsw_cosine";
+static constexpr const char kHNSWProfileInnerProduct[] = "hnsw_inner_product";
+
+static constexpr const char kHNSWFuncL1Distance[] = "l1_distance";
+static constexpr const char kHNSWFuncL2Distance[] = "l2_distance";
+static constexpr const char kHNSWFuncCosineDistance[] = "cosine_distance";
+static constexpr const char kHNSWFuncInnerProduct[] = "inner_product";
+static constexpr const char kHNSWFuncL2SquaredDistance[] =
+    "l2_squared_distance";
+
+// clang-format off
+static constexpr auto HNSW_INDEX_TYPE =
+    make_index_type<kHNSWIndexName, svector::hnsw::IndexStore>()
+        .lifecycle()
+            .create<&svector::hnsw::create>()
+            .load<&svector::hnsw::load>()
+            .drop<&svector::hnsw::drop>()
+
+        .dml()
+            .insert<&svector::hnsw::insert>()
+            .mark_delete<&svector::hnsw::mark_delete>()
+            .purge<&svector::hnsw::purge>()
+
+        .scan()
+            .begin<&svector::hnsw::begin>()
+            .position<&svector::hnsw::position>()
+            .fetch<&svector::hnsw::fetch>()
+            .save<&svector::hnsw::save>()
+            .restore<&svector::hnsw::restore>()
+            .end<&svector::hnsw::end>()
+
+        .global()
+            .capabilities(Index::Support::KNN)
+            .storage_props(Index::Storage::HAS_COLUMN_REF |
+                           Index::Storage::REF_LOOKUP)
+            .options<svector::hnsw::Options, &svector::hnsw::Options::parse>()
+
+        .build();
+// clang-format on
+
+static const auto HNSW_L1_FN =
+    make_index_function<&svector_distance_l1>(kHNSWFuncL1Distance)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+static const auto HNSW_L2_FN =
+    make_index_function<&svector_distance_l2>(kHNSWFuncL2Distance)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+static const auto HNSW_L2_SQUARED_FN =
+    make_index_function<&svector_distance_l2_squared>(
+        kHNSWFuncL2SquaredDistance)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+static const auto HNSW_COSINE_FN =
+    make_index_function<&svector_distance_cosine>(kHNSWFuncCosineDistance)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+static const auto HNSW_IP_FN =
+    make_index_function<&svector_inner_product>(kHNSWFuncInnerProduct)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+static const auto HNSW_L1_PROFILE = make_index_profile(kHNSWProfileL1)
+                                        .for_type(kSVectorTypeName)
+                                        .using_index(kHNSWIndexName)
+                                        .with_function(1, HNSW_L1_FN)
+                                        .with_helper(1, HNSW_L1_FN)
+                                        .ordering(Index::Ordering::ASC)
+                                        .build();
+
+static const auto HNSW_L2_PROFILE = make_index_profile(kHNSWProfileL2)
+                                        .for_type(kSVectorTypeName)
+                                        .using_index(kHNSWIndexName)
+                                        .with_function(1, HNSW_L2_FN)
+                                        .with_helper(1, HNSW_L2_SQUARED_FN)
+                                        .ordering(Index::Ordering::ASC)
+                                        .default_for_type(true)
+                                        .build();
+
+static const auto HNSW_COSINE_PROFILE = make_index_profile(kHNSWProfileCosine)
+                                            .for_type(kSVectorTypeName)
+                                            .using_index(kHNSWIndexName)
+                                            .with_function(1, HNSW_COSINE_FN)
+                                            .with_helper(1, HNSW_COSINE_FN)
+                                            .ordering(Index::Ordering::ASC)
+                                            .build();
+
+static const auto HNSW_IP_PROFILE = make_index_profile(kHNSWProfileInnerProduct)
+                                        .for_type(kSVectorTypeName)
+                                        .using_index(kHNSWIndexName)
+                                        .with_function(1, HNSW_IP_FN)
+                                        .with_helper(1, HNSW_IP_FN)
+                                        .ordering(Index::Ordering::DESC)
+                                        .build();
+
+static auto HNSW_INDEX_CAPABILITY =
+    IndexTypeCapability().index_type(HNSW_INDEX_TYPE);
+static auto HNSW_PROFILE_CAPABILITY = IndexProfileCapability()
+                                          .index_profile(HNSW_L1_PROFILE)
+                                          .index_profile(HNSW_L2_PROFILE)
+                                          .index_profile(HNSW_COSINE_PROFILE)
+                                          .index_profile(HNSW_IP_PROFILE);
+
 VEF_GENERATE_ENTRY_POINTS(
     make_extension()
         .with(STORAGE)
         .with(COLUMN_STORE)
+        .with(HNSW_INDEX_CAPABILITY)
+        .with(HNSW_PROFILE_CAPABILITY)
         .type(SVECTOR)
 
         // Hex encoding of raw vector float bytes (SQL)
-        .func(make_func<&svector_hex>("svector_hex")
+        .func(make_func<&svector_hex>("vector_hex")
                   .returns(STRING)
                   .param(SVECTOR)
                   .deterministic()
                   .build())
 
         // Vector euclidean norm (L2) function (SQL)
-        .func(make_func<&svector_norm>("svector_norm")
+        .func(make_func<&svector_norm>("vector_norm")
                   .returns(REAL)
                   .param(SVECTOR)
                   .build())
 
         // Vector dimension function (SQL)
-        .func(make_func<&svector_dims>("svector_dimension")
+        .func(make_func<&svector_dims>("vector_dimension")
                   .returns(INT)
                   .param(SVECTOR)
                   .deterministic()
                   .build())
 
         // Maximum supported dimension function (SQL)
-        .func(make_func<&svector_max_dims>("svector_max_dimension")
+        .func(make_func<&svector_max_dims>("vector_max_dimension")
                   .returns(INT)
                   .no_params()
                   .deterministic()
                   .build())
 
         // Fixed-point formatted string function (SQL)
-        .func(make_func<&svector_format>("svector_format")
+        .func(make_func<&svector_format>("vector_format")
                   .returns(STRING)
                   .param(SVECTOR)
                   .param(INT)
@@ -661,28 +807,28 @@ VEF_GENERATE_ENTRY_POINTS(
                   .build())
 
         // Vector distance functions (SQL)
-        .func(make_func<&svector_distance_l1>("svector_distance_l1")
+        .func(make_func<&svector_distance_l1>("l1_distance")
                   .returns(REAL)
                   .param(SVECTOR)
                   .param(SVECTOR)
                   .deterministic()
                   .build())
-        .func(make_func<&svector_distance_l2>("svector_distance_l2")
+        .func(make_func<&svector_distance_l2>("l2_distance")
                   .returns(REAL)
                   .param(SVECTOR)
                   .param(SVECTOR)
                   .deterministic()
                   .build())
-        .func(make_func<&svector_distance_cosine>("svector_distance_cosine")
+        .func(make_func<&svector_distance_cosine>("cosine_distance")
                   .returns(REAL)
                   .param(SVECTOR)
                   .param(SVECTOR)
                   .deterministic()
                   .build())
-        .func(make_func<&svector_inner_product>("svector_inner_product")
+        .func(make_func<&svector_inner_product>("inner_product")
                   .returns(REAL)
                   .param(SVECTOR)
                   .param(SVECTOR)
                   .deterministic()
                   .build())
-        .func(make_intrinsic_default<&svector_default>("svector_default")))
+        .func(make_intrinsic_default<&svector_default>("vector_default")))
