@@ -24,6 +24,7 @@
 #include "root_page.h"
 
 #include <cassert>
+#include <cstring>
 #include <random>
 
 #include "data_page.h"
@@ -35,13 +36,19 @@ using vsql::preview_storage::Error;
 // Define the thread_local static member
 thread_local RootPage::LastSlotInfo RootPage::s_last_slot_info;
 
-void RootPage::init(Space::Ref space_ref, uint16_t col_len) {
+void RootPage::init(Space::Ref space_ref, uint16_t col_len,
+                    uint8_t num_segments, uint8_t num_root_pages,
+                    uint8_t storage_metadata_len) {
+  // Store N, K, and metadata length first — offset functions depend on them.
+  m_num_segments = num_segments;
+  m_num_root_pages = num_root_pages;
+  m_storage_metadata_len = storage_metadata_len;
   m_column_size = col_len;
 
   // Calculate maximum free slots based on available page space
   uint32_t page_size = Page::get_size(space_ref);
   uint32_t available_space =
-      page_size - FREE_SLOT_ARRAY_OFF - Page::TRAILER_SIZE;
+      page_size - free_slot_array_off() - Page::TRAILER_SIZE;
   uint16_t max_slots = static_cast<uint16_t>(available_space / FREE_SLOT_LEN);
 
   // Cap at the configured maximum
@@ -52,54 +59,74 @@ void RootPage::init(Space::Ref space_ref, uint16_t col_len) {
   m_max_free_slots = max_slots;
 }
 
-bool RootPage::format(Page &root_page, MtrCtx::Ref mtr,
-                      uint8_t format_version) {
+bool RootPage::format(Page &root_page, MtrCtx::Ref mtr, uint8_t format_version,
+                      std::string_view metadata) {
   assert(root_page.is_loaded(Page::Latch::EXCLUSIVE));
 
-  if (m_column_size == 0 || m_max_free_slots == 0) {
+  if (m_column_size == 0 || m_max_free_slots == 0 ||
+      metadata.size() > UINT8_MAX) {
     return true;
   }
 
   // Write version
-  root_page.write_integer_1(VERSION_OFF, format_version, mtr);
+  root_page.write_integer_1(version_off(), format_version, mtr);
 
   // Write page type
   root_page.write_integer_1(
-      PAGE_TYPE_OFF, static_cast<uint8_t>(ColumnPageType::ROOT_PAGE), mtr);
+      page_type_off(), static_cast<uint8_t>(ColumnPageType::ROOT_PAGE), mtr);
 
-  // Write creator name
-  root_page.write_string(CREATOR_NAME_OFF, CREATOR, CREATOR_NAME_LEN, mtr);
+  // Write storage metadata: 1-byte length followed by data bytes
+  root_page.write_integer_1(storage_metadata_len_off(),
+                            static_cast<uint8_t>(metadata.size()), mtr);
+  root_page.write_string(
+      storage_metadata_off(),
+      reinterpret_cast<const unsigned char *>(metadata.data()), metadata.size(),
+      mtr);
+
+  // Write K and initialize the K-1 other root page REFs to INVALID_REF.
+  root_page.write_integer_1(num_root_pages_off(), m_num_root_pages, mtr);
+  for (uint8_t i = 0; i < m_num_root_pages - 1; ++i) {
+    Page::Offset ref_off = other_root_pages_off() + i * ROOT_PAGE_REF_LEN;
+    root_page.write_integer_4(ref_off, Page::INVALID_REF, mtr);
+  }
 
   // Write column size
-  root_page.write_integer_2(COLUMN_SIZE_OFF, m_column_size, mtr);
+  root_page.write_integer_2(column_size_off(), m_column_size, mtr);
 
   // Write data page head (initially invalid - no pages yet)
-  root_page.write_integer_4(ALL_SLOT_HEAD_OFF, Page::INVALID_REF, mtr);
+  root_page.write_integer_4(all_slot_head_off(), Page::INVALID_REF, mtr);
 
   // Write data page tail (initially invalid - no pages yet)
-  root_page.write_integer_4(ALL_SLOT_TAIL_OFF, Page::INVALID_REF, mtr);
+  root_page.write_integer_4(all_slot_tail_off(), Page::INVALID_REF, mtr);
 
   // Total data pages counter is 0. Page data is zero filled by default.
-  assert(0 == root_page.read_integer_4(TOTAL_DATA_PAGES_OFF));
+  assert(0 == root_page.read_integer_4(total_data_pages_off()));
 
   // Total free pages counter is 0.
-  assert(0 == root_page.read_integer_4(TOTAL_FREE_PAGES_OFF));
+  assert(0 == root_page.read_integer_4(total_free_pages_off()));
 
   // Write free slot array max size
-  root_page.write_integer_2(FREE_SLOT_ARRAY_MAX_SIZE_OFF, m_max_free_slots,
+  root_page.write_integer_2(free_slot_array_max_size_off(), m_max_free_slots,
                             mtr);
 
   // Write free slot array current size
-  root_page.write_integer_2(FREE_SLOT_ARRAY_CUR_SIZE_OFF,
+  root_page.write_integer_2(free_slot_array_cur_size_off(),
                             NUM_FREE_SLOTS_INITIAL, mtr);
 
   // Initialize NUM_FREE_SLOTS_INITIAL slots to NULL_FREE_PAGE_REF
   for (uint16_t i = 0; i < NUM_FREE_SLOTS_INITIAL; i++) {
-    Page::Offset slot_offset = FREE_SLOT_ARRAY_OFF + (i * FREE_SLOT_LEN);
+    Page::Offset slot_offset = free_slot_array_off() + i * FREE_SLOT_LEN;
     root_page.write_integer_4(slot_offset, NULL_FREE_PAGE_REF, mtr);
   }
 
   return false;
+}
+
+std::string RootPage::read_metadata(const Page &root_page) const {
+  uint8_t len = root_page.read_integer_1(storage_metadata_len_off());
+  const char *raw = reinterpret_cast<const char *>(root_page.get_data() +
+                                                   storage_metadata_off());
+  return std::string(raw, len);
 }
 
 uint16_t RootPage::get_random_slot(uint16_t max_size) {
@@ -144,7 +171,7 @@ void RootPage::grow_free_slots(Page &root_page, MtrCtx::Ref mtr) {
 
   // Step 1: Read current free slots count
   uint16_t cur_free_slots =
-      root_page.read_integer_2(FREE_SLOT_ARRAY_CUR_SIZE_OFF);
+      root_page.read_integer_2(free_slot_array_cur_size_off());
 
   // Step 2: We should only be called if we can grow
   assert(cur_free_slots < m_max_free_slots);
@@ -161,12 +188,13 @@ void RootPage::grow_free_slots(Page &root_page, MtrCtx::Ref mtr) {
 
   // Step 4: Initialize new slots to NULL_FREE_PAGE_REF
   for (uint16_t i = cur_free_slots; i < new_free_slots; i++) {
-    Page::Offset slot_offset = FREE_SLOT_ARRAY_OFF + (i * FREE_SLOT_LEN);
+    Page::Offset slot_offset = free_slot_array_off() + (i * FREE_SLOT_LEN);
     root_page.write_integer_4(slot_offset, NULL_FREE_PAGE_REF, mtr);
   }
 
   // Step 5: Update current free slots count
-  root_page.write_integer_2(FREE_SLOT_ARRAY_CUR_SIZE_OFF, new_free_slots, mtr);
+  root_page.write_integer_2(free_slot_array_cur_size_off(), new_free_slots,
+                            mtr);
 }
 
 void RootPage::page_select(Page &root_page, Space::Ref space_ref,
@@ -175,7 +203,7 @@ void RootPage::page_select(Page &root_page, Space::Ref space_ref,
          root_page.is_loaded(Page::Latch::SHARED));
 
   // Step 1: Extract current size of free slot array from root page
-  cur_free_slots = root_page.read_integer_2(FREE_SLOT_ARRAY_CUR_SIZE_OFF);
+  cur_free_slots = root_page.read_integer_2(free_slot_array_cur_size_off());
 
   // Free slot array size should always be at least 1
   assert(cur_free_slots > 0);
@@ -200,7 +228,7 @@ void RootPage::page_select(Page &root_page, Space::Ref space_ref,
 
   // Step 3: Read data page reference from the slot
   Page::Offset slot_offset =
-      FREE_SLOT_ARRAY_OFF + (slot_number * FREE_SLOT_LEN);
+      free_slot_array_off() + (slot_number * FREE_SLOT_LEN);
   data_page_ref = root_page.read_integer_4(slot_offset);
 
   if (data_page_ref == NULL_FREE_PAGE_REF) {
@@ -219,10 +247,11 @@ bool RootPage::add_free_page(Page &root_page, Page &data_page,
   Page::Ref root_page_ref = root_page.get_ref();
 
   // Step 1: Validate slot_number
-  assert(slot_number < root_page.read_integer_2(FREE_SLOT_ARRAY_CUR_SIZE_OFF));
+  assert(slot_number <
+         root_page.read_integer_2(free_slot_array_cur_size_off()));
 
   Page::Offset slot_offset =
-      FREE_SLOT_ARRAY_OFF + (slot_number * FREE_SLOT_LEN);
+      free_slot_array_off() + (slot_number * FREE_SLOT_LEN);
   Page::Ref slot_page_ref = root_page.read_integer_4(slot_offset);
 
   // Step 2: Setup links for the current slot page.
@@ -247,8 +276,9 @@ bool RootPage::add_free_page(Page &root_page, Page &data_page,
   data_page_info->set_free_slot_number(data_page, slot_number, mtr);
 
   // Step 5: Increment total free pages counter
-  uint32_t total_free_pages = root_page.read_integer_4(TOTAL_FREE_PAGES_OFF);
-  root_page.write_integer_4(TOTAL_FREE_PAGES_OFF, total_free_pages + 1, mtr);
+  Page::Offset free_pages_offset = total_free_pages_off();
+  uint32_t total_free_pages = root_page.read_integer_4(free_pages_offset);
+  root_page.write_integer_4(free_pages_offset, total_free_pages + 1, mtr);
 
   return false;
 }
@@ -264,10 +294,11 @@ bool RootPage::remove_free_page(Page &root_page, Page &data_page,
   // Step 1: Get free slot number from data page.
   uint16_t slot_number = data_page_info->get_free_slot_number(data_page);
   assert(slot_number != DataPage::INVALID_SLOT);
-  assert(slot_number < root_page.read_integer_2(FREE_SLOT_ARRAY_CUR_SIZE_OFF));
+  assert(slot_number <
+         root_page.read_integer_2(free_slot_array_cur_size_off()));
 
   Page::Offset slot_offset =
-      FREE_SLOT_ARRAY_OFF + (slot_number * FREE_SLOT_LEN);
+      free_slot_array_off() + (slot_number * FREE_SLOT_LEN);
 
 #ifndef NDEBUG
   Page::Ref data_page_ref = data_page.get_ref();
@@ -321,9 +352,9 @@ bool RootPage::remove_free_page(Page &root_page, Page &data_page,
   data_page_info->set_free_links(data_page, &prev_ref, &prev_ref, mtr);
 
   // Step 6: Decrement total free pages counter
-  uint32_t total_free_pages = root_page.read_integer_4(TOTAL_FREE_PAGES_OFF);
+  uint32_t total_free_pages = root_page.read_integer_4(total_free_pages_off());
   assert(total_free_pages > 0);
-  root_page.write_integer_4(TOTAL_FREE_PAGES_OFF, total_free_pages - 1, mtr);
+  root_page.write_integer_4(total_free_pages_off(), total_free_pages - 1, mtr);
 
   return false;
 }
@@ -337,16 +368,16 @@ bool RootPage::add_data_page(Page &root_page, Page &data_page,
   Page::Ref data_page_ref = data_page.get_ref();
   Page::Ref invalid_ref = Page::INVALID_REF;
 
-  Page::Ref head_ref = root_page.read_integer_4(ALL_SLOT_HEAD_OFF);
+  Page::Ref head_ref = root_page.read_integer_4(all_slot_head_off());
 #ifndef NDEBUG
-  Page::Ref tail_ref = root_page.read_integer_4(ALL_SLOT_TAIL_OFF);
+  Page::Ref tail_ref = root_page.read_integer_4(all_slot_tail_off());
 #endif  // NDEBUG
 
   // 1. Set Current head page links.
   if (head_ref == Page::INVALID_REF) {
     // Current head is empty. It is the first page being inserted.
     assert(tail_ref == Page::INVALID_REF);
-    root_page.write_integer_4(ALL_SLOT_TAIL_OFF, data_page_ref, mtr);
+    root_page.write_integer_4(all_slot_tail_off(), data_page_ref, mtr);
   } else {
     Page head_page;
     Error error =
@@ -362,11 +393,11 @@ bool RootPage::add_data_page(Page &root_page, Page &data_page,
   data_page.write_links(invalid_ref, head_ref, mtr);
 
   // 3. Set root page head and tails links.
-  root_page.write_integer_4(ALL_SLOT_HEAD_OFF, data_page_ref, mtr);
+  root_page.write_integer_4(all_slot_head_off(), data_page_ref, mtr);
 
   // 4. Increment total data pages counter
-  uint32_t total_data_pages = root_page.read_integer_4(TOTAL_DATA_PAGES_OFF);
-  root_page.write_integer_4(TOTAL_DATA_PAGES_OFF, total_data_pages + 1, mtr);
+  uint32_t total_data_pages = root_page.read_integer_4(total_data_pages_off());
+  root_page.write_integer_4(total_data_pages_off(), total_data_pages + 1, mtr);
 
   return false;
 }
@@ -383,8 +414,8 @@ bool RootPage::remove_data_page(Page &root_page, Page &data_page,
 
 #ifndef NDEBUG
   Page::Ref data_page_ref = data_page.get_ref();
-  Page::Ref head_ref = root_page.read_integer_4(ALL_SLOT_HEAD_OFF);
-  Page::Ref tail_ref = root_page.read_integer_4(ALL_SLOT_TAIL_OFF);
+  Page::Ref head_ref = root_page.read_integer_4(all_slot_head_off());
+  Page::Ref tail_ref = root_page.read_integer_4(all_slot_tail_off());
 #endif  // NDEBUG
 
   Page prev_page;
@@ -412,7 +443,7 @@ bool RootPage::remove_data_page(Page &root_page, Page &data_page,
   if (prev_ref == Page::INVALID_REF) {
     // This is the head page, update root's head pointer
     assert(head_ref == data_page_ref);
-    root_page.write_integer_4(ALL_SLOT_HEAD_OFF, next_ref, mtr);
+    root_page.write_integer_4(all_slot_head_off(), next_ref, mtr);
 
   } else {
     // Update the previous page's next link
@@ -423,7 +454,7 @@ bool RootPage::remove_data_page(Page &root_page, Page &data_page,
   if (next_ref == Page::INVALID_REF) {
     // This is the tail page, update root's tail pointer
     assert(tail_ref == data_page_ref);
-    root_page.write_integer_4(ALL_SLOT_TAIL_OFF, prev_ref, mtr);
+    root_page.write_integer_4(all_slot_tail_off(), prev_ref, mtr);
 
   } else {
     // Update the next page's previous link
@@ -434,9 +465,9 @@ bool RootPage::remove_data_page(Page &root_page, Page &data_page,
   data_page.write_links(Page::INVALID_REF, Page::INVALID_REF, mtr);
 
   // 6. Decrement total data pages counter
-  uint32_t total_data_pages = root_page.read_integer_4(TOTAL_DATA_PAGES_OFF);
+  uint32_t total_data_pages = root_page.read_integer_4(total_data_pages_off());
   assert(total_data_pages > 0);
-  root_page.write_integer_4(TOTAL_DATA_PAGES_OFF, total_data_pages - 1, mtr);
+  root_page.write_integer_4(total_data_pages_off(), total_data_pages - 1, mtr);
 
   return false;
 }
@@ -447,12 +478,13 @@ uint16_t RootPage::get_free_slot(Page &root_page) {
 
   // Step 1: Get current number of free slots
   uint16_t cur_free_slots =
-      root_page.read_integer_2(FREE_SLOT_ARRAY_CUR_SIZE_OFF);
+      root_page.read_integer_2(free_slot_array_cur_size_off());
   assert(cur_free_slots > 0);
 
   // Step 2: Search for an empty slot (NULL_FREE_PAGE_REF)
   for (uint16_t slot_idx = 0; slot_idx < cur_free_slots; slot_idx++) {
-    Page::Offset slot_offset = FREE_SLOT_ARRAY_OFF + (slot_idx * FREE_SLOT_LEN);
+    Page::Offset slot_offset =
+        free_slot_array_off() + (slot_idx * FREE_SLOT_LEN);
     Page::Ref slot_page_ref = root_page.read_integer_4(slot_offset);
 
     if (slot_page_ref == NULL_FREE_PAGE_REF) {

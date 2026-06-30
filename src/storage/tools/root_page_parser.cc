@@ -26,6 +26,8 @@
 #include <iomanip>
 #include <iostream>
 
+#include "page_reader.h"
+
 namespace svector {
 namespace tool {
 
@@ -62,35 +64,63 @@ std::string RootPageParser::read_string(const std::vector<uint8_t> &data,
 
 bool RootPageParser::parse(const std::vector<uint8_t> &page_data,
                            RootPageInfo &info, std::string &error) {
+  constexpr uint32_t PAGE_HEADER_SIZE = PageReader::FIL_PAGE_DATA;
+
+  if (page_data.size() <= PAGE_HEADER_SIZE) {
+    error = "Page too small to contain root page header";
+    return false;
+  }
+
+  RootPage rp;
+  uint8_t num_segments = read_uint8(page_data, PAGE_HEADER_SIZE);
+  // Three-stage bootstrap: each stage unlocks the next offset function.
+  // Stage 1: set N only (enables storage_metadata_len_off()).
+  rp.set_layout(num_segments, 0, 1);
+
   // Validate page size
-  if (page_data.size() < RootPage::FREE_SLOT_ARRAY_OFF) {
+  if (page_data.size() <= rp.storage_metadata_len_off()) {
+    error = "Page too small to contain root page header";
+    return false;
+  }
+
+  // Stage 2: read metadata length (enables num_root_pages_off()).
+  uint8_t metadata_len = read_uint8(page_data, rp.storage_metadata_len_off());
+  rp.set_layout(num_segments, metadata_len, 1);
+
+  if (page_data.size() <= rp.num_root_pages_off()) {
+    error = "Page too small to contain root page header";
+    return false;
+  }
+
+  // Stage 3: read K and finalize layout.
+  uint8_t num_root_pages = read_uint8(page_data, rp.num_root_pages_off());
+  rp.set_layout(num_segments, metadata_len, num_root_pages);
+
+  if (page_data.size() < rp.free_slot_array_off()) {
     error = "Page too small to contain root page header";
     return false;
   }
 
   // Parse fields using offsets from RootPage
-  info.version = read_uint8(page_data, RootPage::VERSION_OFF);
-  info.page_type = read_uint8(page_data, RootPage::PAGE_TYPE_OFF);
-  info.creator_name = read_string(page_data, RootPage::CREATOR_NAME_OFF,
-                                  RootPage::CREATOR_NAME_LEN);
-  info.column_size = read_uint16(page_data, RootPage::COLUMN_SIZE_OFF);
-  info.all_slot_head = read_uint32(page_data, RootPage::ALL_SLOT_HEAD_OFF);
-  info.all_slot_tail = read_uint32(page_data, RootPage::ALL_SLOT_TAIL_OFF);
-  info.total_data_pages =
-      read_uint32(page_data, RootPage::TOTAL_DATA_PAGES_OFF);
-  info.total_free_pages =
-      read_uint32(page_data, RootPage::TOTAL_FREE_PAGES_OFF);
-  info.free_slot_array_max_size =
-      read_uint16(page_data, RootPage::FREE_SLOT_ARRAY_MAX_SIZE_OFF);
-  info.free_slot_array_cur_size =
-      read_uint16(page_data, RootPage::FREE_SLOT_ARRAY_CUR_SIZE_OFF);
-
-  // Validate creator name
-  if (info.creator_name != reinterpret_cast<const char *>(RootPage::CREATOR)) {
-    error = "Invalid creator name: expected 'SVECTOR', got '" +
-            info.creator_name + "'";
-    return false;
+  info.version = read_uint8(page_data, rp.version_off());
+  info.page_type = read_uint8(page_data, rp.page_type_off());
+  info.storage_metadata =
+      read_string(page_data, rp.storage_metadata_off(), metadata_len);
+  info.num_root_pages = num_root_pages;
+  info.other_root_page_refs.clear();
+  for (uint8_t i = 0; i < num_root_pages - 1; ++i) {
+    uint32_t off = rp.other_root_pages_off() + i * RootPage::ROOT_PAGE_REF_LEN;
+    info.other_root_page_refs.push_back(read_uint32(page_data, off));
   }
+  info.column_size = read_uint16(page_data, rp.column_size_off());
+  info.all_slot_head = read_uint32(page_data, rp.all_slot_head_off());
+  info.all_slot_tail = read_uint32(page_data, rp.all_slot_tail_off());
+  info.total_data_pages = read_uint32(page_data, rp.total_data_pages_off());
+  info.total_free_pages = read_uint32(page_data, rp.total_free_pages_off());
+  info.free_slot_array_max_size =
+      read_uint16(page_data, rp.free_slot_array_max_size_off());
+  info.free_slot_array_cur_size =
+      read_uint16(page_data, rp.free_slot_array_cur_size_off());
 
   // Validate page type
   if (info.page_type != static_cast<uint8_t>(ColumnPageType::ROOT_PAGE)) {
@@ -104,8 +134,7 @@ bool RootPageParser::parse(const std::vector<uint8_t> &page_data,
   info.free_slots.reserve(info.free_slot_array_cur_size);
 
   for (uint16_t i = 0; i < info.free_slot_array_cur_size; ++i) {
-    uint32_t offset =
-        RootPage::FREE_SLOT_ARRAY_OFF + (i * RootPage::FREE_SLOT_LEN);
+    uint32_t offset = rp.free_slot_array_off() + (i * RootPage::FREE_SLOT_LEN);
     if (offset + RootPage::FREE_SLOT_LEN > page_data.size()) {
       error = "Free slot array extends beyond page boundary";
       return false;
@@ -118,13 +147,26 @@ bool RootPageParser::parse(const std::vector<uint8_t> &page_data,
 }
 
 void RootPageParser::display(const RootPageInfo &info, bool verbose) {
-  std::cout << "SVECTOR Root Page\n";
+  std::cout << info.storage_metadata << " Root Page\n";
   std::cout << "=================\n\n";
 
   std::cout << "Version:           " << static_cast<int>(info.version) << "\n";
   std::cout << "Page Type:         " << static_cast<int>(info.page_type)
             << " (ROOT_PAGE)\n";
-  std::cout << "Creator:           " << info.creator_name << "\n";
+  std::cout << "Root Pages:        " << static_cast<int>(info.num_root_pages)
+            << "\n";
+  if (!info.other_root_page_refs.empty()) {
+    std::cout << "Other Root Pages:";
+    for (uint32_t ref : info.other_root_page_refs) {
+      if (ref == RootPage::NULL_FREE_PAGE_REF) {
+        std::cout << " (NULL)";
+      } else {
+        std::cout << " Page #" << ref;
+      }
+    }
+    std::cout << "\n";
+  }
+
   std::cout << "Column Size:       " << info.column_size << " bytes";
 
   // Calculate vector dimensions (assuming float32)

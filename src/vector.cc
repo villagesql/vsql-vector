@@ -606,7 +606,7 @@ constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                              .build();
 
 static constexpr auto kSVectorStorageIntf =
-    make_column_store<svector::ColumnStorageContext>(SVECTOR)
+    make_column_store<svector::MultiColumnStore>(SVECTOR)
         .create<&svector::ColumnStorage::create>()
         .drop<&svector::ColumnStorage::drop>()
         .load<&svector::ColumnStorage::load>()
