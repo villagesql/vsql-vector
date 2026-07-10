@@ -1,0 +1,127 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+# ---- README: SVECTOR Type ----
+# Create a table with a vector column
+CREATE TABLE embeddings (
+id    INT PRIMARY KEY,
+vec   SVECTOR(4) NOT NULL
+) ENGINE=InnoDB;
+# Add a vector column to an existing table
+ALTER TABLE embeddings ADD COLUMN vec2 SVECTOR(4) NULL;
+# Insert vectors (number of elements must match the declared dimension)
+INSERT INTO embeddings VALUES (1, '[1.0, 2.0, 3.0, 4.0]', NULL);
+INSERT INTO embeddings VALUES (2, '[1.0, 2.0, 3.0, 5.0]', NULL);
+INSERT INTO embeddings VALUES (3, '[1.0, 2.0, 5.0, 4.0]', NULL);
+INSERT INTO embeddings VALUES (4, '[2.0, 4.0, 6.0, 8.0]', NULL);
+INSERT INTO embeddings VALUES (5, '[9.0, 8.0, 7.0, 6.0]', NULL);
+# ---- README: Scalar / utility functions ----
+SELECT VECTOR_MAX_DIMENSION() AS max_dim;
+max_dim
+3072
+SELECT id, VECTOR_DIMENSION(vec) AS dims FROM embeddings ORDER BY id;
+id	dims
+1	4
+2	4
+3	4
+4	4
+5	4
+SELECT id, VECTOR_NORM(vec) AS norm FROM embeddings ORDER BY id;
+id	norm
+1	5.477225575051661
+2	6.244997998398398
+3	6.782329983125268
+4	10.954451150103322
+5	15.165750888103101
+SELECT id, VECTOR_FORMAT(vec, 2) AS formatted FROM embeddings ORDER BY id;
+id	formatted
+1	[1,2,3,4]
+2	[1,2,3,5]
+3	[1,2,5,4]
+4	[2,4,6,8]
+5	[9,8,7,6]
+SELECT SUBSTRING(VECTOR_HEX(vec), 17) AS hex_data FROM embeddings WHERE id = 1;
+hex_data
+0000803F000000400000404000008040
+# ---- README: Distance and similarity functions ----
+CREATE TABLE func_exact (
+id INT PRIMARY KEY,
+v1 SVECTOR(4) NOT NULL,
+v2 SVECTOR(4) NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO func_exact VALUES
+(1, '[1.0, 0.0, 0.0, 0.0]', '[1.0, 0.0, 0.0, 0.0]'),
+(2, '[1.0, 0.0, 0.0, 0.0]', '[0.0, 1.0, 0.0, 0.0]');
+# L1_DISTANCE
+SELECT id, L1_DISTANCE(v1, v2) AS l1 FROM func_exact ORDER BY id;
+id	l1
+1	0
+2	2
+# L2_DISTANCE
+SELECT id, L2_DISTANCE(v1, v2) AS l2 FROM func_exact ORDER BY id;
+id	l2
+1	0
+2	1.4142135623730951
+# COSINE_DISTANCE (0 = same direction, 1 = orthogonal)
+SELECT id, COSINE_DISTANCE(v1, v2) AS cos_dist FROM func_exact ORDER BY id;
+id	cos_dist
+1	0
+2	1
+# INNER_PRODUCT
+SELECT id, INNER_PRODUCT(v1, v2) AS ip FROM func_exact ORDER BY id;
+id	ip
+1	1
+2	0
+# NULL handling: distance functions return NULL when either argument is NULL
+SELECT id,
+L1_DISTANCE(vec, vec2)     AS l1,
+L2_DISTANCE(vec, vec2)     AS l2,
+COSINE_DISTANCE(vec, vec2) AS cos_dist,
+INNER_PRODUCT(vec, vec2)   AS ip
+FROM embeddings ORDER BY id;
+id	l1	l2	cos_dist	ip
+1	NULL	NULL	NULL	NULL
+2	NULL	NULL	NULL	NULL
+3	NULL	NULL	NULL	NULL
+4	NULL	NULL	NULL	NULL
+5	NULL	NULL	NULL	NULL
+DROP TABLE func_exact;
+# ---- README: Example Queries ----
+# Norm of a stored vector
+SELECT id, VECTOR_NORM(vec) AS norm FROM embeddings ORDER BY id;
+id	norm
+1	5.477225575051661
+2	6.244997998398398
+3	6.782329983125268
+4	10.954451150103322
+5	15.165750888103101
+# L2 distance between two stored vectors
+SELECT L2_DISTANCE(a.vec, b.vec) AS dist
+FROM embeddings a, embeddings b
+WHERE a.id = 1 AND b.id = 2;
+dist
+1
+# Nearest-neighbour search by L1 distance (full table scan)
+SELECT id, L1_DISTANCE(vec, query.ref_vec) AS dist
+FROM embeddings,
+(SELECT vec AS ref_vec FROM embeddings WHERE id = 1) AS query
+ORDER BY dist ASC
+LIMIT 2;
+id	dist
+1	0
+2	1
+# Update a vector value
+UPDATE embeddings SET vec = '[0.5, 0.5, 0.5, 0.5]' WHERE id = 1;
+# Delete a row containing a vector
+DELETE FROM embeddings WHERE id = 2;
+# Verify state after update and delete
+SELECT id, VECTOR_FORMAT(vec, 2) AS vec FROM embeddings ORDER BY id;
+id	vec
+1	[0.5,0.5,0.5,0.5]
+3	[1,2,5,4]
+4	[2,4,6,8]
+5	[9,8,7,6]
+# Clean up
+DROP TABLE embeddings;
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

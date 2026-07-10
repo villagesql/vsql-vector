@@ -57,9 +57,10 @@ An extension for VillageSQL Server that adds a vector data type with external co
 
 ### Loading the Extension
 
-Before using any SVECTOR features, load the extension in your session:
+Because this extension depends on preview APIs, you must enable preview extensions before installing:
 
 ```sql
+SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
 ```
 
@@ -97,20 +98,20 @@ INSERT INTO embeddings VALUES (5, '[9.0, 8.0, 7.0, 6.0]', NULL);  -- L1 dist fro
 
 | Function | Returns | Description |
 |---|---|---|
-| `SVECTOR_DIMENSION(v)` | INT | Declared dimension of the vector |
-| `SVECTOR_MAX_DIMENSION()` | INT | Maximum supported dimension (3072) |
-| `SVECTOR_NORM(v)` | REAL | L2 (Euclidean) norm |
-| `SVECTOR_FORMAT(v, precision)` | STRING | Vector as a fixed-precision decimal string |
-| `SVECTOR_HEX(v)` | STRING | Raw float bytes as uppercase hex (useful for debugging) |
+| `VECTOR_DIMENSION(v)` | INT | Declared dimension of the vector |
+| `VECTOR_MAX_DIMENSION()` | INT | Maximum supported dimension (3072) |
+| `VECTOR_NORM(v)` | REAL | L2 (Euclidean) norm |
+| `VECTOR_FORMAT(v, precision)` | STRING | Vector as a fixed-precision decimal string |
+| `VECTOR_HEX(v)` | STRING | Raw float bytes as uppercase hex (useful for debugging) |
 
 #### Distance and similarity functions
 
 | Function | Returns | Description |
 |---|---|---|
-| `SVECTOR_DISTANCE_L1(v1, v2)` | REAL | L1 (Manhattan) distance — sum of absolute differences |
-| `SVECTOR_DISTANCE_L2(v1, v2)` | REAL | L2 (Euclidean) distance — square root of sum of squared differences |
-| `SVECTOR_DISTANCE_COSINE(v1, v2)` | REAL | Cosine distance — `1 - cosine_similarity`; range [0, 2] |
-| `SVECTOR_INNER_PRODUCT(v1, v2)` | REAL | Dot product (similarity, not a metric); higher means more similar |
+| `L1_DISTANCE(v1, v2)` | REAL | L1 (Manhattan) distance — sum of absolute differences |
+| `L2_DISTANCE(v1, v2)` | REAL | L2 (Euclidean) distance — square root of sum of squared differences |
+| `COSINE_DISTANCE(v1, v2)` | REAL | Cosine distance — `1 - cosine_similarity`; range [0, 2] |
+| `INNER_PRODUCT(v1, v2)` | REAL | Dot product (similarity, not a metric); higher means more similar |
 
 Both arguments to a distance/similarity function must have the same dimension. All functions return NULL if either argument is NULL.
 
@@ -118,10 +119,10 @@ Both arguments to a distance/similarity function must have the same dimension. A
 
 ```sql
 -- Norm of a stored vector
-SELECT id, SVECTOR_NORM(vec) AS norm FROM embeddings ORDER BY id;
+SELECT id, VECTOR_NORM(vec) AS norm FROM embeddings ORDER BY id;
 
 -- L2 distance between two stored vectors
-SELECT SVECTOR_DISTANCE_L2(a.vec, b.vec) AS dist
+SELECT L2_DISTANCE(a.vec, b.vec) AS dist
 FROM embeddings a, embeddings b
 WHERE a.id = 1 AND b.id = 2;
 
@@ -129,7 +130,7 @@ WHERE a.id = 1 AND b.id = 2;
 -- Note: HNSW index support is planned; today this performs a sequential scan.
 -- The query vector is stored in a table row and joined in as a workaround
 -- for the current limitation on inline constant vectors (see Known Limitations).
-SELECT id, SVECTOR_DISTANCE_L1(vec, query.ref_vec) AS dist
+SELECT id, L1_DISTANCE(vec, query.ref_vec) AS dist
 FROM embeddings,
      (SELECT vec AS ref_vec FROM embeddings WHERE id = 1) AS query
 ORDER BY dist ASC
@@ -137,7 +138,7 @@ LIMIT 2;
 -- Expected result: id=1 dist=0, id=2 dist=1
 
 -- TODO: once inline constant vector support is added, the intended syntax is:
--- SELECT id, SVECTOR_DISTANCE_L1(vec, '[1.0, 2.0, 3.0, 4.0]') AS dist
+-- SELECT id, L1_DISTANCE(vec, '[1.0, 2.0, 3.0, 4.0]') AS dist
 -- FROM embeddings
 -- ORDER BY dist ASC
 -- LIMIT 2;
