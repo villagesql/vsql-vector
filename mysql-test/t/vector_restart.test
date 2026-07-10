@@ -31,7 +31,7 @@ INSERT INTO vector_restart_test VALUES
   (3, 'row3', '[3.0, 4.0, 5.0, 6.0, 7.0, 8.0]', '[0.3, 0.4, 0.5, 0.6, 0.7, 0.8]', 300);
 
 --echo # Verify data before restart
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -41,7 +41,7 @@ FROM vector_restart_test ORDER BY id;
 --source include/restart_mysqld.inc
 
 --echo # Verify data persists after restart
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -67,7 +67,7 @@ INSERT INTO vector_restart_test VALUES
   (7, 'row7', '[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]', '[0.7, 0.8, 0.9, 1.0, 1.1, 1.2]', 700);
 
 --echo # Verify uncommitted data is visible in current transaction
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -77,7 +77,7 @@ FROM vector_restart_test ORDER BY id;
 --source include/restart_mysqld.inc
 
 --echo # Verify only committed data persists (rows 6-7 should be gone)
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -99,7 +99,7 @@ WHERE id = 1;
 COMMIT;
 
 --echo # Verify update before restart
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -109,7 +109,7 @@ FROM vector_restart_test WHERE id = 1;
 --source include/restart_mysqld.inc
 
 --echo # Verify update persists after restart
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -124,7 +124,7 @@ DELETE FROM vector_restart_test WHERE id = 5;
 COMMIT;
 
 --echo # Verify deletion before restart (row 5 should be gone)
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -134,7 +134,7 @@ FROM vector_restart_test ORDER BY id;
 --source include/restart_mysqld.inc
 
 --echo # Verify deletion persists after restart (row 5 should still be gone)
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -158,7 +158,7 @@ UPDATE vector_restart_test SET value = 777 WHERE id = 3;
 DELETE FROM vector_restart_test WHERE id = 2;
 
 --echo # Verify changes in current transaction
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value
@@ -168,7 +168,7 @@ FROM vector_restart_test ORDER BY id;
 --source include/restart_mysqld.inc
 
 --echo # Verify all uncommitted changes are rolled back
-SELECT id, name, SVECTOR_FORMAT(embedding, 2) AS embedding_str, SVECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
+SELECT id, name, VECTOR_FORMAT(embedding, 2) AS embedding_str, VECTOR_FORMAT(metadata_vec, 2) AS metadata_str, value
 FROM vector_restart_test ORDER BY id;
 
 SELECT id, name, SVECTOR::TO_STRING(embedding) AS embedding_str, SVECTOR::TO_STRING(metadata_vec) AS metadata_str, value

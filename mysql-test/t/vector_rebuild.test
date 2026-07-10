@@ -25,14 +25,14 @@ INSERT INTO t_rebuild_simple VALUES
   (3, '[0.0, 0.0, 0.0, 0.0]',   '[2.0, 4.0, 8.0, 16.0]',      'third');
 
 --echo # Verify data before rebuild
-SELECT id, SVECTOR_FORMAT(v1, 4) AS v1, SVECTOR_FORMAT(v2, 4) AS v2, label
+SELECT id, VECTOR_FORMAT(v1, 4) AS v1, VECTOR_FORMAT(v2, 4) AS v2, label
 FROM t_rebuild_simple ORDER BY id;
 
 --echo # Rebuild the table
 ALTER TABLE t_rebuild_simple ENGINE=InnoDB;
 
 --echo # Verify data is intact after rebuild
-SELECT id, SVECTOR_FORMAT(v1, 4) AS v1, SVECTOR_FORMAT(v2, 4) AS v2, label
+SELECT id, VECTOR_FORMAT(v1, 4) AS v1, VECTOR_FORMAT(v2, 4) AS v2, label
 FROM t_rebuild_simple ORDER BY id;
 
 DROP TABLE t_rebuild_simple;
@@ -57,7 +57,7 @@ ALTER TABLE t_rebuild_altered ADD COLUMN post_col INT DEFAULT 99 AFTER vec;
 SHOW CREATE TABLE t_rebuild_altered;
 
 --echo # Verify data with added columns
-SELECT id, pre_col, SVECTOR_FORMAT(vec, 4) AS vec, post_col, name
+SELECT id, pre_col, VECTOR_FORMAT(vec, 4) AS vec, post_col, name
 FROM t_rebuild_altered ORDER BY id;
 
 --echo # Drop the added columns (one before vec, one after vec)
@@ -68,7 +68,7 @@ ALTER TABLE t_rebuild_altered DROP COLUMN post_col;
 ALTER TABLE t_rebuild_altered ENGINE=InnoDB;
 
 --echo # Verify data is intact after rebuild
-SELECT id, SVECTOR_FORMAT(vec, 4) AS vec, name
+SELECT id, VECTOR_FORMAT(vec, 4) AS vec, name
 FROM t_rebuild_altered ORDER BY id;
 
 DROP TABLE t_rebuild_altered;

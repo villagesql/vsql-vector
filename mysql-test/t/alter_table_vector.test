@@ -41,14 +41,14 @@ INSERT INTO t1 VALUES (2, 'row2', 20, '[-1.0, -2.0, -3.0, -4.0]');
 INSERT INTO t1 VALUES (3, 'row3', 30, '[0.5, 0.25, 0.125, 0.0625]');
 INSERT INTO t1 VALUES (6, 'row6', 60, '[1.0, 1.0, 1.0, 1.0]');
 
-SELECT id, name, score, SVECTOR_FORMAT(vec, 4) AS vec FROM t1 ORDER BY id;
+SELECT id, name, score, VECTOR_FORMAT(vec, 4) AS vec FROM t1 ORDER BY id;
 
 --echo # Drop the non-vector column
 eval ALTER TABLE t1 DROP COLUMN score, ALGORITHM = $algo;
 
 SHOW CREATE TABLE t1;
 
-SELECT id, name, SVECTOR_FORMAT(vec, 4) AS vec FROM t1 ORDER BY id;
+SELECT id, name, VECTOR_FORMAT(vec, 4) AS vec FROM t1 ORDER BY id;
 
 INSERT INTO t1 VALUES (7, 'row7', '[2.0, 2.0, 2.0, 2.0]');
 

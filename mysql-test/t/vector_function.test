@@ -8,9 +8,9 @@ INSTALL EXTENSION vsql_vector;
 ########################################################################
 #
 # Test SVECTOR function implementations:
-#   SVECTOR_MAX_DIMENSION, SVECTOR_DIMENSION, SVECTOR_NORM,
-#   SVECTOR_DISTANCE_L1, SVECTOR_DISTANCE_L2,
-#   SVECTOR_DISTANCE_COSINE, SVECTOR_INNER_PRODUCT
+#   VECTOR_MAX_DIMENSION, VECTOR_DIMENSION, VECTOR_NORM,
+#   L1_DISTANCE, L2_DISTANCE,
+#   COSINE_DISTANCE, INNER_PRODUCT
 #
 ########################################################################
 
@@ -59,51 +59,51 @@ INSERT INTO func_nullable VALUES
   (3, '[3.0, 4.0, 0.0, 0.0]', NULL),
   (4, NULL, NULL);
 
---echo # Test 1: SVECTOR_MAX_DIMENSION - global constant, no arguments
-SELECT SVECTOR_MAX_DIMENSION() AS max_dim;
+--echo # Test 1: VECTOR_MAX_DIMENSION - global constant, no arguments
+SELECT VECTOR_MAX_DIMENSION() AS max_dim;
 
---echo # Test 2: SVECTOR_DIMENSION - returns the declared dimension of a vector column
-SELECT id, SVECTOR_DIMENSION(v) AS dims FROM func_single ORDER BY id;
+--echo # Test 2: VECTOR_DIMENSION - returns the declared dimension of a vector column
+SELECT id, VECTOR_DIMENSION(v) AS dims FROM func_single ORDER BY id;
 
---echo # Test 3: SVECTOR_NORM - L2 (Euclidean) norm of a single vector
-SELECT id, SVECTOR_NORM(v) AS norm FROM func_single ORDER BY id;
+--echo # Test 3: VECTOR_NORM - L2 (Euclidean) norm of a single vector
+SELECT id, VECTOR_NORM(v) AS norm FROM func_single ORDER BY id;
 
---echo # Test 4: SVECTOR_DISTANCE_L1 - Manhattan distance
-SELECT id, SVECTOR_DISTANCE_L1(v1, v2) AS l1 FROM func_pairs ORDER BY id;
+--echo # Test 4: L1_DISTANCE - Manhattan distance
+SELECT id, L1_DISTANCE(v1, v2) AS l1 FROM func_pairs ORDER BY id;
 
---echo # Test 5: SVECTOR_DISTANCE_L2 - Euclidean distance (pairs with integer result)
-SELECT id, SVECTOR_DISTANCE_L2(v1, v2) AS l2
+--echo # Test 5: L2_DISTANCE - Euclidean distance (pairs with integer result)
+SELECT id, L2_DISTANCE(v1, v2) AS l2
 FROM func_pairs WHERE id IN (1, 2, 3, 5, 6) ORDER BY id;
 
---echo # Test 6: SVECTOR_DISTANCE_COSINE - cosine distance (0=same dir, 1=orthogonal, 2=opposite)
-SELECT id, SVECTOR_DISTANCE_COSINE(v1, v2) AS cos FROM func_pairs ORDER BY id;
+--echo # Test 6: COSINE_DISTANCE - cosine distance (0=same dir, 1=orthogonal, 2=opposite)
+SELECT id, COSINE_DISTANCE(v1, v2) AS cos FROM func_pairs ORDER BY id;
 
---echo # Test 7: SVECTOR_INNER_PRODUCT - dot product
-SELECT id, SVECTOR_INNER_PRODUCT(v1, v2) AS ip FROM func_pairs ORDER BY id;
+--echo # Test 7: INNER_PRODUCT - dot product
+SELECT id, INNER_PRODUCT(v1, v2) AS ip FROM func_pairs ORDER BY id;
 
 --echo # Test 8: NULL handling - single-vector functions return NULL when input is NULL
-SELECT id, SVECTOR_NORM(v1) AS norm, SVECTOR_DIMENSION(v1) AS dims
+SELECT id, VECTOR_NORM(v1) AS norm, VECTOR_DIMENSION(v1) AS dims
 FROM func_nullable ORDER BY id;
 
 --echo # Test 9: NULL handling - distance functions return NULL when either input is NULL
 SELECT id,
-SVECTOR_DISTANCE_L1(v1, v2) AS l1,
-SVECTOR_DISTANCE_L2(v1, v2) AS l2,
-SVECTOR_DISTANCE_COSINE(v1, v2) AS cos,
-SVECTOR_INNER_PRODUCT(v1, v2) AS ip
+L1_DISTANCE(v1, v2) AS l1,
+L2_DISTANCE(v1, v2) AS l2,
+COSINE_DISTANCE(v1, v2) AS cos,
+INNER_PRODUCT(v1, v2) AS ip
 FROM func_nullable ORDER BY id;
 
 --echo # Test 10: Distance from a fixed inline vector using SVECTOR::FROM_STRING
-SELECT id, SVECTOR_DISTANCE_COSINE(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS cos_dist
+SELECT id, COSINE_DISTANCE(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS cos_dist
 FROM func_single ORDER BY id;
 
-SELECT id, SVECTOR_DISTANCE_L2(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l2_dist
+SELECT id, L2_DISTANCE(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l2_dist
 FROM func_single ORDER BY id;
 
-SELECT id, SVECTOR_DISTANCE_L1(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l1_dist
+SELECT id, L1_DISTANCE(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS l1_dist
 FROM func_single ORDER BY id;
 
-SELECT id, SVECTOR_INNER_PRODUCT(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS ip
+SELECT id, INNER_PRODUCT(v, SVECTOR::FROM_STRING('[1.0, 0.0, 0.0, 0.0]')) AS ip
 FROM func_single ORDER BY id;
 
 --echo # Clean up
