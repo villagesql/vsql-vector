@@ -25,6 +25,8 @@
 #define VILLAGESQL_EXAMPLES_VSQL_SVECTOR_SRC_ROOT_PAGE_H
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 #include <villagesql/preview/storage_api.h>
 
@@ -36,7 +38,6 @@ using vsql::preview_storage::Segment;
 using vsql::preview_storage::Space;
 
 // Forward declarations
-struct ColumnStorageContext;
 struct DataPage;
 
 // Page type identifiers for SVECTOR column storage
@@ -65,13 +66,16 @@ struct RootPage {
   // Thread-local storage for last slot information
   static thread_local LastSlotInfo s_last_slot_info;
 
- public:
-  // We create one segment for storing the column data.
-  static constexpr uint8_t NUM_SEGMENTS = 1;
-
+public:
   // Root Page format - Version-1
-  // [Page Header] [N] [Segment Header] [Version] [Type] [Creator Name]
-  // |-----38-----|-1-|-------10-------|----1----|--1--|------8-------|
+  // [Page Header] [N] [Segment Header] [Version] [Type]
+  // |-----38-----|-1-|-----N x 10-----|----1----|--1--|
+  //
+  // [Metadata Len(M)] [Storage Metadata]
+  // |--------1-------|--------M---------|
+  //
+  // [Number of root pages (K)] [Other root page REFs]
+  // |------------1------------|----4 x (K - 1)------|
   //
   // [Column Size] [Data Page Head] [Data Page Tail]
   // |-----2------|-------4--------|-------4-------|
@@ -85,70 +89,98 @@ struct RootPage {
   // [Free Slot Array: Max 2k slots] [Left Over] [Page Trailer]
   // |------------M * 4-------------|-----L-----|-----8-------|
 
-  static constexpr Page::Offset VERSION_OFF =
-      Page::HEADER_SIZE + Segment::NUM_SEGMENTS_SIZE +
-      Segment::HEADER_SIZE * NUM_SEGMENTS;
+  // Fixed-size field lengths. All offsets are dynamic based on number of
+  // segments (N) and Number of root pages(K).
   static constexpr Page::Offset VERSION_LEN = 1;
-
-  static constexpr Page::Offset PAGE_TYPE_OFF = VERSION_OFF + VERSION_LEN;
   static constexpr Page::Offset PAGE_TYPE_LEN = 1;
-
-  static constexpr Page::Offset CREATOR_NAME_OFF =
-      PAGE_TYPE_OFF + PAGE_TYPE_LEN;
-  static constexpr Page::Offset CREATOR_NAME_LEN = 8;
-
-  static constexpr Page::Offset COLUMN_SIZE_OFF =
-      CREATOR_NAME_OFF + CREATOR_NAME_LEN;
+  static constexpr Page::Offset STORAGE_METADATA_LEN_SIZE = 1;
+  static constexpr Page::Offset NUM_ROOT_PAGES_LEN = 1;
+  static constexpr Page::Offset ROOT_PAGE_REF_LEN = 4;
   static constexpr Page::Offset COLUMN_SIZE_LEN = 2;
-
-  // Head of all partially full and completely full pages.
-  static constexpr Page::Offset ALL_SLOT_HEAD_OFF =
-      COLUMN_SIZE_OFF + COLUMN_SIZE_LEN;
   static constexpr Page::Offset ALL_SLOT_HEAD_LEN = 4;
-
-  // Tail of all partially full and completely full pages.
-  static constexpr Page::Offset ALL_SLOT_TAIL_OFF =
-      ALL_SLOT_HEAD_OFF + ALL_SLOT_HEAD_LEN;
   static constexpr Page::Offset ALL_SLOT_TAIL_LEN = 4;
-
-  // Total number of data pages (both free and full)
-  static constexpr Page::Offset TOTAL_DATA_PAGES_OFF =
-      ALL_SLOT_TAIL_OFF + ALL_SLOT_TAIL_LEN;
   static constexpr Page::Offset TOTAL_DATA_PAGES_LEN = 4;
-
-  // Total number of free pages (partially full pages)
-  static constexpr Page::Offset TOTAL_FREE_PAGES_OFF =
-      TOTAL_DATA_PAGES_OFF + TOTAL_DATA_PAGES_LEN;
   static constexpr Page::Offset TOTAL_FREE_PAGES_LEN = 4;
-
-  static constexpr Page::Offset FREE_SLOT_ARRAY_MAX_SIZE_OFF =
-      TOTAL_FREE_PAGES_OFF + TOTAL_FREE_PAGES_LEN;
   static constexpr Page::Offset FREE_SLOT_ARRAY_MAX_SIZE_LEN = 2;
-
-  static constexpr Page::Offset FREE_SLOT_ARRAY_CUR_SIZE_OFF =
-      FREE_SLOT_ARRAY_MAX_SIZE_OFF + FREE_SLOT_ARRAY_MAX_SIZE_LEN;
   static constexpr Page::Offset FREE_SLOT_ARRAY_CUR_SIZE_LEN = 2;
-
   // Each free slot holds the free (partially full) page reference.
-  // Zero, if no free page.
-  static constexpr Page::Offset FREE_SLOT_ARRAY_OFF =
-      FREE_SLOT_ARRAY_CUR_SIZE_OFF + FREE_SLOT_ARRAY_CUR_SIZE_LEN;
   static constexpr Page::Offset FREE_SLOT_LEN = 4;
 
-  // Start with a single free slot an increase dynamically.
+  inline Page::Offset version_off() const {
+    return Page::HEADER_SIZE + Segment::NUM_SEGMENTS_SIZE +
+           static_cast<Page::Offset>(Segment::HEADER_SIZE) * m_num_segments;
+  }
+  inline Page::Offset page_type_off() const {
+    return version_off() + VERSION_LEN;
+  }
+  inline Page::Offset storage_metadata_len_off() const {
+    return page_type_off() + PAGE_TYPE_LEN;
+  }
+  inline Page::Offset storage_metadata_off() const {
+    return storage_metadata_len_off() + STORAGE_METADATA_LEN_SIZE;
+  }
+  inline Page::Offset num_root_pages_off() const {
+    return storage_metadata_off() + m_storage_metadata_len;
+  }
+  inline Page::Offset other_root_pages_off() const {
+    return num_root_pages_off() + NUM_ROOT_PAGES_LEN;
+  }
+
+  inline Page::Offset column_size_off() const {
+    return other_root_pages_off() + ROOT_PAGE_REF_LEN * (m_num_root_pages - 1);
+  }
+  inline Page::Offset all_slot_head_off() const {
+    return column_size_off() + COLUMN_SIZE_LEN;
+  }
+  inline Page::Offset all_slot_tail_off() const {
+    return all_slot_head_off() + ALL_SLOT_HEAD_LEN;
+  }
+  inline Page::Offset total_data_pages_off() const {
+    return all_slot_tail_off() + ALL_SLOT_TAIL_LEN;
+  }
+  inline Page::Offset total_free_pages_off() const {
+    return total_data_pages_off() + TOTAL_DATA_PAGES_LEN;
+  }
+  inline Page::Offset free_slot_array_max_size_off() const {
+    return total_free_pages_off() + TOTAL_FREE_PAGES_LEN;
+  }
+  inline Page::Offset free_slot_array_cur_size_off() const {
+    return free_slot_array_max_size_off() + FREE_SLOT_ARRAY_MAX_SIZE_LEN;
+  }
+  inline Page::Offset free_slot_array_off() const {
+    return free_slot_array_cur_size_off() + FREE_SLOT_ARRAY_CUR_SIZE_LEN;
+  }
+
+  // Start with a single free slot and increase dynamically.
   static constexpr uint16_t NUM_FREE_SLOTS_INITIAL = 1;
 
   // NULL reference for free page list. Use same value as Page::INVALID_REF.
   static constexpr uint32_t NULL_FREE_PAGE_REF = Page::INVALID_REF;
 
-  // Creator name
-  static constexpr unsigned char CREATOR[CREATOR_NAME_LEN] = "SVECTOR";
+  // Set N, M, and K without full initialization. Used during load() to
+  // bootstrap offset functions before col_len is known. Must be followed by
+  // init(). Call in three stages during load:
+  //   1. set_layout(N, 0, 1)  — enables storage_metadata_len_off()
+  //   2. set_layout(N, M, 1)  — enables num_root_pages_off()
+  //   3. set_layout(N, M, K)  — final layout
+  void set_layout(uint8_t num_segments, uint8_t storage_metadata_len,
+                  uint8_t num_root_pages) {
+    m_num_segments = num_segments;
+    m_storage_metadata_len = storage_metadata_len;
+    m_num_root_pages = num_root_pages;
+  }
 
-  // Initialize root page parameters (calculate capacity).
-  void init(Space::Ref space_ref, uint16_t col_len);
+  // Initialize root page parameters. num_segments (N), num_root_pages (K), and
+  // storage_metadata_len are fixed at creation time and must not change.
+  void init(Space::Ref space_ref, uint16_t col_len, uint8_t num_segments,
+            uint8_t num_root_pages, uint8_t storage_metadata_len);
 
   // Format root page.
-  bool format(Page &root_page, MtrCtx::Ref mtr, uint8_t format_version);
+  bool format(Page &root_page, MtrCtx::Ref mtr, uint8_t format_version,
+              std::string_view metadata);
+
+  // Read the storage metadata from a formatted root page.
+  std::string read_metadata(const Page &root_page) const;
 
   // Select a data page for insert with latch on root. This function examines
   // the root page to find a suitable data page.
@@ -201,6 +233,7 @@ struct RootPage {
                         MtrCtx::Ref mtr);
 
   // Getters for member variables
+  uint8_t get_num_segments() const { return m_num_segments; }
   uint16_t get_column_size() const { return m_column_size; }
   uint16_t get_max_free_slots() const { return m_max_free_slots; }
 
@@ -215,11 +248,17 @@ struct RootPage {
   static bool get_cached_slot_number(Space::Ref space_ref, Page::Ref page_ref,
                                      uint16_t max_slots, uint16_t &slot_number);
 
+  // Set by init() and fixed for the lifetime of this RootPage. Must be
+  // initialized before any offset function is called.
+  uint8_t m_num_segments = 0;
+  uint8_t m_num_root_pages = 0;
+  uint8_t m_storage_metadata_len = 0;
+
   // Maximum number of free slots for concurrent insert. Might need to reduce
   // based on page size.
   uint16_t m_max_free_slots = 2048;
 
-  // Initialized by create_storage and not changed later.
+  // Initialized by init() and not changed later.
   uint16_t m_column_size = 0;
 };
 

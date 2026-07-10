@@ -40,7 +40,9 @@ class RootPageParser {
   struct RootPageInfo {
     uint8_t version;
     uint8_t page_type;
-    std::string creator_name;
+    std::string storage_metadata;
+    uint8_t num_root_pages;
+    std::vector<uint32_t> other_root_page_refs;
     uint16_t column_size;
     uint32_t all_slot_head;
     uint32_t all_slot_tail;
