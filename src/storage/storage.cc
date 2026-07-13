@@ -236,6 +236,16 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
   }
   auto info0 = read_page_info(primary_root);
 
+  // Sanity check. A primary root page must contain at least one root page.
+  // A value of zero indicates corruption or an invalid root page ID.
+  // Do not proceed, as the code below assumes num_root_pages > 0.
+  if (info0.num_root_pages == 0) {
+    fill_error("load: primary root page contains no root pages", error_msg,
+               error_msg_len, false);
+    mtr_ctx.commit();
+    return true;
+  }
+
   // Collect all K-1 other root page refs before releasing the latch.
   std::vector<Page::Ref> other_refs(static_cast<size_t>(info0.num_root_pages) -
                                     1);

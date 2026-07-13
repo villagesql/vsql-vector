@@ -1,0 +1,5 @@
+# Variant of hnsw_create.test that restarts the server after all HNSW
+# indexes have been created and before any of them are dropped, to verify
+# HNSW index storage and metadata survive a restart.
+let $restart = 1;
+--source hnsw_create.test
