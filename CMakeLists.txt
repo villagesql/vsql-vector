@@ -79,3 +79,12 @@ target_include_directories(svector_page_dump PRIVATE
 if(WITH_DEBUG)
     target_compile_options(svector_page_dump PRIVATE -g -O0 -DDEBUG)
 endif()
+
+# Standalone unit tests. These have no dependency on the VillageSQL SDK.
+enable_testing()
+
+add_executable(hnsw_search_test
+    unittest/hnsw_search_test.cc
+)
+
+add_test(NAME hnsw_search_test COMMAND hnsw_search_test)
