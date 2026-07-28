@@ -16,7 +16,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(vsql_vector_extension)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Extension name
@@ -33,7 +33,10 @@ message(STATUS "VillageSQL include dir: ${VillageSQL_INCLUDE_DIR}")
 
 # Create the vector shared library
 add_library(svector SHARED
-    src/index/hnsw.cc
+    src/index/hnsw/index.cc
+    src/index/hnsw/graph.cc
+    src/index/hnsw/graph_ops.cc
+    src/index/hnsw/layer_ops.cc
     src/storage/data_page.cc
     src/storage/root_page.cc
     src/storage/storage.cc
@@ -83,8 +86,14 @@ endif()
 # Standalone unit tests. These have no dependency on the VillageSQL SDK.
 enable_testing()
 
-add_executable(hnsw_search_test
-    unittest/hnsw_search_test.cc
+add_executable(layer_ops_test
+    unittest/layer_ops_test.cc
 )
 
-add_test(NAME hnsw_search_test COMMAND hnsw_search_test)
+add_test(NAME layer_ops_test COMMAND layer_ops_test)
+
+add_executable(graph_ops_test
+    unittest/graph_ops_test.cc
+)
+
+add_test(NAME graph_ops_test COMMAND graph_ops_test)

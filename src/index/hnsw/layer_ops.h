@@ -21,8 +21,8 @@
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-#ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_SEARCH_H
-#define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_SEARCH_H
+#ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_H
+#define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_H
 
 #include <algorithm>
 #include <cstdint>
@@ -32,32 +32,6 @@
 
 namespace svector::hnsw {
 
-// Requirements:
-//
-// Graph must provide:
-//   using Node = ...;
-//   using DistanceType = ...;  // DefaultConstructible and LessThanComparable
-//
-//   // Computes the distance between two nodes and stores the result in 'out'.
-//   bool distance(const Node&, const Node&, DistanceType& out);
-//
-//   // Replaces the contents of 'out' with the neighbours of the node.
-//   bool neighbours(const Node&, std::vector<Node>& out);
-//
-// Graph::Node must provide:
-//   using KeyType = ...;  // Hashable and equality comparable.
-//   KeyType key() const;
-//
-// Policy must provide:
-//   // Sets 'out' to whether the node is eligible for inclusion in the
-//   // result set. Nodes that are not eligible are still traversed so the
-//   // search can reach eligible nodes beyond them, but they never appear
-//   // in search_layer()'s output or count against ef. The bool return
-//   // value follows the same convention as Graph's methods above: it
-//   // signals failure of the visibility check itself, not the node's
-//   // visibility -- that result is carried in 'out'.
-//   template <typename Graph>
-//   bool is_visible(Graph&, const typename Graph::Node&, bool& out) const;
 namespace detail {
 
 // std::priority_queue with clear() added: empties the queue while keeping
@@ -75,25 +49,54 @@ private:
 
 } // namespace detail
 
-template <typename Graph, typename Policy> class LayerOperations {
+// Requirements:
+//
+// Graph must provide:
+//   using Node = ...;
+//   using DistanceType = ...;  // DefaultConstructible and LessThanComparable
+//
+//   // Computes the distance between two nodes and stores the result in 'out'.
+//   bool distance(const Node&, const Node&, DistanceType& out);
+//
+//   // Replaces the contents of 'out' with the neighbours of the node.
+//   bool neighbours(const Node&, std::vector<Node>& out);
+//
+// Graph::Node must provide:
+//   using KeyType = ...;  // Hashable and equality comparable.
+//   KeyType key() const;
+//
+// Policy<Graph> must provide:
+//   using Node = typename Graph::Node;
+//   // Sets 'out' to whether the node is eligible for inclusion in the
+//   // result set. Nodes that are not eligible are still traversed so the
+//   // search can reach eligible nodes beyond them, but they never appear
+//   // in search_layer()'s output or count against ef. The bool return
+//   // value follows the same convention as Graph's methods above: it
+//   // signals failure of the visibility check itself, not the node's
+//   // visibility -- that result is carried in 'out'.
+//   static bool is_visible(Graph&, const Node&, bool& out);
+template <typename Graph, template <typename> class Policy>
+class LayerOperations {
 public:
+  using PolicyType = Policy<Graph>;
   using Node = typename Graph::Node;
+  enum class ExtendCandidates { No, Yes };
+  enum class KeepPrunedConnections { No, Yes };
 
   // Creates a search context for a single query node.
   // The object may be reused to perform multiple searches for the same
   // query by calling search_layer() repeatedly.
-  LayerOperations(Graph &graph, const Node &query, Policy policy);
+  LayerOperations(Graph &graph, const Node &query);
 
-  // Executes the search from the specified entry points (Algorithm 2,
+  // Executes the search from the entry points in candidates (Algorithm 2,
   // SEARCH-LAYER), discarding any state left over from a previous call
   // first. At most ef visible candidates are retained during the search;
   // invisible candidates are still traversed but never retained, so they
   // don't count against ef or appear in the result. Returns true if a
-  // graph operation fails, in which case out is left unchanged. On
-  // success, out is replaced with the search result, ordered by
+  // graph operation fails, in which case candidates is left unchanged. On
+  // success, candidates is replaced with the search result, ordered by
   // increasing distance from the query node (nearest first).
-  bool search_layer(const std::vector<Node> &entry_points, uint32_t ef,
-                    std::vector<Node> &out);
+  bool search_layer(std::vector<Node> &candidates, uint32_t ef);
 
   // Returns the M elements of candidates nearest to the query node,
   // ordered by increasing distance (Algorithm 3,
@@ -112,10 +115,11 @@ public:
   // by that check. Discards any state left over from a previous call
   // first. Returns true if a graph operation fails, in which case out is
   // left unchanged.
-  bool select_neighbours_heuristic(const std::vector<Node> &candidates,
-                                   uint32_t M, bool extend_candidates,
-                                   bool keep_pruned_connections,
-                                   std::vector<Node> &out);
+  bool
+  select_neighbours_heuristic(const std::vector<Node> &candidates, uint32_t M,
+                              ExtendCandidates extend_candidates,
+                              KeepPrunedConnections keep_pruned_connections,
+                              std::vector<Node> &out);
 
   // Resets the search state, allowing the object to be reused for
   // another search. If query is non-null, the object is rebound to that
@@ -178,7 +182,7 @@ private:
   // element's distance to the query node (Algorithm 4, lines 2-8).
   // Returns true if a graph operation fails.
   bool gather_candidates(const std::vector<Node> &candidates,
-                         bool extend_candidates);
+                         ExtendCandidates extend_candidates);
 
   // Returns true if a graph operation fails. On success, sets dominated
   // to whether e is closer to some element of result than to the query
@@ -189,7 +193,6 @@ private:
 
   Graph &m_graph;
   Node m_query;
-  Policy m_policy;
 
   std::unordered_set<typename Node::KeyType> m_visited;
   MinQueue m_candidates;
@@ -205,4 +208,4 @@ private:
 
 } // namespace svector::hnsw
 
-#endif // VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_SEARCH_H
+#endif // VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_H

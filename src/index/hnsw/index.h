@@ -21,8 +21,8 @@
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-#ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_H
-#define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_H
+#ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_INDEX_H
+#define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_INDEX_H
 
 #include <cstdint>
 #include <optional>
@@ -31,7 +31,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../storage/storage.h"
+#include "../../storage/storage.h"
 #include <villagesql/preview/index_builder.h>
 
 namespace svector::hnsw {
@@ -71,7 +71,15 @@ using svector::MultiColumnStore;
 class LevelStore {
 public:
   struct LevelId {
+    constexpr LevelId() : value(0) {}
     constexpr explicit LevelId(uint8_t v) : value(v) {}
+    constexpr bool has_lower_level() const { return value > 0; }
+    constexpr LevelId lower() const {
+      assert(value > 0);
+      return value > 0 ? LevelId(value - 1) : LevelId(0);
+    }
+    constexpr bool operator==(const LevelId &) const = default;
+    constexpr auto operator<=>(const LevelId &) const = default;
     uint8_t value;
   };
 
@@ -264,4 +272,4 @@ void end(Index::Cursor *cursor);
 
 } // namespace svector::hnsw
 
-#endif // VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_H
+#endif // VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_INDEX_H
