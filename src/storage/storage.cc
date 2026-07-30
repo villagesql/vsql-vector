@@ -411,7 +411,8 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
         return true;
       }
 
-      m_data.format(data_page, mtr, MultiColumnStore::FORMAT_VERSION);
+      m_data.format(data_page, mtr, MultiColumnStore::FORMAT_VERSION,
+                    m_root_page_ref);
 
       if (m_root.add_data_page(root_page, data_page, m_space_ref, mtr)) {
         fill_error("insert: failed to register new data page", error_msg,

@@ -41,21 +41,21 @@ using vsql::preview_storage::Space;
 // Data Page structure for SVECTOR column storage
 struct DataPage {
   // Data Page format: Version-1.
-  // [Page Header] [Version] [Type] [Free Slot Number] [Previous free Page]
-  // |-----38-----|----1---|---1---|--------2---------|----------4--------|
+  // [Page Header] [Version] [Type] [Free Slot Number] [Root Page]
+  // |-----38-----|----1---|---1---|--------2---------|-----4-----|
   //
-  // [Next free Page] [Number of records (M)] [Number of free records]
-  // |-------4-------|-----------2-----------|-----------2-----------|
+  // [Previous free Page] [Next free Page] [Number of records (M)]
+  // |----------4--------|-------4-------|-----------2-----------|
   //
-  // [Free bitmap : Delete Mark and Free bit]
-  // |-----------1 + (M * 2) / 8------------|
+  // [Number of free records] [Free bitmap : Delete Mark and Free bit]
+  // |-----------2-----------|-----------1 + (M * 2) / 8------------|
   //
   // [M Records : Transaction Ref, Column Data] [Left Over] [Page Trailer]
   // |-------M * (8 + Fixed column size)-------|-----L-----|-----8-------|
   //
   // Left over space L is less than one record size.
 
- public:
+public:
   // Transaction reference size in bytes stored with each record
   static constexpr Page::Offset TRX_REF_SIZE = 8;
 
@@ -81,8 +81,13 @@ struct DataPage {
       PAGE_TYPE_OFF + PAGE_TYPE_LEN;
   static constexpr Page::Offset FREE_SLOT_NUMBER_LEN = 2;
 
-  static constexpr Page::Offset PREV_FREE_PAGE_OFF =
+  // Root page this data page belongs to.
+  static constexpr Page::Offset ROOT_PAGE_REF_OFF =
       FREE_SLOT_NUMBER_OFF + FREE_SLOT_NUMBER_LEN;
+  static constexpr Page::Offset ROOT_PAGE_REF_LEN = 4;
+
+  static constexpr Page::Offset PREV_FREE_PAGE_OFF =
+      ROOT_PAGE_REF_OFF + ROOT_PAGE_REF_LEN;
   static constexpr Page::Offset PREV_FREE_PAGE_LEN = 4;
 
   static constexpr Page::Offset NEXT_FREE_PAGE_OFF =
@@ -112,9 +117,11 @@ struct DataPage {
                 "PAGE_TYPE_OFF must follow VERSION");
   static_assert(FREE_SLOT_NUMBER_OFF == PAGE_TYPE_OFF + PAGE_TYPE_LEN,
                 "FREE_SLOT_NUMBER_OFF must follow PAGE_TYPE");
-  static_assert(PREV_FREE_PAGE_OFF ==
+  static_assert(ROOT_PAGE_REF_OFF ==
                     FREE_SLOT_NUMBER_OFF + FREE_SLOT_NUMBER_LEN,
-                "PREV_FREE_PAGE_OFF must follow FREE_SLOT_NUMBER");
+                "ROOT_PAGE_REF_OFF must follow FREE_SLOT_NUMBER");
+  static_assert(PREV_FREE_PAGE_OFF == ROOT_PAGE_REF_OFF + ROOT_PAGE_REF_LEN,
+                "PREV_FREE_PAGE_OFF must follow ROOT_PAGE_REF");
   static_assert(NEXT_FREE_PAGE_OFF == PREV_FREE_PAGE_OFF + PREV_FREE_PAGE_LEN,
                 "NEXT_FREE_PAGE_OFF must follow PREV_FREE_PAGE");
   static_assert(MAX_NUM_RECS_OFF == NEXT_FREE_PAGE_OFF + NEXT_FREE_PAGE_LEN,
@@ -128,7 +135,8 @@ struct DataPage {
   void init(Space::Ref space_ref, uint16_t col_len);
 
   // Format data page.
-  void format(Page &data_page, MtrCtx::Ref mtr, uint8_t format_version);
+  void format(Page &data_page, MtrCtx::Ref mtr, uint8_t format_version,
+              Page::Ref root_page_ref);
 
   // Get record offset by index
   Page::Offset get_record_offset(uint16_t rec_index) const {
@@ -152,6 +160,9 @@ struct DataPage {
 
   // Get the free slot number in root page.
   uint16_t get_free_slot_number(Page &data_page) const;
+
+  // Get the root page reference this data page belongs to.
+  Page::Ref get_root_page_ref(Page &data_page) const;
 
   // Set the free page links (PREV_FREE_PAGE_OFF and NEXT_FREE_PAGE_OFF).
   // Pass nullptr to leave a link unchanged.
