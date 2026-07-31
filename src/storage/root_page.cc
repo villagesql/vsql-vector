@@ -41,7 +41,8 @@ void RootPage::init(Space::Ref space_ref, uint16_t col_len,
                     uint8_t storage_metadata_len) {
   // Store N, K, and metadata length first — offset functions depend on them.
   m_num_segments = num_segments;
-  m_num_root_pages = num_root_pages;
+  assert(num_root_pages > 0);
+  m_num_other_root_pages = num_root_pages > 0 ? (num_root_pages - 1) : 0;
   m_storage_metadata_len = storage_metadata_len;
   m_column_size = col_len;
 
@@ -68,6 +69,10 @@ bool RootPage::format(Page &root_page, MtrCtx::Ref mtr, uint8_t format_version,
     return true;
   }
 
+  uint8_t ns = root_page.read_integer_1(Page::HEADER_SIZE);
+  assert(ns == m_num_segments);
+  m_num_segments = ns;
+
   // Write version
   root_page.write_integer_1(version_off(), format_version, mtr);
 
@@ -84,8 +89,9 @@ bool RootPage::format(Page &root_page, MtrCtx::Ref mtr, uint8_t format_version,
       mtr);
 
   // Write K and initialize the K-1 other root page REFs to INVALID_REF.
-  root_page.write_integer_1(num_root_pages_off(), m_num_root_pages, mtr);
-  for (uint8_t i = 0; i < m_num_root_pages - 1; ++i) {
+  root_page.write_integer_1(num_other_root_pages_off(), m_num_other_root_pages,
+                            mtr);
+  for (uint8_t i = 0; i < m_num_other_root_pages; ++i) {
     Page::Offset ref_off = other_root_pages_off() + i * ROOT_PAGE_REF_LEN;
     root_page.write_integer_4(ref_off, Page::INVALID_REF, mtr);
   }

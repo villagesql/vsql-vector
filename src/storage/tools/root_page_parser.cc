@@ -83,18 +83,19 @@ bool RootPageParser::parse(const std::vector<uint8_t> &page_data,
     return false;
   }
 
-  // Stage 2: read metadata length (enables num_root_pages_off()).
+  // Stage 2: read metadata length (enables num_other_root_pages_off()).
   uint8_t metadata_len = read_uint8(page_data, rp.storage_metadata_len_off());
   rp.set_layout(num_segments, metadata_len, 1);
 
-  if (page_data.size() <= rp.num_root_pages_off()) {
+  if (page_data.size() <= rp.num_other_root_pages_off()) {
     error = "Page too small to contain root page header";
     return false;
   }
 
   // Stage 3: read K and finalize layout.
-  uint8_t num_root_pages = read_uint8(page_data, rp.num_root_pages_off());
-  rp.set_layout(num_segments, metadata_len, num_root_pages);
+  uint8_t num_other_root_pages =
+      read_uint8(page_data, rp.num_other_root_pages_off());
+  rp.set_layout(num_segments, metadata_len, num_other_root_pages);
 
   if (page_data.size() < rp.free_slot_array_off()) {
     error = "Page too small to contain root page header";
@@ -106,9 +107,9 @@ bool RootPageParser::parse(const std::vector<uint8_t> &page_data,
   info.page_type = read_uint8(page_data, rp.page_type_off());
   info.storage_metadata =
       read_string(page_data, rp.storage_metadata_off(), metadata_len);
-  info.num_root_pages = num_root_pages;
+  info.num_root_pages = num_other_root_pages + 1;
   info.other_root_page_refs.clear();
-  for (uint8_t i = 0; i < num_root_pages - 1; ++i) {
+  for (uint8_t i = 0; i < num_other_root_pages; ++i) {
     uint32_t off = rp.other_root_pages_off() + i * RootPage::ROOT_PAGE_REF_LEN;
     info.other_root_page_refs.push_back(read_uint32(page_data, off));
   }
@@ -153,14 +154,19 @@ void RootPageParser::display(const RootPageInfo &info, bool verbose) {
   std::cout << "Version:           " << static_cast<int>(info.version) << "\n";
   std::cout << "Page Type:         " << static_cast<int>(info.page_type)
             << " (ROOT_PAGE)\n";
-  std::cout << "Root Pages:        " << static_cast<int>(info.num_root_pages)
+  std::cout << "Num Root Pages:    " << static_cast<int>(info.num_root_pages)
             << "\n";
-  if (!info.other_root_page_refs.empty()) {
+  bool has_assigned_root = false;
+  for (uint32_t ref : info.other_root_page_refs) {
+    if (ref != RootPage::NULL_FREE_PAGE_REF) {
+      has_assigned_root = true;
+      break;
+    }
+  }
+  if (has_assigned_root) {
     std::cout << "Other Root Pages:";
     for (uint32_t ref : info.other_root_page_refs) {
-      if (ref == RootPage::NULL_FREE_PAGE_REF) {
-        std::cout << " (NULL)";
-      } else {
+      if (ref != RootPage::NULL_FREE_PAGE_REF) {
         std::cout << " Page #" << ref;
       }
     }
