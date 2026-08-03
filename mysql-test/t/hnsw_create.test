@@ -1,0 +1,114 @@
+# Test HNSW index lifecycle for the SVECTOR type registered by the
+# vsql_vector extension: CREATE TABLE with inline indexes, CREATE INDEX,
+# ALTER TABLE ADD/DROP INDEX, DROP INDEX, and DROP TABLE.
+#
+# villagesql_custom_index_proceed bypasses the "not yet implemented" guard in
+# PT_custom_index_type::do_contextualize() so that the full DDL path runs and
+# HNSW index storage is actually created/dropped and metadata is committed
+# to villagesql.custom_indexes / custom_index_columns.
+#
+# TODO(villagesql-indexing): Remove have_debug.inc and the debug flag below
+# once custom index execution is fully implemented and the guard in
+# PT_custom_index_type::do_contextualize() is removed.
+#
+# TODO(villagesql-indexing): SHOW CREATE TABLE currently renders a custom
+# HNSW index as a plain `KEY `idx_name` (`col`)` clause with no indication
+# of USING EXTENDED(...), the index type, profile, or WITH parameters.
+# Update the SHOW CREATE TABLE result below once that detail is rendered.
+--source include/have_debug.inc
+
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+SET SESSION debug='+d,villagesql_custom_index_proceed';
+
+--echo # --- Initial state: empty ---
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- CREATE TABLE with multiple SVECTOR columns and multiple inline HNSW indexes ---
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  a SVECTOR(4) NOT NULL,
+  b SVECTOR(8) NOT NULL,
+  c SVECTOR(16) NOT NULL,
+  d SVECTOR(4) NOT NULL,
+  e SVECTOR(8) NOT NULL,
+  INDEX idx_a (a) USING EXTENDED(hnsw),
+  INDEX idx_b (b hnsw_cosine) USING EXTENDED(hnsw) WITH (M = 8, ef_construction = 64),
+  INDEX idx_c (c vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw)
+) ENGINE=InnoDB;
+
+SHOW CREATE TABLE t1;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- CREATE INDEX: add an HNSW index on a not-yet-indexed column ---
+CREATE INDEX idx_d ON t1 (d hnsw_l1) USING EXTENDED(hnsw);
+SHOW CREATE TABLE t1;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- ALTER TABLE ADD INDEX: HNSW index on another not-yet-indexed column ---
+ALTER TABLE t1 ADD INDEX idx_e (e hnsw_l2) USING EXTENDED(hnsw) WITH (M = 4, ef_construction = 32);
+SHOW CREATE TABLE t1;
+--source include/villagesql/query_custom_indexes.inc
+
+if ($restart) {
+  --echo # --- Restart server: verify HNSW indexes and metadata survive a restart before any index is dropped ---
+  --source include/restart_mysqld.inc
+  SET SESSION debug='+d,villagesql_custom_index_proceed';
+  SHOW CREATE TABLE t1;
+  --source include/villagesql/query_custom_indexes.inc
+}
+
+--echo # --- DROP INDEX: remove a single HNSW index ---
+DROP INDEX idx_d ON t1;
+SHOW CREATE TABLE t1;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- ALTER TABLE DROP INDEX: remove multiple HNSW indexes at once ---
+ALTER TABLE t1 DROP INDEX idx_b, DROP INDEX idx_e;
+SHOW CREATE TABLE t1;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- DROP TABLE: removes all remaining HNSW index metadata ---
+DROP TABLE t1;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- Second table: build up HNSW indexes purely via CREATE INDEX / ALTER TABLE ADD INDEX ---
+CREATE TABLE t2 (
+  id INT PRIMARY KEY,
+  x SVECTOR(4) NOT NULL,
+  y SVECTOR(4) NOT NULL,
+  z SVECTOR(4) NOT NULL
+) ENGINE=InnoDB;
+
+SHOW CREATE TABLE t2;
+--source include/villagesql/query_custom_indexes.inc
+
+CREATE INDEX idx_x ON t2 (x) USING EXTENDED(hnsw);
+CREATE INDEX idx_y ON t2 (y hnsw_cosine) USING EXTENDED(hnsw) WITH (M = 16, ef_construction = 200);
+SHOW CREATE TABLE t2;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- ALTER TABLE ADD INDEX: HNSW index on a not-yet-indexed column ---
+ALTER TABLE t2 ADD INDEX idx_z (z hnsw_inner_product) USING EXTENDED(hnsw);
+SHOW CREATE TABLE t2;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- Tear down purely via DROP INDEX / ALTER TABLE DROP INDEX / DROP TABLE ---
+DROP INDEX idx_x ON t2;
+SHOW CREATE TABLE t2;
+--source include/villagesql/query_custom_indexes.inc
+
+ALTER TABLE t2 DROP INDEX idx_y;
+SHOW CREATE TABLE t2;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # --- DROP TABLE: removes all remaining HNSW index metadata ---
+DROP TABLE t2;
+--source include/villagesql/query_custom_indexes.inc
+
+--echo # HNSW create/drop index lifecycle test completed
+
+SET SESSION debug='-d,villagesql_custom_index_proceed';
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;
