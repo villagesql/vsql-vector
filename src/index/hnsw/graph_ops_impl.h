@@ -40,7 +40,8 @@
 namespace svector::hnsw {
 
 // Algorithm 1, INSERT.
-template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
+template <typename Graph>
+bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
   using LockMode = typename Graph::LockMode;
   using LockGraph = typename Graph::LockGraph;
   using LockLevels = typename Graph::LockLevels;
@@ -81,7 +82,7 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
 
   auto level = std::max(entry_level, insert_level);
   LockLevels levels(m_graph, LockMode::Shared, level, DescendPolicy::Release);
-  LayerOps layer(m_graph, new_node);
+  LayerOps layer(m_graph, new_node_data);
 
   // Traverse the levels until we reach the insertion level.
   // Lines 5-7: greedily descend from L down to l+1 with ef=1, narrowing to
@@ -92,8 +93,9 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
       return true;
     }
     // Prepare for the next layer by replacing the current candidates
-    // with their children.
-    if (promote_children(candidates)) {
+    // with their next-level counterparts.
+    assert(level.has_lower_level());
+    if (advance_to_next_level(candidates)) {
       return true;
     }
     // Acquire level lock for next layer.
@@ -103,8 +105,9 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
   assert(level == insert_level);
   levels.update_policy(DescendPolicy::Keep);
 
-  std::stack<Node> inserted_nodes;
+  std::stack<std::pair<Node, LevelId>> inserted_nodes;
   std::optional<Node> parent;
+  Node top_node{};
 
   // Lines 8-16: from min(L, l) down to 0, gather efConstruction candidates
   // and connect q to its selected neighbours at each layer.
@@ -124,27 +127,22 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
             KeepPrunedConnections::Yes, neighbours)) {
       return true;
     }
-    // The first node has no parent; subsequent nodes are linked to the node
-    // created on the level above. For the first node, create_node() writes
-    // the assigned key directly into new_node rather than a scratch Node.
+    // create_node() also creates the outgoing links to neighbours.
+    // Reciprocal links are added after reaching layer 0 by traversing the
+    // inserted nodes bottom-up. This preserves the invariant that any node
+    // reachable at level N has already been fully inserted at all lower
+    // levels.
     Node node{};
-    node.set_data(new_node);
-
-    Node &out = parent ? node : new_node;
-    if (m_graph.create_node(parent, level, out)) {
+    if (m_graph.create_node(parent, level, new_node_data, neighbours, node)) {
       return true;
     }
 
-    parent = out;
-    inserted_nodes.push(out);
-
-    // Create only the outgoing links from the new node. Reciprocal links are
-    // added after reaching layer 0 by traversing the inserted nodes bottom-up.
-    // This preserves the invariant that any node reachable at level N has
-    // already been fully inserted at all lower levels.
-    if (m_graph.link_neighbours(out, neighbours)) {
-      return true;
+    if (!parent) {
+      top_node = node;
     }
+
+    parent = node;
+    inserted_nodes.push({node, level});
 
     if (level.has_lower_level()) {
       if (level <= entry_level) {
@@ -152,7 +150,7 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
         // its counterparts one level down before searching there next.
         // Above entry_level nothing real has been searched yet, so there's
         // nothing to promote.
-        if (promote_children(candidates)) {
+        if (advance_to_next_level(candidates)) {
           return true;
         }
       }
@@ -166,18 +164,18 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
   // locks are retained across all levels to prevent concurrent deletion of
   // the inserted nodes while still allowing concurrent searches and inserts.
   while (!inserted_nodes.empty()) {
-    Node node = inserted_nodes.top();
+    auto [node, node_level] = inserted_nodes.top();
     inserted_nodes.pop();
 
     // Neighbours whose degree would exceed Mmax once linked back to node;
-    // link_neighbours_back() withholds those edges rather than adding them
+    // link_neighbours() withholds those edges rather than adding them
     // outright, leaving shrink_neighbours() below to decide their final
     // neighbour set (Algorithm 1, lines 14-15).
     std::vector<Node> overflowed;
-    if (m_graph.link_neighbours_back(node, overflowed)) {
+    if (m_graph.link_neighbours(node, overflowed)) {
       return true;
     }
-    if (shrink_neighbours(layer, node, overflowed)) {
+    if (shrink_neighbours(layer, node, node_level, overflowed)) {
       return true;
     }
   }
@@ -186,7 +184,7 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
   // level exceeds the previous top level.
   if (new_entry_point) {
     assert(graph_lock.lock_mode() == LockMode::Exclusive);
-    return m_graph.set_entry_point({new_node}, insert_level);
+    return m_graph.set_entry_point({top_node}, insert_level);
   }
   return false;
 }
@@ -196,7 +194,8 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
 // be left orphaned at that same level along the way -- then remove the
 // per-level records bottom-up (S lock, held across all levels).
 template <typename Graph>
-bool GraphOperations<Graph>::remove(const Node &target_node) {
+bool GraphOperations<Graph>::remove(const Node &target_node,
+                                    LevelId target_level) {
   using LockMode = typename Graph::LockMode;
   using LockGraph = typename Graph::LockGraph;
   using LockLevels = typename Graph::LockLevels;
@@ -221,7 +220,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
     return true;
   }
   auto is_sole_entry_point = [&] {
-    return target_node.level == entry_level && entry_points.size() == 1 &&
+    return target_level == entry_level && entry_points.size() == 1 &&
            entry_points.front().key() == target_node.key();
   };
   bool new_entry_point = false;
@@ -264,7 +263,8 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
   // traversal -- nothing else in the graph points to it any more -- so
   // it's safe to drop every level lock before phase 2 re-acquires them.
   {
-    LockLevels levels(m_graph, LockMode::Exclusive, target_node.level,
+    LevelId level = target_level;
+    LockLevels levels(m_graph, LockMode::Exclusive, target_level,
                       DescendPolicy::Release);
     Node current = target_node;
     for (;;) {
@@ -290,13 +290,13 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
           // current was the sole connection for everything left at this
           // level, so there's nothing to seed a search from yet. Seed
           // with this orphan itself so later orphans in this loop have
-          // something to attach to (and, via link_neighbours_back below,
-          // a way to end up connected to them in turn).
+          // something to attach to (and, via link_neighbours below, a way
+          // to end up connected to them in turn).
           unlinked.push_back(orphan);
           continue;
         }
         std::vector<Node> candidates(unlinked);
-        layer.reset(&orphan);
+        layer.reset(orphan);
         if (layer.search_layer(candidates, m_graph.ef_construction())) {
           return true;
         }
@@ -306,14 +306,14 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
                 KeepPrunedConnections::Yes, new_neighbours)) {
           return true;
         }
-        if (m_graph.link_neighbours(orphan, new_neighbours)) {
+        if (m_graph.replace_neighbours(orphan, new_neighbours)) {
           return true;
         }
         std::vector<Node> overflowed;
-        if (m_graph.link_neighbours_back(orphan, overflowed)) {
+        if (m_graph.link_neighbours(orphan, overflowed)) {
           return true;
         }
-        if (shrink_neighbours(layer, orphan, overflowed)) {
+        if (shrink_neighbours(layer, orphan, level, overflowed)) {
           return true;
         }
         // Grows the entry point pool for subsequent orphans as this
@@ -323,7 +323,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
 
       if (!replacement && !unlinked.empty()) {
         replacement = unlinked.front();
-        replacement_level = current.level;
+        replacement_level = level;
       }
 
       // Now that the orphaned ones are repaired elsewhere, sever the
@@ -334,15 +334,15 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
       }
 
       nodes.push(current);
-      if (!current.level.has_lower_level()) {
+      if (!level.has_lower_level()) {
         break;
       }
-      Node child{};
-      if (m_graph.get_child(current, child)) {
+      Node next{};
+      if (m_graph.get_next_level(current, next)) {
         return true;
       }
-      current = child;
-      levels.descend();
+      current = next;
+      level = levels.descend();
     }
   }
 
@@ -350,7 +350,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
   // Shared mode and holding every level (Keep). LockLevels only ever
   // descends, so re-acquiring top-down is the only way to end up holding
   // every level needed to unwind the stack bottom-up.
-  LockLevels levels(m_graph, LockMode::Shared, target_node.level,
+  LockLevels levels(m_graph, LockMode::Shared, target_level,
                     DescendPolicy::Keep);
   while (levels.level().has_lower_level()) {
     levels.descend();
@@ -358,7 +358,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
 
   // Unwind bottom-up (level 0 first), dropping each level's node and
   // passing its parent -- the node one level up, gathered in phase 1 -- so
-  // the parent's child pointer can be fixed up too.
+  // the parent's next-level pointer can be fixed up too.
   while (!nodes.empty()) {
     Node current = nodes.top();
     nodes.pop();
@@ -386,8 +386,8 @@ bool GraphOperations<Graph>::remove(const Node &target_node) {
 
 // Algorithm 5, K-NN-SEARCH.
 template <typename Graph>
-bool GraphOperations<Graph>::search_knn(const Node &query_node, uint32_t k,
-                                        uint32_t ef_search,
+bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
+                                        uint32_t k, uint32_t ef_search,
                                         std::vector<Node> &nearest_nodes) {
   using LockMode = typename Graph::LockMode;
   using LockGraph = typename Graph::LockGraph;
@@ -419,7 +419,7 @@ bool GraphOperations<Graph>::search_knn(const Node &query_node, uint32_t k,
 
   LockLevels levels(m_graph, LockMode::Shared, entry_level,
                     DescendPolicy::Release);
-  UpperLayerOps upper_layer(m_graph, query_node);
+  UpperLayerOps upper_layer(m_graph, query_node_data);
 
   // Lines 4-6: greedily descend from L down to 1 with ef=1, narrowing to
   // the single nearest element found at each layer.
@@ -429,8 +429,9 @@ bool GraphOperations<Graph>::search_knn(const Node &query_node, uint32_t k,
       return true;
     }
     // Prepare for the next layer by replacing the current candidates
-    // with their children.
-    if (promote_children(candidates)) {
+    // with their next-level counterparts.
+    assert(level.has_lower_level());
+    if (advance_to_next_level(candidates)) {
       return true;
     }
   }
@@ -438,7 +439,7 @@ bool GraphOperations<Graph>::search_knn(const Node &query_node, uint32_t k,
   // Line 7: search the bottom layer with ef=ef_search. This is the only
   // layer whose result is returned, so it's the only one filtered for
   // visibility.
-  BottomLayerOps bottom_layer(m_graph, query_node);
+  BottomLayerOps bottom_layer(m_graph, query_node_data);
   if (bottom_layer.search_layer(candidates, ef_search)) {
     return true;
   }
@@ -454,26 +455,26 @@ bool GraphOperations<Graph>::search_knn(const Node &query_node, uint32_t k,
 }
 
 template <typename Graph>
-bool GraphOperations<Graph>::promote_children(std::vector<Node> &candidates) {
+bool GraphOperations<Graph>::advance_to_next_level(
+    std::vector<Node> &candidates) {
   for (Node &n : candidates) {
-    assert(n.level.has_lower_level());
-    Node child{};
-    if (m_graph.get_child(n, child)) {
+    Node next{};
+    if (m_graph.get_next_level(n, next)) {
       return true;
     }
-    n = child;
+    n = next;
   }
   return false;
 }
 
 // Algorithm 1, lines 14-15: shrink connections of neighbours whose degree
-// would otherwise exceed Mmax. link_neighbours_back() withholds the edge to
+// would otherwise exceed Mmax. link_neighbours() withholds the edge to
 // linked_node for exactly these nodes rather than adding it outright, so
 // linked_node is re-added here as a plain candidate alongside each node's
 // existing connections and the heuristic decides whether it survives.
 template <typename Graph>
 bool GraphOperations<Graph>::shrink_neighbours(
-    LayerOps &layer, const Node &linked_node,
+    LayerOps &layer, const Node &linked_node, LevelId level,
     const std::vector<Node> &overflowed) {
   using ExtendCandidates = typename LayerOps::ExtendCandidates;
   using KeepPrunedConnections = typename LayerOps::KeepPrunedConnections;
@@ -485,11 +486,11 @@ bool GraphOperations<Graph>::shrink_neighbours(
     }
     connections.push_back(linked_node);
 
-    layer.reset(&neighbour);
+    layer.reset(neighbour);
     std::vector<Node> shrunk;
-    if (layer.select_neighbours_heuristic(
-            connections, m_graph.Mmax(neighbour.level), ExtendCandidates::No,
-            KeepPrunedConnections::No, shrunk)) {
+    if (layer.select_neighbours_heuristic(connections, m_graph.Mmax(level),
+                                          ExtendCandidates::No,
+                                          KeepPrunedConnections::No, shrunk)) {
       return true;
     }
     if (m_graph.replace_neighbours(neighbour, shrunk)) {

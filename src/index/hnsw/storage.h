@@ -21,8 +21,8 @@
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-#ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_INDEX_H
-#define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_INDEX_H
+#ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_STORAGE_H
+#define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_STORAGE_H
 
 #include <cstdint>
 #include <optional>
@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "../../storage/storage.h"
+#include "hnsw.h"
 #include <villagesql/preview/index_builder.h>
 
 namespace svector::hnsw {
@@ -276,4 +277,4 @@ void end(Index::Cursor *cursor);
 
 } // namespace svector::hnsw
 
-#endif // VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_INDEX_H
+#endif // VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_STORAGE_H

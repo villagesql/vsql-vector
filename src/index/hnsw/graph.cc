@@ -31,6 +31,12 @@ bool IndexGraph::distance(const Node & /*a*/, const Node & /*b*/,
   return false;
 }
 
+bool IndexGraph::distance(const NodeData & /*a*/, const Node & /*b*/,
+                          DistanceType &out) {
+  out = 0.0;
+  return false;
+}
+
 bool IndexGraph::neighbours(const Node & /*node*/, std::vector<Node> &out) {
   out.clear();
   return false;
@@ -57,7 +63,9 @@ bool IndexGraph::set_entry_point(const std::vector<Node> & /*nodes*/,
 }
 
 bool IndexGraph::create_node(const std::optional<Node> & /*parent*/,
-                             LevelId /*level*/, Node & /*node*/) {
+                             LevelId /*level*/, const NodeData & /*data*/,
+                             const std::vector<Node> & /*neighbours*/,
+                             Node & /*out*/) {
   return false;
 }
 
@@ -66,18 +74,13 @@ bool IndexGraph::drop_node(const std::optional<Node> & /*parent*/,
   return false;
 }
 
-bool IndexGraph::get_child(const Node & /*parent*/, Node &out) {
+bool IndexGraph::get_next_level(const Node & /*node*/, Node &out) {
   out = Node{};
   return false;
 }
 
 bool IndexGraph::link_neighbours(const Node & /*node*/,
-                                 const std::vector<Node> & /*neighbours*/) {
-  return false;
-}
-
-bool IndexGraph::link_neighbours_back(const Node & /*node*/,
-                                      std::vector<Node> &out) {
+                                 std::vector<Node> &out) {
   out.clear();
   return false;
 }

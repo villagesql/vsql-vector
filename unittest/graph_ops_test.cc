@@ -56,7 +56,7 @@
 
 namespace {
 
-// Mirrors svector::hnsw::LevelStore::LevelId (src/index/hnsw/index.h) closely
+// Mirrors svector::hnsw::LevelStore::LevelId (src/index/hnsw/storage.h) closely
 // enough to exercise GraphOperations's level-descent logic without a
 // dependency on it.
 struct MockLevelId {
@@ -83,10 +83,14 @@ struct MockGraph {
     using KeyType = int;
     MockLevelId level;
     int id = -1;
-    // Stand-in for the real Node's materialized vector payload.
-    int data = 0;
     KeyType key() const { return id; }
-    void set_data(const Node &other) { data = other.data; }
+  };
+  // Stand-in for the real NodeData's materialized vector payload. id is a
+  // mock-only convenience letting tests pick a new element's id up front,
+  // unlike the real system where create_node() assigns it.
+  struct NodeData {
+    int id = -1;
+    int data = 0;
   };
   using LevelId = MockLevelId;
   using DistanceType = float;
@@ -165,18 +169,9 @@ struct MockGraph {
 
   // ---- Stand-in for external storage: create_node() persists each id's
   // data here, independent of any in-memory Node the caller happens to be
-  // holding, so neighbours()/get_child() below have to fetch it back
-  // rather than merely propagate a value already in hand.
+  // holding -- Node itself carries no data, mirroring the real system,
+  // so tests read this map directly to check data survived a round trip.
   std::unordered_map<int, int> node_data;
-
-  // Tests that build a graph directly via add_edge()/add_presence() rather
-  // than do_insert() never populate node_data -- default to 0, matching
-  // Node's own default, rather than requiring every such fixture to know
-  // about a field most of them don't care about.
-  int data_of(int id) const {
-    auto it = node_data.find(id);
-    return it != node_data.end() ? it->second : 0;
-  }
 
   // ---- Soft-deletion, for visible().
   std::set<int> deleted;
@@ -214,9 +209,8 @@ struct MockGraph {
   bool fail_set_entry_point = false;
   bool fail_create_node = false;
   bool fail_drop_node = false;
-  bool fail_get_child = false;
+  bool fail_get_next_level = false;
   bool fail_link_neighbours = false;
-  bool fail_link_neighbours_back = false;
   bool fail_replace_neighbours = false;
   bool fail_unlink_neighbours = false;
 
@@ -235,6 +229,14 @@ struct MockGraph {
     return false;
   }
 
+  bool distance(const NodeData &a, const Node &b, DistanceType &out) {
+    if (fail_distance) {
+      return true;
+    }
+    out = std::abs(position.at(a.id) - position.at(b.id));
+    return false;
+  }
+
   bool neighbours(const Node &node, std::vector<Node> &out) {
     if (fail_neighbours) {
       return true;
@@ -245,7 +247,7 @@ struct MockGraph {
       auto id_it = level_it->second.find(node.id);
       if (id_it != level_it->second.end()) {
         for (int nb : id_it->second) {
-          out.push_back(Node{node.level, nb, data_of(nb)});
+          out.push_back(Node{node.level, nb});
         }
       }
     }
@@ -299,19 +301,29 @@ struct MockGraph {
   }
 
   bool create_node(const std::optional<Node> &parent, LevelId level,
-                   Node &node) {
+                   const NodeData &data, const std::vector<Node> &neighbours,
+                   Node &out) {
     if (fail_create_node) {
       return true;
     }
-    // When parent is unset, node aliases insert()'s new_node and already
-    // carries the id/data; otherwise derive them from parent, same element.
-    int id = parent ? parent->id : node.id;
-    int data = parent ? parent->data : node.data;
+    // When parent is unset, this is the topmost level for the element being
+    // inserted, and its id comes from data; otherwise it's the same element
+    // one level down, so its id is derived from parent.
+    int id = parent ? parent->id : data.id;
     present[level.value].insert(id);
-    node_data[id] = data;
-    node = Node{level, id, data};
+    node_data[id] = data.data;
+    out = Node{level, id};
+    auto &adj = adjacency[level.value][id];
+    for (const Node &nb : neighbours) {
+      if (std::find(adj.begin(), adj.end(), nb.id) == adj.end()) {
+        adj.push_back(nb.id);
+      }
+    }
     call_log.push_back("create:" + std::to_string(id) + "@" +
                        std::to_string(level.value));
+    if (!neighbours.empty()) {
+      call_log.push_back("link:" + std::to_string(id));
+    }
     return false;
   }
 
@@ -327,31 +339,16 @@ struct MockGraph {
     return false;
   }
 
-  bool get_child(const Node &parent, Node &out) {
-    if (fail_get_child) {
+  bool get_next_level(const Node &node, Node &out) {
+    if (fail_get_next_level) {
       return true;
     }
-    out = Node{parent.level.lower(), parent.id, data_of(parent.id)};
+    out = Node{node.level.lower(), node.id};
     return false;
   }
 
-  bool link_neighbours(const Node &node,
-                       const std::vector<Node> &new_neighbours) {
+  bool link_neighbours(const Node &node, std::vector<Node> &out) {
     if (fail_link_neighbours) {
-      return true;
-    }
-    auto &adj = adjacency[node.level.value][node.id];
-    for (const Node &nb : new_neighbours) {
-      if (std::find(adj.begin(), adj.end(), nb.id) == adj.end()) {
-        adj.push_back(nb.id);
-      }
-    }
-    call_log.push_back("link:" + std::to_string(node.id));
-    return false;
-  }
-
-  bool link_neighbours_back(const Node &node, std::vector<Node> &out) {
-    if (fail_link_neighbours_back) {
       return true;
     }
     out.clear();
@@ -368,7 +365,7 @@ struct MockGraph {
       if (back_adj.size() >= m_Mmax) {
         // Adding the edge would push nb_id over Mmax: withhold it and let
         // the caller reselect nb_id's full neighbour set instead.
-        out.push_back(Node{node.level, nb_id, data_of(nb_id)});
+        out.push_back(Node{node.level, nb_id});
         continue;
       }
       back_adj.push_back(node.id);
@@ -450,6 +447,7 @@ template class GraphOperations<MockGraph>;
 namespace {
 
 using Node = MockGraph::Node;
+using NodeData = MockGraph::NodeData;
 using LevelId = MockGraph::LevelId;
 
 std::vector<int> values(const std::vector<Node> &nodes) {
@@ -495,8 +493,7 @@ void build_line_level0(MockGraph &g, int n) {
 bool do_insert(MockGraph &g, int id, int pos, int data = 0) {
   add_element(g, id, pos);
   svector::hnsw::GraphOperations<MockGraph> ops(g);
-  Node new_node{LevelId(0), id, data};
-  return ops.insert(new_node);
+  return ops.insert(NodeData{id, data});
 }
 
 // ============================== search_knn ==============================
@@ -507,7 +504,7 @@ void test_search_knn_empty_graph() {
 
   add_element(g, 0, 0); // query point only, not part of the graph
   std::vector<Node> result{Node{LevelId(0), -1}};
-  assert(!ops.search_knn(Node{LevelId(0), 0}, 3, 5, result));
+  assert(!ops.search_knn(NodeData{0}, 3, 5, result));
   assert(result.empty());
 }
 
@@ -519,7 +516,7 @@ void test_search_knn_single_level() {
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
   std::vector<Node> result;
-  assert(!ops.search_knn(Node{LevelId(0), 15}, 5, 5, result));
+  assert(!ops.search_knn(NodeData{15}, 5, 5, result));
 
   // Same shape as layer_ops_test.cc's test_basic_knn: nearest 5 to 15
   // among 0..19, starting the search from entry point 0.
@@ -540,7 +537,7 @@ void test_search_knn_k_truncates_ef_search_results() {
   // k=1 has one unambiguous right answer regardless of search_layer's
   // internal tie-break order.
   std::vector<Node> result;
-  assert(!ops.search_knn(Node{LevelId(0), 15}, 1, 5, result));
+  assert(!ops.search_knn(NodeData{15}, 1, 5, result));
   assert((values(result) == std::vector<int>{15}));
 }
 
@@ -563,7 +560,7 @@ void test_search_knn_multi_level_descent() {
   // 18 is the unique nearest node to the query, reachable from the
   // level-1 entry point 15 via a handful of level-0 hops.
   std::vector<Node> result;
-  assert(!ops.search_knn(Node{LevelId(0), 18}, 1, 4, result));
+  assert(!ops.search_knn(NodeData{18}, 1, 4, result));
   assert((values(result) == std::vector<int>{18}));
 }
 
@@ -588,7 +585,7 @@ void test_search_knn_visibility_filters_only_bottom_layer() {
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
   std::vector<Node> result;
-  assert(!ops.search_knn(Node{LevelId(0), 15}, 1, 6, result));
+  assert(!ops.search_knn(NodeData{15}, 1, 6, result));
   assert((values(result) == std::vector<int>{14}));
 }
 
@@ -601,7 +598,7 @@ void test_search_knn_distance_failure_propagates() {
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
   std::vector<Node> result;
-  assert(ops.search_knn(Node{LevelId(0), 15}, 5, 5, result));
+  assert(ops.search_knn(NodeData{15}, 5, 5, result));
 }
 
 void test_search_knn_get_entry_point_failure_propagates() {
@@ -610,10 +607,10 @@ void test_search_knn_get_entry_point_failure_propagates() {
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
   std::vector<Node> result;
-  assert(ops.search_knn(Node{LevelId(0), 0}, 1, 1, result));
+  assert(ops.search_knn(NodeData{0}, 1, 1, result));
 }
 
-void test_search_knn_get_child_failure_propagates() {
+void test_search_knn_get_next_level_failure_propagates() {
   MockGraph g;
   build_line_level0(g, 20);
   for (int id : {0, 5, 10, 15}) {
@@ -624,11 +621,11 @@ void test_search_knn_get_child_failure_propagates() {
   add_edge(g, 1, 10, 15);
   g.entry_points = {Node{LevelId(1), 15}};
   g.entry_level = LevelId(1);
-  g.fail_get_child = true;
+  g.fail_get_next_level = true;
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
   std::vector<Node> result;
-  assert(ops.search_knn(Node{LevelId(0), 18}, 1, 4, result));
+  assert(ops.search_knn(NodeData{18}, 1, 4, result));
 }
 
 // ================================ insert =================================
@@ -656,8 +653,7 @@ void test_insert_links_nearest_neighbour_without_unnecessary_upgrade() {
   assert(!do_insert(g, 1, 5));
 
   // 1's only possible neighbour is 0; both the forward link (from
-  // link_neighbours) and its reciprocal (from link_neighbours_back) must
-  // be present.
+  // create_node) and its reciprocal (from link_neighbours) must be present.
   assert((g.adjacency[0][1] == std::vector<int>{0}));
   assert((g.adjacency[0][0] == std::vector<int>{1}));
   // 0 is already the entry point at level 0, and this insert's level (0)
@@ -684,11 +680,12 @@ void test_insert_new_top_level_creates_records_at_every_level() {
   assert(g.present[0].count(1) == 1);
   assert(g.entry_points.front().id == 1);
   // The registered entry point must itself carry the true top level (2),
-  // not do_insert()'s placeholder level-0 Node parameter -- otherwise a
+  // not do_insert()'s placeholder level-0 Node argument -- otherwise a
   // later get_entry_point() caller would look up this element's adjacency
-  // at the wrong level. See graph_ops_impl.h: new_node is only mutated on
-  // the topmost (parent-less) create_node() call, so it still carries
-  // that level once the loop reaches set_entry_point().
+  // at the wrong level. See graph_ops_impl.h: insert() captures the Node
+  // produced by the topmost (parent-less) create_node() call into a
+  // dedicated top_node local specifically so it survives to
+  // set_entry_point() with that level intact.
   assert(g.entry_points.front().level == LevelId(2));
 }
 
@@ -761,13 +758,6 @@ void test_insert_link_neighbours_failure_propagates() {
   assert(do_insert(g, 1, 1));
 }
 
-void test_insert_link_neighbours_back_failure_propagates() {
-  MockGraph g;
-  assert(!do_insert(g, 0, 0));
-  g.fail_link_neighbours_back = true;
-  assert(do_insert(g, 1, 1));
-}
-
 void test_insert_shrinks_overflowed_neighbours_past_mmax() {
   MockGraph g;
   assert(!do_insert(g, 0, 0));
@@ -788,8 +778,8 @@ void test_insert_shrinks_overflowed_neighbours_past_mmax() {
   // slot available the heuristic keeps 0 and drops the tentative edge to 2.
   // Symmetric for 0, which is closer to 1 (distance 1) than to 2 (distance
   // 3). Both neighbours end up asymmetrically linked: 2 points at them, but
-  // they don't point back -- exactly what link_neighbours_back() withholding
-  // the edge and shrink_neighbours() reselecting is meant to produce.
+  // they don't point back -- exactly what link_neighbours() withholding the
+  // edge and shrink_neighbours() reselecting is meant to produce.
   assert((g.adjacency[0][1] == std::vector<int>{0}));
   assert((g.adjacency[0][0] == std::vector<int>{1}));
 
@@ -820,14 +810,14 @@ void test_insert_set_entry_point_failure_propagates() {
   assert(do_insert(g, 0, 0));
 }
 
-void test_insert_get_child_failure_propagates() {
+void test_insert_get_next_level_failure_propagates() {
   MockGraph g;
   g.insert_levels = {1};
   assert(!do_insert(g, 0, 0));
 
   // This insert's level (0) is below the current entry level (1), so
-  // greedy descent runs and calls promote_children() -> get_child().
-  g.fail_get_child = true;
+  // greedy descent runs and calls advance_to_next_level() -> get_next_level().
+  g.fail_get_next_level = true;
   assert(do_insert(g, 1, 1));
 }
 
@@ -847,13 +837,13 @@ void test_insert_then_search_returns_inserted_data() {
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
   std::vector<Node> result;
-  assert(!ops.search_knn(Node{LevelId(0), 5, 0}, 3, 5, result));
+  assert(!ops.search_knn(NodeData{5}, 3, 5, result));
 
   std::sort(result.begin(), result.end(),
             [](const Node &a, const Node &b) { return a.id < b.id; });
   assert((values(result) == std::vector<int>{4, 5, 6}));
   for (const Node &n : result) {
-    assert(n.data == n.id * 100);
+    assert(g.node_data.at(n.id) == n.id * 100);
   }
 }
 
@@ -879,7 +869,7 @@ void test_remove_severs_edges_without_orphaning_safe_neighbours() {
   g.m_M = 1;
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
-  assert(!ops.remove(Node{LevelId(0), 2}));
+  assert(!ops.remove(Node{LevelId(0), 2}, LevelId(0)));
 
   // 2 is fully gone.
   assert(g.present[0].count(2) == 0);
@@ -908,7 +898,7 @@ void test_remove_sole_entry_point_selects_survivor_as_replacement() {
   g.entry_level = LevelId(0);
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
-  assert(!ops.remove(Node{LevelId(0), 0}));
+  assert(!ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 
   // 1 was 0's only neighbour and had no other edge, so it's the orphan
   // that "seeds" the survivor pool (graph_ops_impl.h:266-274) rather than
@@ -930,7 +920,7 @@ void test_remove_only_element_clears_entry_point() {
   g.entry_level = LevelId(0);
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
-  assert(!ops.remove(Node{LevelId(0), 0}));
+  assert(!ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 
   // Nothing survives node's removal at any level, so there's no
   // replacement (graph_ops_impl.h:346-352): the entry point is cleared.
@@ -952,7 +942,7 @@ void test_remove_non_sole_entry_point_needs_no_upgrade() {
   g.entry_level = LevelId(0);
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
-  assert(!ops.remove(Node{LevelId(0), 0}));
+  assert(!ops.remove(Node{LevelId(0), 0}, LevelId(0)));
   assert(g.upgrade_calls == 0);
 }
 
@@ -960,7 +950,7 @@ void test_remove_get_entry_point_failure_propagates() {
   MockGraph g;
   g.fail_get_entry_point = true;
   svector::hnsw::GraphOperations<MockGraph> ops(g);
-  assert(ops.remove(Node{LevelId(0), 0}));
+  assert(ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 }
 
 void test_remove_neighbours_failure_propagates() {
@@ -971,7 +961,7 @@ void test_remove_neighbours_failure_propagates() {
   g.entry_level = LevelId(0);
   g.fail_neighbours = true;
   svector::hnsw::GraphOperations<MockGraph> ops(g);
-  assert(ops.remove(Node{LevelId(0), 0}));
+  assert(ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 }
 
 void test_remove_unlink_neighbours_failure_propagates() {
@@ -985,7 +975,7 @@ void test_remove_unlink_neighbours_failure_propagates() {
   g.entry_level = LevelId(0);
   g.fail_unlink_neighbours = true;
   svector::hnsw::GraphOperations<MockGraph> ops(g);
-  assert(ops.remove(Node{LevelId(0), 0}));
+  assert(ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 }
 
 void test_remove_drop_node_failure_propagates() {
@@ -996,7 +986,7 @@ void test_remove_drop_node_failure_propagates() {
   g.entry_level = LevelId(0);
   g.fail_drop_node = true;
   svector::hnsw::GraphOperations<MockGraph> ops(g);
-  assert(ops.remove(Node{LevelId(0), 0}));
+  assert(ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 }
 
 void test_remove_set_entry_point_failure_propagates() {
@@ -1008,21 +998,21 @@ void test_remove_set_entry_point_failure_propagates() {
   g.fail_set_entry_point = true;
   svector::hnsw::GraphOperations<MockGraph> ops(g);
   // Sole entry point, no survivors -> new_entry_point path -> set_entry_point.
-  assert(ops.remove(Node{LevelId(0), 0}));
+  assert(ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 }
 
-void test_remove_get_child_failure_propagates() {
+void test_remove_get_next_level_failure_propagates() {
   MockGraph g;
   // Node 7 exists at levels 1 and 0, so removing it descends through its
-  // own level chain via get_child() (graph_ops_impl.h:313-317).
+  // own level chain via get_next_level() (graph_ops_impl.h:313-317).
   add_element(g, 7, 7);
   add_presence(g, 7, 1);
   add_presence(g, 7, 0);
   g.entry_points = {Node{LevelId(0), 99}};
   g.entry_level = LevelId(0);
-  g.fail_get_child = true;
+  g.fail_get_next_level = true;
   svector::hnsw::GraphOperations<MockGraph> ops(g);
-  assert(ops.remove(Node{LevelId(1), 7}));
+  assert(ops.remove(Node{LevelId(1), 7}, LevelId(1)));
 }
 
 } // namespace
@@ -1035,7 +1025,7 @@ int main() {
   test_search_knn_visibility_filters_only_bottom_layer();
   test_search_knn_distance_failure_propagates();
   test_search_knn_get_entry_point_failure_propagates();
-  test_search_knn_get_child_failure_propagates();
+  test_search_knn_get_next_level_failure_propagates();
 
   test_insert_bootstraps_entry_point_on_empty_graph();
   test_insert_links_nearest_neighbour_without_unnecessary_upgrade();
@@ -1045,11 +1035,10 @@ int main() {
   test_insert_get_entry_point_failure_propagates();
   test_insert_create_node_failure_propagates();
   test_insert_link_neighbours_failure_propagates();
-  test_insert_link_neighbours_back_failure_propagates();
   test_insert_shrinks_overflowed_neighbours_past_mmax();
   test_insert_replace_neighbours_failure_propagates();
   test_insert_set_entry_point_failure_propagates();
-  test_insert_get_child_failure_propagates();
+  test_insert_get_next_level_failure_propagates();
   test_insert_then_search_returns_inserted_data();
 
   test_remove_severs_edges_without_orphaning_safe_neighbours();
@@ -1061,7 +1050,7 @@ int main() {
   test_remove_unlink_neighbours_failure_propagates();
   test_remove_drop_node_failure_propagates();
   test_remove_set_entry_point_failure_propagates();
-  test_remove_get_child_failure_propagates();
+  test_remove_get_next_level_failure_propagates();
 
   std::printf("All graph_ops tests passed.\n");
   return 0;

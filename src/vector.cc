@@ -38,7 +38,7 @@
 #include <cstring>
 #include <limits>
 
-#include "index/hnsw/index.h"
+#include "index/hnsw/storage.h"
 #include "native_vector.h"
 #include "storage/storage.h"
 

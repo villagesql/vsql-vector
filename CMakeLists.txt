@@ -33,7 +33,7 @@ message(STATUS "VillageSQL include dir: ${VillageSQL_INCLUDE_DIR}")
 
 # Create the vector shared library
 add_library(svector SHARED
-    src/index/hnsw/index.cc
+    src/index/hnsw/storage.cc
     src/index/hnsw/graph.cc
     src/index/hnsw/graph_ops.cc
     src/index/hnsw/layer_ops.cc

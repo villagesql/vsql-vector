@@ -37,6 +37,11 @@
 namespace svector::hnsw {
 
 template <typename Graph, template <typename> class Policy>
+LayerOperations<Graph, Policy>::LayerOperations(Graph &graph,
+                                                const NodeData &query)
+    : m_graph(graph), m_query(query) {}
+
+template <typename Graph, template <typename> class Policy>
 LayerOperations<Graph, Policy>::LayerOperations(Graph &graph, const Node &query)
     : m_graph(graph), m_query(query) {}
 
@@ -86,17 +91,25 @@ void LayerOperations<Graph, Policy>::consume_result(std::vector<Node> &out) {
 }
 
 template <typename Graph, template <typename> class Policy>
-void LayerOperations<Graph, Policy>::reset(const Node *query) {
-  if (query != nullptr) {
-    m_query = *query;
-  }
-
+void LayerOperations<Graph, Policy>::reset() {
   m_visited.clear();
   m_candidates.clear();
   m_results.clear();
 
   m_expand_buf.clear();
   m_neighbour_buf.clear();
+}
+
+template <typename Graph, template <typename> class Policy>
+void LayerOperations<Graph, Policy>::reset(const NodeData &query) {
+  m_query = query;
+  reset();
+}
+
+template <typename Graph, template <typename> class Policy>
+void LayerOperations<Graph, Policy>::reset(const Node &query) {
+  m_query = query;
+  reset();
 }
 
 template <typename Graph, template <typename> class Policy>
@@ -238,7 +251,12 @@ bool LayerOperations<Graph, Policy>::evaluate_distances(
   // Distance computations are independent and could be parallelized
   // if Graph::distance() is thread-safe.
   for (Candidate &candidate : candidates) {
-    if (m_graph.distance(m_query, candidate.node, candidate.distance)) {
+    bool failed = std::visit(
+        [&](const auto &query) {
+          return m_graph.distance(query, candidate.node, candidate.distance);
+        },
+        m_query);
+    if (failed) {
       return true;
     }
   }
