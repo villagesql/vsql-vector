@@ -23,6 +23,9 @@
 
 #include "graph.h"
 
+#include <cmath>
+#include <random>
+
 namespace svector::hnsw {
 
 bool IndexGraph::distance(const Node & /*a*/, const Node & /*b*/,
@@ -47,9 +50,24 @@ bool IndexGraph::visible(const Node & /*node*/, bool &out) {
   return false;
 }
 
-void IndexGraph::set_level(LevelId /*level*/) {}
+IndexGraph::LevelId IndexGraph::get_insert_level() {
+  thread_local std::random_device rd;
+  thread_local std::mt19937 gen(rd());
+  // uniform_real_distribution's range is half-open [0, 1); flip it to
+  // (0, 1] so unif() is never exactly 0, which would make -ln(unif)
+  // diverge below.
+  std::uniform_real_distribution<double> dist(0.0, 1.0);
+  double unif = 1.0 - dist(gen);
 
-IndexGraph::LevelId IndexGraph::get_insert_level() { return LevelId{0}; }
+  // Algorithm 1, line 4:
+  // l <- floor(-ln(unif(0,1)) * mL)
+  // where mL = 1 / ln(M)
+  double level = std::floor(-std::log(unif) * m_store.level_norm_factor());
+
+  double max_level = static_cast<double>(IndexStore::max_level().value);
+  level = std::min(level, max_level);
+  return LevelId{static_cast<uint8_t>(level)};
+}
 
 bool IndexGraph::get_entry_point(std::vector<Node> &out,
                                  LevelId & /*out_level*/) {
@@ -97,16 +115,48 @@ bool IndexGraph::unlink_neighbours(const Node & /*node*/,
   return false;
 }
 
-uint32_t IndexGraph::M() const { return 0; }
-uint32_t IndexGraph::ef_construction() const { return 0; }
-uint32_t IndexGraph::Mmax(LevelId /*level*/) const { return 0; }
+uint32_t IndexGraph::M() const { return m_store.num_neighbours(); }
+uint32_t IndexGraph::ef_construction() const {
+  return m_store.ef_construction();
+}
+uint32_t IndexGraph::Mmax(LevelId level) const {
+  auto *store = m_store.level(level);
+  assert(store != nullptr);
+  return store->max_neighbours();
+}
 
 // Lock primitives backing LockGraph/LockLevels below.
-void IndexGraph::lock_graph(LockMode /*mode*/) {}
-void IndexGraph::unlock_graph(LockMode /*mode*/) {}
+void IndexGraph::lock_graph(LockMode mode) {
+  if (mode == LockMode::Shared)
+    m_store.mutex().lock_shared();
+  else
+    m_store.mutex().lock();
+}
 
-void IndexGraph::lock_level(LevelId /*level*/, LockMode /*mode*/) {}
-void IndexGraph::unlock_level(LevelId /*level*/, LockMode /*mode*/) {}
+void IndexGraph::unlock_graph(LockMode mode) {
+  if (mode == LockMode::Shared)
+    m_store.mutex().unlock_shared();
+  else
+    m_store.mutex().unlock();
+}
+
+void IndexGraph::lock_level(LevelId level, LockMode mode) {
+  auto *store = m_store.level(level);
+  assert(store != nullptr);
+  if (mode == LockMode::Shared)
+    store->mutex().lock_shared();
+  else
+    store->mutex().lock();
+}
+
+void IndexGraph::unlock_level(LevelId level, LockMode mode) {
+  auto *store = m_store.level(level);
+  assert(store != nullptr);
+  if (mode == LockMode::Shared)
+    store->mutex().unlock_shared();
+  else
+    store->mutex().unlock();
+}
 
 IndexGraph::LockGraph::LockGraph(IndexGraph &graph, LockMode mode)
     : m_graph(graph), m_mode(mode) {

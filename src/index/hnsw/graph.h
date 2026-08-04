@@ -138,8 +138,6 @@ public:
 
   bool visible(const Node &node, bool &out);
 
-  void set_level(LevelId level);
-
   // Returns the randomly-generated level for the element about to be
   // inserted (Algorithm 1, line 4):
   LevelId get_insert_level();

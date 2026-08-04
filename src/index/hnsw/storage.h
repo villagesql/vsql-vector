@@ -24,6 +24,7 @@
 #ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_STORAGE_H
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_STORAGE_H
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <shared_mutex>
@@ -87,13 +88,42 @@ public:
   LevelStore(LevelId level, ColumnStore &store, ColumnStore &overflow,
              uint32_t num_neighbours)
       : m_level(level), m_store(store), m_overflow(overflow),
-        m_taget_neighbours(num_neighbours) {
-    // HNSW paper recommends a larger degree limit at level 0 (Mmax0 = 2*M)
-    m_max_neighbours =
-        (level.value == 0) ? (2 * num_neighbours) : num_neighbours;
-  }
+        m_num_neighbours(num_neighbours) {}
 
   std::shared_mutex &mutex() { return m_mutex; }
+
+  // Target neighbour degree (M) at a given level. Equal to the configured M
+  // for every level today, but kept level-parameterized since the HNSW
+  // paper treats it as a per-level quantity.
+  static constexpr uint32_t target_neighbours(LevelId /*level*/, uint32_t M) {
+    return M;
+  }
+
+  // Maximum neighbour degree permitted at a given level (Mmax, or
+  // Mmax0 = 2*M at level 0, per the HNSW paper).
+  static constexpr uint32_t max_neighbours(LevelId level, uint32_t M) {
+    return level.value == 0 ? 2 * M : M;
+  }
+
+  // Maximum number of incoming-NID slots held by a single overflow entry
+  // (chain link). Capped at MAX_OVERFLOW_LEN, but never larger than M itself
+  // since it would be pointless to size an overflow link above the degree
+  // it's compensating for.
+  static constexpr uint32_t MAX_OVERFLOW_LEN = 8;
+  static constexpr uint32_t overflow_capacity(LevelId /*level*/, uint32_t M) {
+    return std::min(MAX_OVERFLOW_LEN, M);
+  }
+
+  uint32_t target_neighbours() const {
+    return target_neighbours(m_level, m_num_neighbours);
+  }
+  uint32_t max_neighbours() const {
+    return max_neighbours(m_level, m_num_neighbours);
+  }
+  uint32_t overflow_capacity() const {
+    return overflow_capacity(m_level, m_num_neighbours);
+  }
+
   // TODO(villagesql-indexing): Implement Insert
   // TODO(villagesql-indexing): Implement Search
   // TODO(villagesql-indexing): Implement Purge
@@ -103,8 +133,7 @@ private:
   LevelId m_level;
   ColumnStore &m_store;
   ColumnStore &m_overflow;
-  uint32_t m_taget_neighbours = 0;
-  uint32_t m_max_neighbours = 0;
+  uint32_t m_num_neighbours = 0;
 };
 
 // Metadata stored in each store's root page.
@@ -174,6 +203,28 @@ public:
     std::shared_lock lock(m_mutex);
     return m_entry_point == IndexScanKey::EMPTY_REF;
   }
+
+  // Configured number of neighbours M.
+  uint32_t num_neighbours() const { return m_num_neighbours; }
+
+  // Graph exploration factor during insertion.
+  uint32_t ef_construction() const { return m_ef_construction; }
+
+  // Normalization factor mL used to draw an element's insertion level
+  // (Algorithm 1, line 4), derived from M as 1/ln(M).
+  double level_norm_factor() const { return m_level_norm_factor; }
+
+  // Highest level a node may ever be inserted at, bounded by the fixed
+  // number of per-level stores this index can hold.
+  static constexpr LevelStore::LevelId max_level() {
+    return LevelStore::LevelId{S_MAX_LEVEL - 1};
+  }
+
+  // Whole-graph lock, protecting graph-wide metadata (entry point/level).
+  std::shared_mutex &mutex() { return m_mutex; }
+
+  // Store for level, or nullptr if that level has not been created yet.
+  LevelStore *level(LevelStore::LevelId level);
 
 private:
   // Two segments: Primary for level-0, Secondary for the rest of the levels.
