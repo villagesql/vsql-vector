@@ -183,6 +183,14 @@ public:
   // Read the storage metadata from a formatted root page.
   std::string read_metadata(const Page &root_page) const;
 
+  // Overwrite the storage metadata bytes in place. metadata.size() must
+  // equal the length fixed by init() (storage_metadata_len): every later
+  // field's offset is computed relative to it, so the length cannot change
+  // without reformatting the page. The root page must be X latched.
+  // Returns false on success, true if metadata.size() doesn't match.
+  bool update_header(Page &root_page, MtrCtx::Ref mtr,
+                     std::string_view metadata) const;
+
   // Select a data page for insert with latch on root. This function examines
   // the root page to find a suitable data page.
   // Sets data_page_ref to INVALID_REF if no page found.
@@ -237,8 +245,9 @@ public:
   uint8_t get_num_segments() const { return m_num_segments; }
   uint16_t get_column_size() const { return m_column_size; }
   uint16_t get_max_free_slots() const { return m_max_free_slots; }
+  uint8_t get_metadata_len() const { return m_storage_metadata_len; }
 
- private:
+private:
   // Randomly select a slot index between 0 and max_size-1 (inclusive).
   // Returns 0 if max_size is 0.
   static uint16_t get_random_slot(uint16_t max_size);

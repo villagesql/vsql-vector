@@ -462,7 +462,7 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
   return false;
 }
 
-bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref,
+bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
                         Column::Data &col_data, Column::Data &rowid_prefix,
                         Segment::TrxRef &trx_ref, bool &delete_marked,
                         char *error_msg, uint32_t error_msg_len) {
@@ -474,9 +474,11 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref,
   // Step 2: Use the provided mtr context
   auto mtr = static_cast<MtrCtx::Ref>(mctx);
 
-  // Step 3: Load data page with S latch
+  // Step 3: Load data page with S latch, or X if the caller intends to
+  // update the record.
   Page data_page;
-  if (data_page.load(m_space_ref, data_page_ref, Page::Latch::SHARED, mtr) !=
+  auto latch = for_update ? Page::Latch::EXCLUSIVE : Page::Latch::SHARED;
+  if (data_page.load(m_space_ref, data_page_ref, latch, mtr) !=
       Error::SUCCESS) {
     fill_error("fetch: failed to load data page", error_msg, error_msg_len,
                false);
@@ -507,6 +509,75 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref,
   // Step 7: We don't store rowid_prefix for SVECTOR
   rowid_prefix.data = nullptr;
   rowid_prefix.length = 0;
+
+  return false;
+}
+
+bool ColumnStore::update(MtrCtx::Ref mctx, Column::Ref col_ref,
+                         const Column::Data col_data,
+                         std::span<const uint16_t> chunk_ids,
+                         uint16_t chunk_size, char *error_msg,
+                         uint32_t error_msg_len) {
+  if (chunk_ids.empty()) {
+    return false;
+  }
+
+  // Step 1: Decode column reference to get page and slot
+  Page::Ref data_page_ref;
+  uint16_t slot_index;
+  DataPage::decode_column_ref(col_ref, data_page_ref, slot_index);
+
+  // Step 2: Use the provided mtr context
+  auto mtr = static_cast<MtrCtx::Ref>(mctx);
+
+  // Step 3: Load data page with X latch
+  Page data_page;
+  if (data_page.load(m_space_ref, data_page_ref, Page::Latch::EXCLUSIVE, mtr) !=
+      Error::SUCCESS) {
+    fill_error("update: failed to load data page", error_msg, error_msg_len,
+               false);
+    return true;
+  }
+
+  // Step 4: Refuse to write into a free slot
+  bool delete_marked = false;
+  bool is_free = true;
+  std::tie(delete_marked, is_free) =
+      m_data.get_record_status(data_page, slot_index);
+  if (is_free) {
+    char info[64];
+    snprintf(info, sizeof(info), "update: slot %u is free", slot_index);
+    fill_error(info, error_msg, error_msg_len, true);
+    return true;
+  }
+
+  // Step 5: Write each requested chunk in turn. Callers must pass
+  // chunk_ids in strictly increasing order; has_prev_index/prev_index
+  // enforce that invariant.
+  Page::Offset rec_offset = m_data.get_record_offset(slot_index);
+  bool has_prev_index = false;
+  uint16_t prev_index = 0;
+  for (uint16_t chunk_index : chunk_ids) {
+    if (has_prev_index && chunk_index <= prev_index) {
+      fill_error("update: chunk indexes not in strictly increasing order",
+                 error_msg, error_msg_len, true);
+      return true;
+    }
+    has_prev_index = true;
+    prev_index = chunk_index;
+
+    uint64_t offset = static_cast<uint64_t>(chunk_index) * chunk_size;
+    if (offset + chunk_size > col_data.length ||
+        offset + chunk_size > m_root.get_column_size()) {
+      fill_error("update: chunk out of bounds", error_msg, error_msg_len, true);
+      return true;
+    }
+
+    Page::Offset write_offset =
+        rec_offset + DataPage::TRX_REF_SIZE + static_cast<Page::Offset>(offset);
+    data_page.write_string(write_offset, col_data.data + offset, chunk_size,
+                           mtr);
+  }
 
   return false;
 }
@@ -627,6 +698,31 @@ bool ColumnStore::purge(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
   return false;
 }
 
+bool ColumnStore::update_metadata(MtrCtx::Ref mctx, std::string_view metadata,
+                                  char *error_msg, uint32_t error_msg_len) {
+  auto mtr = static_cast<MtrCtx::Ref>(mctx);
+
+  Page root_page;
+  if (root_page.load(m_space_ref, m_root_page_ref, Page::Latch::EXCLUSIVE,
+                     mtr) != Error::SUCCESS) {
+    fill_error("update_metadata: failed to load root page", error_msg,
+               error_msg_len, false);
+    return true;
+  }
+
+  if (m_root.update_header(root_page, mtr, metadata)) {
+    char info[96];
+    snprintf(info, sizeof(info),
+             "update_metadata: size mismatch: got=%zu, expected=%u",
+             metadata.size(), m_root.get_metadata_len());
+    fill_error(info, error_msg, error_msg_len, true);
+    return true;
+  }
+
+  m_metadata = metadata;
+  return false;
+}
+
 // ColumnStorage implementation: top-level entry points called via ABI wrappers
 // in storage_builder.h. Each method retrieves the user context via
 // storage->user() and delegates to its methods.
@@ -679,8 +775,8 @@ bool ColumnStorage::select(Ctx *storage, MtrCtx::Ref mctx, Column::Ref col_ref,
                            Segment::TrxRef *trx_ref, bool *delete_marked,
                            char *error_msg, uint32_t error_msg_len) {
   return storage->user()->m_stores[0].fetch(
-      mctx, col_ref, *col_data, *rowid_prefix, *trx_ref, *delete_marked,
-      error_msg, error_msg_len);
+      mctx, col_ref, /*for_update=*/false, *col_data, *rowid_prefix, *trx_ref,
+      *delete_marked, error_msg, error_msg_len);
 }
 
 bool ColumnStorage::mark_delete(Ctx *storage, MtrCtx::Ref mctx,

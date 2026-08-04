@@ -135,6 +135,21 @@ std::string RootPage::read_metadata(const Page &root_page) const {
   return std::string(raw, len);
 }
 
+bool RootPage::update_header(Page &root_page, MtrCtx::Ref mtr,
+                             std::string_view metadata) const {
+  assert(root_page.is_loaded(Page::Latch::EXCLUSIVE));
+
+  if (metadata.size() != m_storage_metadata_len) {
+    return true;
+  }
+
+  root_page.write_string(
+      storage_metadata_off(),
+      reinterpret_cast<const unsigned char *>(metadata.data()), metadata.size(),
+      mtr);
+  return false;
+}
+
 uint16_t RootPage::get_random_slot(uint16_t max_size) {
   if (max_size == 0) {
     return 0;
