@@ -88,6 +88,10 @@ struct OverflowEntry {
   std::span<NID> incoming{};
   // Reference to the next overflow entry, if any.
   NID overflow{};
+
+  static constexpr size_t storage_size(size_t capacity) {
+    return capacity * NID::STORAGE_SIZE + NID::STORAGE_SIZE;
+  }
 };
 
 } // namespace svector::hnsw
