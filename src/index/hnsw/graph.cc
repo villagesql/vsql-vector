@@ -144,7 +144,7 @@ uint32_t IndexGraph::ef_construction() const {
   return m_store.ef_construction();
 }
 uint32_t IndexGraph::Mmax(LevelId level) const {
-  auto *store = m_store.level(level);
+  auto *store = m_store.get_level(level);
   assert(store != nullptr);
   return store->max_neighbours();
 }
@@ -165,7 +165,7 @@ void IndexGraph::unlock_graph(LockMode mode) {
 }
 
 void IndexGraph::lock_level(LevelId level, LockMode mode) {
-  auto *store = m_store.level(level);
+  auto *store = m_store.get_level(level);
   assert(store != nullptr);
   if (mode == LockMode::Shared)
     store->mutex().lock_shared();
@@ -174,7 +174,7 @@ void IndexGraph::lock_level(LevelId level, LockMode mode) {
 }
 
 void IndexGraph::unlock_level(LevelId level, LockMode mode) {
-  auto *store = m_store.level(level);
+  auto *store = m_store.get_level(level);
   assert(store != nullptr);
   if (mode == LockMode::Shared)
     store->mutex().unlock_shared();

@@ -291,6 +291,40 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
   return false;
 }
 
+bool MultiColumnStore::get_root_index(MtrCtx::Ref mctx, Column::Ref col_ref,
+                                      uint8_t &root_idx, char *error_msg,
+                                      uint32_t error_msg_len) {
+  // Step 1: Decode column reference to get the owning data page
+  Page::Ref data_page_ref;
+  uint16_t slot_index;
+  DataPage::decode_column_ref(col_ref, data_page_ref, slot_index);
+
+  // Step 2: Load the data page with a SHARED latch; we only need to read its
+  // root page ref.
+  Space::Ref space_ref = m_stores[0].m_space_ref;
+  Page data_page;
+  if (data_page.load(space_ref, data_page_ref, Page::Latch::SHARED, mctx) !=
+      Error::SUCCESS) {
+    fill_error("get_root_index: failed to load data page", error_msg,
+               error_msg_len, false);
+    return true;
+  }
+
+  // Step 3: Read the root page ref this data page belongs to, and match it
+  // against each store's root page ref.
+  Page::Ref root_page_ref = m_stores[0].m_data.get_root_page_ref(data_page);
+  for (size_t i = 0; i < m_stores.size(); ++i) {
+    if (m_stores[i].m_root_page_ref == root_page_ref) {
+      root_idx = static_cast<uint8_t>(i);
+      return false;
+    }
+  }
+
+  fill_error("get_root_index: no store matches root page ref", error_msg,
+             error_msg_len, true);
+  return true;
+}
+
 void ColumnStore::init(Space::Ref space_ref, Page::Ref root_page_ref,
                        uint16_t col_len, uint8_t num_segments,
                        uint8_t num_root_pages, std::string_view metadata) {

@@ -347,7 +347,16 @@ public:
   std::shared_mutex &mutex() { return m_mutex; }
 
   // Store for level, or nullptr if that level has not been created yet.
-  LevelStore *level(LevelStore::LevelId level);
+  LevelStore *get_level(LevelStore::LevelId level) {
+    return level.value < S_MAX_LEVEL && m_levels[level.value].has_value()
+               ? &*m_levels[level.value]
+               : nullptr;
+  }
+
+  // Store owning nid's record, or nullptr if it cannot be resolved. On
+  // success, kind is set to which of that level's two stores (Neighbour or
+  // Overflow) the record lives in.
+  LevelStore *locate(NID nid, StoreKind &kind, char *err, uint32_t err_len);
 
 private:
   // Two segments: Primary for level-0, Secondary for the rest of the levels.
