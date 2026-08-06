@@ -24,11 +24,30 @@
 #ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 
+#include "hnsw.h"
 #include "storage.h"
 #include <cassert>
 #include <stack>
 
 namespace svector::hnsw {
+
+// Reusable scratch buffers shared by graph operations.
+// Sized once from the index configuration so hot paths never allocate.
+struct GraphContext {
+  GraphContext(size_t neighbour_buf_size, size_t overflow_buf_size,
+               size_t vector_buf_size, size_t max_update_slots)
+      : m_neighbour_buf(neighbour_buf_size), m_overflow_buf(overflow_buf_size),
+        m_vector_buf_1(vector_buf_size), m_vector_buf_2(vector_buf_size),
+        m_update_slots(max_update_slots), m_chunk_ids(max_update_slots) {}
+
+  ScratchBytes m_neighbour_buf;
+  ScratchBytes m_overflow_buf;
+  ScratchBytes m_vector_buf_1;
+  ScratchBytes m_vector_buf_2;
+
+  ScratchSlots m_update_slots;
+  ScratchChunkIds m_chunk_ids;
+};
 
 class IndexGraph {
 public:
@@ -128,7 +147,7 @@ public:
     std::stack<LevelId> m_stack;
   };
 
-  explicit IndexGraph(IndexStore &store) : m_store(store) {}
+  IndexGraph(IndexStore &store, size_t vector_buf_size);
 
   bool distance(const Node &a, const Node &b, DistanceType &out);
 
@@ -196,6 +215,7 @@ private:
   void unlock_level(LevelId level, LockMode mode);
 
   IndexStore &m_store;
+  GraphContext m_ctx;
 };
 
 } // namespace svector::hnsw

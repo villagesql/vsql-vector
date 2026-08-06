@@ -24,11 +24,64 @@
 #ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_HNSW_H
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_HNSW_H
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <span>
+#include <vector>
 
 namespace svector::hnsw {
+
+// Fixed-size reusable scratch storage.
+// Allocated once during construction and reused to avoid allocations in
+// performance-critical graph operations.
+template <typename T> struct ScratchArray {
+  explicit ScratchArray(size_t size) : m_data(size) {}
+
+  void clear() { fill(T{}); }
+
+  void fill(const T &value) { std::fill(m_data.begin(), m_data.end(), value); }
+
+  T &operator[](size_t i) { return m_data[i]; }
+  const T &operator[](size_t i) const { return m_data[i]; }
+
+  T *data() { return m_data.data(); }
+  const T *data() const { return m_data.data(); }
+
+  std::span<T> span() { return m_data; }
+  std::span<const T> span() const { return m_data; }
+  std::span<T> span(size_t n) { return span().first(n); }
+  std::span<const T> span(size_t n) const { return span().first(n); }
+
+  size_t size() const { return m_data.size(); }
+  bool empty() const { return m_data.empty(); }
+
+  auto begin() { return m_data.begin(); }
+  auto end() { return m_data.end(); }
+
+  auto begin() const { return m_data.begin(); }
+  auto end() const { return m_data.end(); }
+
+private:
+  std::vector<T> m_data;
+};
+
+struct SlotIndex {
+  static constexpr uint16_t INVALID = std::numeric_limits<uint16_t>::max();
+
+  uint16_t value = INVALID;
+
+  constexpr SlotIndex(uint16_t v) : value(v) {}
+  constexpr SlotIndex() = default;
+
+  constexpr bool is_valid() const { return value != INVALID; }
+};
+
+using ScratchBytes = ScratchArray<std::byte>;
+using ScratchSlots = ScratchArray<SlotIndex>;
+using ScratchChunkIds = ScratchArray<uint16_t>;
 
 template <typename Tag> struct Id {
   static constexpr uint64_t INVALID = 0;
@@ -64,6 +117,9 @@ struct Node {
   static constexpr size_t STORAGE_SIZE = NID::STORAGE_SIZE + VID::STORAGE_SIZE;
 };
 
+// Which of a level's two stores a node (or NID) belongs to.
+enum class StoreKind { Neighbour, Overflow };
+
 // A Neighbour entry in HNSW index.
 struct NeighbourEntry {
   // Vector owning this neighbour entry.
@@ -82,6 +138,28 @@ struct NeighbourEntry {
   }
 };
 
+// Selects which fields of a NeighbourEntry a partial update writes or a
+// partial fetch unmarshals.
+enum class NodeField : uint32_t {
+  Owner = 1 << 0,
+  LowerLevel = 1 << 1,
+  Neighbours = 1 << 2,
+  Overflow = 1 << 3,
+};
+
+constexpr NodeField operator|(NodeField a, NodeField b) {
+  return static_cast<NodeField>(static_cast<uint32_t>(a) |
+                                static_cast<uint32_t>(b));
+}
+
+constexpr bool has(NodeField mask, NodeField field) {
+  return (static_cast<uint32_t>(mask) & static_cast<uint32_t>(field)) != 0;
+}
+
+// Every NeighbourEntry field -- the default fetch mask for a full read.
+constexpr NodeField FieldAll = NodeField::Owner | NodeField::LowerLevel |
+                               NodeField::Neighbours | NodeField::Overflow;
+
 // Overflow entry to hold extra incoming connections to a Node. Overflow
 // entries are chained.
 struct OverflowEntry {
@@ -93,6 +171,26 @@ struct OverflowEntry {
     return capacity * NID::STORAGE_SIZE + NID::STORAGE_SIZE;
   }
 };
+
+// Selects which fields of an OverflowEntry a partial update writes.
+enum class OverflowUpdateField : uint32_t {
+  Incoming = 1 << 0,
+  Overflow = 1 << 1,
+};
+
+constexpr OverflowUpdateField operator|(OverflowUpdateField a,
+                                        OverflowUpdateField b) {
+  return static_cast<OverflowUpdateField>(static_cast<uint32_t>(a) |
+                                          static_cast<uint32_t>(b));
+}
+
+constexpr bool has(OverflowUpdateField mask, OverflowUpdateField field) {
+  return (static_cast<uint32_t>(mask) & static_cast<uint32_t>(field)) != 0;
+}
+
+// Every OverflowEntry field -- the default fetch mask for a full read.
+constexpr OverflowUpdateField OverflowFieldAll =
+    OverflowUpdateField::Incoming | OverflowUpdateField::Overflow;
 
 } // namespace svector::hnsw
 
