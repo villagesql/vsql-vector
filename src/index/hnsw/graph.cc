@@ -28,6 +28,30 @@
 
 namespace svector::hnsw {
 
+namespace {
+
+// Level 0 has the largest Mmax (2*M, vs. M above it) and every level's
+// overflow capacity is the same regardless of level, so level 0 sizes the
+// worst case for both buffers.
+GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size) {
+  const uint32_t M = store.num_neighbours();
+  const uint32_t mmax0 = LevelStore::max_neighbours(LevelStore::LevelId{0}, M);
+  const uint32_t overflow_capacity =
+      LevelStore::overflow_capacity(LevelStore::LevelId{0}, M);
+  // Level 0 has no lower level, so its NeighbourEntry omits that field.
+  const size_t neighbour_buf_size =
+      NeighbourEntry::storage_size(mmax0, /*has_lower_level=*/false);
+  const size_t overflow_buf_size =
+      OverflowEntry::storage_size(overflow_capacity);
+  return GraphContext(neighbour_buf_size, overflow_buf_size, vector_buf_size,
+                      /*max_update_slots=*/mmax0);
+}
+
+} // namespace
+
+IndexGraph::IndexGraph(IndexStore &store, size_t vector_buf_size)
+    : m_store(store), m_ctx(make_graph_context(store, vector_buf_size)) {}
+
 bool IndexGraph::distance(const Node & /*a*/, const Node & /*b*/,
                           DistanceType &out) {
   out = 0.0;
