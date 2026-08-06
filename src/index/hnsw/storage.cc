@@ -508,10 +508,21 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
   return false;
 }
 
-LevelStore *IndexStore::level(LevelStore::LevelId lvl) {
-  if (lvl.value >= S_MAX_LEVEL)
+LevelStore *IndexStore::locate(NID nid, StoreKind &kind, char *err,
+                               uint32_t err_len) {
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+
+  uint8_t root_idx = 0;
+  bool failed = m_multi_store.get_root_index(
+      mtr, static_cast<Column::Ref>(nid.value), root_idx, err, err_len);
+  mtr_ctx.commit();
+
+  if (failed)
     return nullptr;
-  return m_levels[lvl.value].has_value() ? &*m_levels[lvl.value] : nullptr;
+
+  kind = (root_idx & 1) ? StoreKind::Overflow : StoreKind::Neighbour;
+  return get_level(LevelStore::LevelId{static_cast<uint8_t>(root_idx >> 1)});
 }
 
 uint8_t IndexStore::segment_index(const RootId &root) const {
