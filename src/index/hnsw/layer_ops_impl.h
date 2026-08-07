@@ -49,8 +49,9 @@ LayerOperations<Graph, Policy>::LayerOperations(Graph &graph, const Node &query)
 
 template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::search(
-    const std::vector<Node> &entry_points, uint32_t ef) {
+    const std::vector<Node> &entry_points, LevelId level, uint32_t ef) {
   reset();
+  m_level = level;
 
   if (seed_impl(entry_points)) {
     return true;
@@ -78,8 +79,10 @@ bool LayerOperations<Graph, Policy>::search(
 }
 
 template <typename Graph, template <typename> class Policy>
-bool LayerOperations<Graph, Policy>::seed(const std::vector<Node> &candidates) {
+bool LayerOperations<Graph, Policy>::seed(const std::vector<Node> &candidates,
+                                          LevelId level) {
   reset();
+  m_level = level;
 
   if (seed_impl(candidates)) {
     return true;
@@ -253,7 +256,7 @@ bool LayerOperations<Graph, Policy>::extend_with_neighbours() {
   // so the count is snapshotted first.
   const size_t original_count = m_expand_buf.size();
   for (size_t i = 0; i < original_count; ++i) {
-    if (m_graph.neighbours(m_expand_buf[i].node, m_neighbour_buf)) {
+    if (m_graph.neighbours(m_expand_buf[i].node, m_level, m_neighbour_buf)) {
       return true;
     }
     for (const Node &neighbour : m_neighbour_buf) {
@@ -346,7 +349,7 @@ bool LayerOperations<Graph, Policy>::seed_impl(
 
 template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::expand(const Node &node, uint32_t ef) {
-  if (m_graph.neighbours(node, m_neighbour_buf)) {
+  if (m_graph.neighbours(node, m_level, m_neighbour_buf)) {
     return true;
   }
 

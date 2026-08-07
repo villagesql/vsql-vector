@@ -27,6 +27,7 @@
 #include "hnsw.h"
 #include "storage.h"
 #include <cassert>
+#include <span>
 #include <stack>
 
 namespace svector::hnsw {
@@ -40,10 +41,11 @@ struct GraphContext {
   // and vid) and the scalar fields add a few more.
   GraphContext(size_t neighbour_buf_size, size_t overflow_buf_size,
                size_t vector_buf_size, size_t max_update_slots,
-               size_t max_update_chunks)
+               size_t max_update_chunks, std::span<char> error)
       : m_neighbour_buf(neighbour_buf_size), m_overflow_buf(overflow_buf_size),
         m_vector_buf_1(vector_buf_size), m_vector_buf_2(vector_buf_size),
-        m_update_slots(max_update_slots), m_chunk_ids(max_update_chunks) {}
+        m_update_slots(max_update_slots), m_chunk_ids(max_update_chunks),
+        m_error(error) {}
 
   ScratchBytes m_neighbour_buf;
   ScratchBytes m_overflow_buf;
@@ -52,6 +54,12 @@ struct GraphContext {
 
   ScratchSlots m_update_slots;
   ScratchChunkIds m_chunk_ids;
+
+  // Non-owning error buffer for the single API call this GraphContext (and
+  // its owning IndexGraph) was constructed for -- IndexGraph is constructed
+  // fresh per top-level call by the API entry point that already has its
+  // own err/err_len from the caller, rather than shared/reused across calls.
+  std::span<char> m_error;
 };
 
 class IndexGraph {
@@ -152,13 +160,20 @@ public:
     std::stack<LevelId> m_stack;
   };
 
-  IndexGraph(IndexStore &store, size_t vector_buf_size);
+  // Constructed fresh by the API entry point handling a single top-level
+  // call (e.g. the DML insert() hook), which already has its own index,
+  // trx_ref and err/err_len to inject -- not shared or reused across calls.
+  IndexGraph(IndexStore &store, Index &index, Segment::TrxRef trx_ref,
+             size_t vector_buf_size, std::span<char> err);
 
   bool distance(const Node &a, const Node &b, DistanceType &out);
 
   bool distance(const NodeData &a, const Node &b, DistanceType &out);
 
-  bool neighbours(const Node &node, std::vector<Node> &out);
+  // level is node's own level. Callers always already know it (it's how
+  // they located node in the first place), so it's taken directly instead
+  // of rediscovering it with a locate() call.
+  bool neighbours(const Node &node, LevelId level, std::vector<Node> &out);
 
   bool visible(const Node &node, bool &out);
 
@@ -177,31 +192,36 @@ public:
   bool set_entry_point(const std::vector<Node> &nodes, LevelId level);
 
   bool create_node(const std::optional<Node> &parent, LevelId level,
-                   const NodeData &data, const std::vector<Node> &neighbours,
+                   const NodeData &data, std::vector<Node> &neighbours,
                    Node &out);
 
-  bool drop_node(const std::optional<Node> &parent, const Node &node);
+  // level is node's own level; when parent is present, it is implicitly at
+  // level.value + 1 (mirrors create_node()'s parent/level relationship).
+  bool drop_node(const std::optional<Node> &parent, LevelId level,
+                 const Node &node);
 
-  bool get_next_level(const Node &node, Node &out);
+  // level is node's own level.
+  bool get_next_level(const Node &node, LevelId level, Node &out);
 
   // Adds the reciprocal edges from node's neighbours back to node. If doing
   // so would push a neighbour's degree past Mmax for node's level, the edge
   // is withheld and that neighbour is appended to out instead, leaving
   // GraphOperations::insert() to reselect and replace its full neighbour set
-  // (Algorithm 1, lines 14-15).
-  bool link_neighbours(const Node &node, std::vector<Node> &out);
+  // (Algorithm 1, lines 14-15). level is node's own level.
+  bool link_neighbours(const Node &node, LevelId level, std::vector<Node> &out);
 
   // Replaces the full set of node's neighbours at node's level with
   // neighbours, discarding any existing edges not present in the new list.
-  bool replace_neighbours(const Node &node,
+  // level is node's own level.
+  bool replace_neighbours(const Node &node, LevelId level,
                           const std::vector<Node> &neighbours);
 
   // No: unlink only the neighbours that have another edge of their own and
   // so won't be left orphaned by losing this one; out is set to the
   // neighbours actually unlinked. Yes: unlink the rest (the ones that do
-  // become orphaned); out is set to those.
+  // become orphaned); out is set to those. level is node's own level.
   enum class UnlinkOrphans { No, Yes };
-  bool unlink_neighbours(const Node &node, UnlinkOrphans orphans,
+  bool unlink_neighbours(const Node &node, LevelId level, UnlinkOrphans orphans,
                          std::vector<Node> &out);
 
   // Configured construction parameters.
@@ -219,7 +239,16 @@ private:
   void lock_level(LevelId level, LockMode mode);
   void unlock_level(LevelId level, LockMode mode);
 
+  // Convenience accessors for m_ctx.m_error, this call's non-owning error
+  // buffer.
+  char *err() const { return m_ctx.m_error.data(); }
+  uint32_t err_len() const {
+    return static_cast<uint32_t>(m_ctx.m_error.size());
+  }
+
   IndexStore &m_store;
+  Index &m_index;
+  Segment::TrxRef m_trx_ref;
   GraphContext m_ctx;
 };
 
