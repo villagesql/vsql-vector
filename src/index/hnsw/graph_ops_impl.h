@@ -89,14 +89,14 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
   // the single nearest element found at each layer.
   while (level > insert_level) {
     // Search current layer to zoom into nearest candidates.
-    if (layer.search(candidates, GREEDY_DESCENT_EF)) {
+    if (layer.search(candidates, level, GREEDY_DESCENT_EF)) {
       return true;
     }
     layer.consume_all(candidates);
     // Prepare for the next layer by replacing the current candidates
     // with their next-level counterparts.
     assert(level.has_lower_level());
-    if (advance_to_next_level(candidates)) {
+    if (advance_to_next_level(candidates, level)) {
       return true;
     }
     // Acquire level lock for next layer.
@@ -111,24 +111,33 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
   Node top_node{};
 
   // Lines 8-16: from min(L, l) down to 0, gather efConstruction candidates
-  // and connect q to its selected neighbours at each layer.
+  // and connect q to its selected neighbours at each layer. Levels above L
+  // (only possible when l > L, i.e. q is becoming the new tallest entry
+  // point) have nothing else in them yet -- nothing to search or link
+  // against -- so q is created there with no neighbours instead; candidates
+  // stays exactly what get_entry_point() returned until level actually
+  // reaches L, at which point it's finally valid to search with.
   for (;;) {
-    // Line 17 (folded in early): search() populates W, which then also
-    // serves as ep for the next (lower) layer's search -- consume_heuristic()
-    // below hands it back via candidate_pool, straight into candidates,
-    // without re-evaluating any of its distances.
-    if (layer.search(candidates, m_graph.ef_construction())) {
-      return true;
-    }
     std::vector<Node> neighbours;
-    // Use the standard HNSW Algorithm 4 settings:
-    //   - extend_candidates = false
-    //   - keep_pruned_connections = true
-    // TODO(villagesql-indexing): Consider making these options configurable.
-    if (layer.consume_heuristic(m_graph.M(), ExtendCandidates::No,
-                                KeepPrunedConnections::Yes, neighbours,
-                                &candidates)) {
-      return true;
+    if (level > entry_level) {
+      // Brand-new top level: no search, no neighbours.
+    } else {
+      // Line 17 (folded in early): search() populates W, which then also
+      // serves as ep for the next (lower) layer's search -- consume_heuristic()
+      // below hands it back via candidate_pool, straight into candidates,
+      // without re-evaluating any of its distances.
+      if (layer.search(candidates, level, m_graph.ef_construction())) {
+        return true;
+      }
+      // Use the standard HNSW Algorithm 4 settings:
+      //   - extend_candidates = false
+      //   - keep_pruned_connections = true
+      // TODO(villagesql-indexing): Consider making these options configurable.
+      if (layer.consume_heuristic(m_graph.M(), ExtendCandidates::No,
+                                  KeepPrunedConnections::Yes, neighbours,
+                                  &candidates)) {
+        return true;
+      }
     }
     // create_node() also creates the outgoing links to neighbours.
     // Reciprocal links are added after reaching layer 0 by traversing the
@@ -149,11 +158,9 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
 
     if (level.has_lower_level()) {
       if (level <= entry_level) {
-        // candidates is this level's real search result -- promote it to
+        // candidates is this level's real search result -- translate it to
         // its counterparts one level down before searching there next.
-        // Above entry_level nothing real has been searched yet, so there's
-        // nothing to promote.
-        if (advance_to_next_level(candidates)) {
+        if (advance_to_next_level(candidates, level)) {
           return true;
         }
       }
@@ -175,7 +182,7 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
     // outright, leaving shrink_neighbours() below to decide their final
     // neighbour set (Algorithm 1, lines 14-15).
     std::vector<Node> overflowed;
-    if (m_graph.link_neighbours(node, overflowed)) {
+    if (m_graph.link_neighbours(node, node_level, overflowed)) {
       return true;
     }
     if (shrink_neighbours(layer, node, node_level, overflowed)) {
@@ -245,7 +252,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
     // path is expected to be rare.
   }
 
-  std::stack<Node> nodes;
+  std::stack<std::pair<Node, LevelId>> nodes;
 
   // If target_node turns out to be the entry point, its replacement is
   // the first survivor found at the topmost level that still has one --
@@ -275,7 +282,8 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
       // endpoint, keeping the rest intact -- they're good entry points
       // for repairing the ones that would be orphaned.
       std::vector<Node> unlinked;
-      if (m_graph.unlink_neighbours(current, UnlinkOrphans::No, unlinked)) {
+      if (m_graph.unlink_neighbours(current, level, UnlinkOrphans::No,
+                                    unlinked)) {
         return true;
       }
 
@@ -285,7 +293,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
       // never descend further to do it -- using the survivors above as
       // search_layer's entry points.
       std::vector<Node> orphaned;
-      if (m_graph.neighbours(current, orphaned)) {
+      if (m_graph.neighbours(current, level, orphaned)) {
         return true;
       }
       for (const Node &orphan : orphaned) {
@@ -300,7 +308,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
         }
         std::vector<Node> candidates(unlinked);
         layer.reset(orphan);
-        if (layer.search(candidates, m_graph.ef_construction())) {
+        if (layer.search(candidates, level, m_graph.ef_construction())) {
           return true;
         }
         std::vector<Node> new_neighbours;
@@ -309,11 +317,11 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
                                     new_neighbours)) {
           return true;
         }
-        if (m_graph.replace_neighbours(orphan, new_neighbours)) {
+        if (m_graph.replace_neighbours(orphan, level, new_neighbours)) {
           return true;
         }
         std::vector<Node> overflowed;
-        if (m_graph.link_neighbours(orphan, overflowed)) {
+        if (m_graph.link_neighbours(orphan, level, overflowed)) {
           return true;
         }
         if (shrink_neighbours(layer, orphan, level, overflowed)) {
@@ -332,16 +340,17 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
       // Now that the orphaned ones are repaired elsewhere, sever the
       // remaining edges too.
       std::vector<Node> unused;
-      if (m_graph.unlink_neighbours(current, UnlinkOrphans::Yes, unused)) {
+      if (m_graph.unlink_neighbours(current, level, UnlinkOrphans::Yes,
+                                    unused)) {
         return true;
       }
 
-      nodes.push(current);
+      nodes.push({current, level});
       if (!level.has_lower_level()) {
         break;
       }
       Node next{};
-      if (m_graph.get_next_level(current, next)) {
+      if (m_graph.get_next_level(current, level, next)) {
         return true;
       }
       current = next;
@@ -363,13 +372,13 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
   // passing its parent -- the node one level up, gathered in phase 1 -- so
   // the parent's next-level pointer can be fixed up too.
   while (!nodes.empty()) {
-    Node current = nodes.top();
+    auto [current, current_level] = nodes.top();
     nodes.pop();
     std::optional<Node> parent;
     if (!nodes.empty()) {
-      parent = nodes.top();
+      parent = nodes.top().first;
     }
-    if (m_graph.drop_node(parent, current)) {
+    if (m_graph.drop_node(parent, current_level, current)) {
       return true;
     }
   }
@@ -428,14 +437,14 @@ bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
   // the single nearest element found at each layer.
   for (auto level = entry_level; level.has_lower_level();
        level = levels.descend()) {
-    if (upper_layer.search(candidates, GREEDY_DESCENT_EF)) {
+    if (upper_layer.search(candidates, level, GREEDY_DESCENT_EF)) {
       return true;
     }
     upper_layer.consume_all(candidates);
     // Prepare for the next layer by replacing the current candidates
     // with their next-level counterparts.
     assert(level.has_lower_level());
-    if (advance_to_next_level(candidates)) {
+    if (advance_to_next_level(candidates, level)) {
       return true;
     }
   }
@@ -444,7 +453,7 @@ bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
   // layer whose result is returned, so it's the only one filtered for
   // visibility.
   BottomLayerOps bottom_layer(m_graph, query_node_data);
-  if (bottom_layer.search(candidates, ef_search)) {
+  if (bottom_layer.search(candidates, LevelId{0}, ef_search)) {
     return true;
   }
 
@@ -458,10 +467,10 @@ bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
 
 template <typename Graph>
 bool GraphOperations<Graph>::advance_to_next_level(
-    std::vector<Node> &candidates) {
+    std::vector<Node> &candidates, LevelId level) {
   for (Node &n : candidates) {
     Node next{};
-    if (m_graph.get_next_level(n, next)) {
+    if (m_graph.get_next_level(n, level, next)) {
       return true;
     }
     n = next;
@@ -483,7 +492,7 @@ bool GraphOperations<Graph>::shrink_neighbours(
 
   for (const Node &neighbour : overflowed) {
     std::vector<Node> connections;
-    if (m_graph.neighbours(neighbour, connections)) {
+    if (m_graph.neighbours(neighbour, level, connections)) {
       return true;
     }
     connections.push_back(linked_node);
@@ -493,7 +502,7 @@ bool GraphOperations<Graph>::shrink_neighbours(
     // already the exact candidate set to select Mmax(level) neighbours
     // from -- so seed() (Step 1 without the expansion loop) stands in for
     // search().
-    if (layer.seed(connections)) {
+    if (layer.seed(connections, level)) {
       return true;
     }
     std::vector<Node> shrunk;
@@ -501,7 +510,7 @@ bool GraphOperations<Graph>::shrink_neighbours(
                                 KeepPrunedConnections::No, shrunk)) {
       return true;
     }
-    if (m_graph.replace_neighbours(neighbour, shrunk)) {
+    if (m_graph.replace_neighbours(neighbour, level, shrunk)) {
       return true;
     }
   }

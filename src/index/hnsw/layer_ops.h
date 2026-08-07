@@ -56,6 +56,7 @@ private:
 //   using Node = ...;
 //   using NodeData = ...;
 //   using DistanceType = ...;  // DefaultConstructible and LessThanComparable
+//   using LevelId = ...;       // DefaultConstructible
 //
 //   // Computes the distance between two nodes and stores the result in 'out'.
 //   bool distance(const Node&, const Node&, DistanceType& out);
@@ -65,7 +66,8 @@ private:
 //   bool distance(const NodeData&, const Node&, DistanceType& out);
 //
 //   // Replaces the contents of 'out' with the neighbours of the node.
-//   bool neighbours(const Node&, std::vector<Node>& out);
+//   // 'level' is the node's own level, as passed to search()/seed() below.
+//   bool neighbours(const Node&, LevelId level, std::vector<Node>& out);
 //
 // Graph::Node must provide:
 //   using KeyType = ...;  // Hashable and equality comparable.
@@ -87,6 +89,7 @@ public:
   using PolicyType = Policy<Graph>;
   using Node = typename Graph::Node;
   using NodeData = typename Graph::NodeData;
+  using LevelId = typename Graph::LevelId;
   enum class ExtendCandidates { No, Yes };
   enum class KeepPrunedConnections { No, Yes };
 
@@ -116,18 +119,23 @@ public:
   // Step 1: executes the search from the entry points (Algorithm 2,
   // SEARCH-LAYER). At most ef visible candidates are retained during the
   // search; invisible candidates are still traversed but never retained,
-  // so they don't count against ef or appear in the result. Returns true
-  // if a graph operation fails.
-  bool search(const std::vector<Node> &entry_points, uint32_t ef);
+  // so they don't count against ef or appear in the result. level is the
+  // level entry_points (and every node this call will traverse to) live
+  // at -- carried into this object's state for the paired consume_*() call
+  // and any neighbours() lookups this call makes itself. Returns true if a
+  // graph operation fails.
+  bool search(const std::vector<Node> &entry_points, LevelId level,
+              uint32_t ef);
 
   // Step 1, traversal-free variant: evaluates the distance from the query
   // to each element of candidates directly (Algorithm 2, lines 1-3,
   // without the expansion loop), for callers that already know the exact
   // set to select from and don't need search()'s neighbourhood traversal
   // (e.g. shrink_neighbours() re-selecting among a node's existing
-  // neighbours plus one new one). Returns true if a graph operation
-  // fails.
-  bool seed(const std::vector<Node> &candidates);
+  // neighbours plus one new one). level is the level candidates live at,
+  // kept for the same reason as in search() above. Returns true if a
+  // graph operation fails.
+  bool seed(const std::vector<Node> &candidates, LevelId level);
 
   // Step 2, variant A: extracts every node found by the preceding
   // search()/seed() call, ordered by increasing distance from the query
@@ -249,6 +257,13 @@ private:
   Graph &m_graph;
   std::variant<Node, NodeData> m_query;
   State m_state = State::Init;
+
+  // Level of the nodes passed to the most recent search()/seed() call --
+  // every node reachable from them via neighbours() lives at this same
+  // level. Set fresh by each such call rather than by reset(), since a
+  // single LayerOperations object is reused across levels (e.g. INSERT's
+  // descent through the graph).
+  LevelId m_level{};
 
   std::unordered_set<typename Node::KeyType> m_visited;
   MinQueue m_candidates;

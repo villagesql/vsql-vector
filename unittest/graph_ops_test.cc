@@ -237,7 +237,8 @@ struct MockGraph {
     return false;
   }
 
-  bool neighbours(const Node &node, std::vector<Node> &out) {
+  bool neighbours(const Node &node, LevelId level, std::vector<Node> &out) {
+    assert(level == node.level);
     if (fail_neighbours) {
       return true;
     }
@@ -327,7 +328,9 @@ struct MockGraph {
     return false;
   }
 
-  bool drop_node(const std::optional<Node> &parent, const Node &node) {
+  bool drop_node(const std::optional<Node> &parent, LevelId level,
+                 const Node &node) {
+    assert(level == node.level);
     if (fail_drop_node) {
       return true;
     }
@@ -339,15 +342,18 @@ struct MockGraph {
     return false;
   }
 
-  bool get_next_level(const Node &node, Node &out) {
+  bool get_next_level(const Node &node, LevelId level, Node &out) {
+    assert(level == node.level);
     if (fail_get_next_level) {
       return true;
     }
-    out = Node{node.level.lower(), node.id};
+    out = Node{level.lower(), node.id};
     return false;
   }
 
-  bool link_neighbours(const Node &node, std::vector<Node> &out) {
+  bool link_neighbours(const Node &node, LevelId level,
+                       std::vector<Node> &out) {
+    assert(level == node.level);
     if (fail_link_neighbours) {
       return true;
     }
@@ -374,8 +380,9 @@ struct MockGraph {
     return false;
   }
 
-  bool replace_neighbours(const Node &node,
+  bool replace_neighbours(const Node &node, LevelId level,
                           const std::vector<Node> &new_neighbours) {
+    assert(level == node.level);
     if (fail_replace_neighbours) {
       return true;
     }
@@ -388,8 +395,9 @@ struct MockGraph {
     return false;
   }
 
-  bool unlink_neighbours(const Node &node, UnlinkOrphans orphans,
+  bool unlink_neighbours(const Node &node, LevelId level, UnlinkOrphans orphans,
                          std::vector<Node> &out) {
+    assert(level == node.level);
     if (fail_unlink_neighbours) {
       return true;
     }

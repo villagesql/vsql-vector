@@ -46,6 +46,11 @@ struct LineGraph {
     int value;
   };
   using DistanceType = float;
+  // LineGraph is a single flat graph with no notion of levels; LevelId
+  // exists only to satisfy the Graph interface and carries no state.
+  struct LevelId {
+    bool operator==(const LevelId &) const = default;
+  };
 
   int n = 0;
   bool fail_distance = false;
@@ -93,7 +98,7 @@ struct LineGraph {
     return false;
   }
 
-  bool neighbours(const Node &node, std::vector<Node> &out) {
+  bool neighbours(const Node &node, LevelId /*level*/, std::vector<Node> &out) {
     if (fail_neighbours) {
       return true;
     }
@@ -171,7 +176,7 @@ void test_basic_knn() {
                                                                     query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
-  assert(!layer.search(candidates, 5));
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 5));
   layer.consume_all(candidates);
   assert(candidates.size() == 5);
 
@@ -198,14 +203,14 @@ void test_reuse_after_search() {
                                                                     query);
 
   std::vector<LineGraph::Node> first_candidates{LineGraph::Node{0}};
-  assert(!layer.search(first_candidates, 5));
+  assert(!layer.search(first_candidates, LineGraph::LevelId{}, 5));
   layer.consume_all(first_candidates);
   assert(first_candidates.size() == 5);
 
   // search() resets internally, so it can be called again with the same
   // query without an explicit reset() call.
   std::vector<LineGraph::Node> second_candidates{LineGraph::Node{19}};
-  assert(!layer.search(second_candidates, 3));
+  assert(!layer.search(second_candidates, LineGraph::LevelId{}, 3));
   layer.consume_all(second_candidates);
   assert(second_candidates.size() == 3);
 
@@ -222,7 +227,7 @@ void test_search_then_consume_heuristic_reuses_search_distances() {
                                                                     query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
-  assert(!layer.search(candidates, 5));
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 5));
   int query_calls_after_search = graph.query_distance_calls;
   assert(query_calls_after_search > 0);
 
@@ -253,7 +258,7 @@ void test_reset_rebinds_query() {
   layer.reset(new_query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
-  assert(!layer.search(candidates, 5));
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 5));
   layer.consume_all(candidates);
 
   // Nearest 5 nodes to 15 (the rebound query), not to 5 (the constructor's
@@ -265,7 +270,7 @@ void test_reset_rebinds_query() {
   // The rebind must stick across further reuse too: search()'s internal
   // no-arg reset() call must not revert to the constructor's query.
   std::vector<LineGraph::Node> second_candidates{LineGraph::Node{19}};
-  assert(!layer.search(second_candidates, 3));
+  assert(!layer.search(second_candidates, LineGraph::LevelId{}, 3));
   layer.consume_all(second_candidates);
   std::vector<int> sorted_second = values(second_candidates);
   std::sort(sorted_second.begin(), sorted_second.end());
@@ -281,7 +286,7 @@ void test_ef_bounds_result_size() {
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{10}};
   uint32_t ef = 1;
-  assert(!layer.search(candidates, ef));
+  assert(!layer.search(candidates, LineGraph::LevelId{}, ef));
   layer.consume_all(candidates);
   assert(candidates.size() == ef);
   assert(candidates[0].value == 10);
@@ -300,7 +305,7 @@ void test_search_dedups_entry_points() {
   // one, changing which of its neighbours make the cut.
   std::vector<LineGraph::Node> candidates{LineGraph::Node{10},
                                           LineGraph::Node{10}};
-  assert(!layer.search(candidates, 5));
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 5));
   layer.consume_all(candidates);
 
   std::vector<int> sorted_got = values(candidates);
@@ -317,7 +322,7 @@ void test_distance_failure_propagates() {
                                                                     query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{10}};
-  assert(layer.search(candidates, 5));
+  assert(layer.search(candidates, LineGraph::LevelId{}, 5));
 }
 
 void test_neighbours_failure_propagates() {
@@ -332,7 +337,7 @@ void test_neighbours_failure_propagates() {
   // Algorithm 2's break condition (line 7) never triggers, forcing an
   // expand() call that hits the failing neighbours().
   std::vector<LineGraph::Node> candidates{LineGraph::Node{10}};
-  assert(layer.search(candidates, 1));
+  assert(layer.search(candidates, LineGraph::LevelId{}, 1));
 }
 
 void test_is_visible_failure_propagates() {
@@ -344,7 +349,7 @@ void test_is_visible_failure_propagates() {
                                                                     query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{10}};
-  assert(layer.search(candidates, 1));
+  assert(layer.search(candidates, LineGraph::LevelId{}, 1));
 }
 
 void test_expand_is_visible_failure_propagates() {
@@ -363,7 +368,7 @@ void test_expand_is_visible_failure_propagates() {
                                                                     query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
-  assert(layer.search(candidates, 6));
+  assert(layer.search(candidates, LineGraph::LevelId{}, 6));
 }
 
 void test_invisible_nodes_excluded_from_result() {
@@ -381,7 +386,7 @@ void test_invisible_nodes_excluded_from_result() {
   // single direction, avoiding same-distance ties in the result set at
   // the ef cutoff (unlike starting from the query itself).
   std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
-  assert(!layer.search(candidates, 6));
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 6));
   layer.consume_all(candidates);
 
   // Without 15, the nearest 6 visible nodes to 15 are {12,13,14,16,17,18}
@@ -412,7 +417,7 @@ void test_invisible_entry_point_does_not_seed_result() {
   // with ef=1 the search must expand past it to find a visible result
   // instead of returning early with an empty/invisible result.
   std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
-  assert(!layer.search(candidates, 1));
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 1));
   layer.consume_all(candidates);
   assert((values(candidates) == std::vector<int>{1}));
 }
@@ -429,7 +434,7 @@ void test_always_visible_policy_ignores_invisibility() {
                                                                        query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
-  assert(!layer.search(candidates, 1));
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 1));
   layer.consume_all(candidates);
   assert((values(candidates) == std::vector<int>{0}));
 }
@@ -448,7 +453,7 @@ void test_consume_simple() {
   // No preceding graph traversal is needed to score this fixed candidate
   // set, so seed() (Step 1 without the expansion loop) stands in for
   // search().
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
   std::vector<LineGraph::Node> result;
   layer.consume_simple(3, result);
   assert(result.size() == 3);
@@ -460,7 +465,7 @@ void test_consume_simple() {
 
   // M larger than the candidate set returns every candidate, still ordered
   // by increasing distance.
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
   std::vector<LineGraph::Node> all;
   layer.consume_simple(10, all);
   std::vector<int> got_all = values(all);
@@ -476,7 +481,7 @@ void test_seed_distance_failure_propagates() {
                                                                     query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{5}};
-  assert(layer.seed(candidates));
+  assert(layer.seed(candidates, LineGraph::LevelId{}));
 }
 
 void test_consume_heuristic_prefers_diverse_candidates() {
@@ -494,7 +499,7 @@ void test_consume_heuristic_prefers_diverse_candidates() {
   std::vector<LineGraph::Node> candidates{
       LineGraph::Node{5}, LineGraph::Node{9}, LineGraph::Node{12},
       LineGraph::Node{16}};
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
 
   std::vector<LineGraph::Node> result;
   assert(!layer.consume_heuristic(3, decltype(layer)::ExtendCandidates::No,
@@ -516,7 +521,7 @@ void test_consume_heuristic_keeps_pruned_connections() {
   std::vector<LineGraph::Node> candidates{
       LineGraph::Node{5}, LineGraph::Node{9}, LineGraph::Node{12},
       LineGraph::Node{16}};
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
 
   std::vector<LineGraph::Node> result;
   assert(!layer.consume_heuristic(3, decltype(layer)::ExtendCandidates::No,
@@ -543,14 +548,14 @@ void test_consume_heuristic_extend_candidates() {
   std::vector<LineGraph::Node> candidates{LineGraph::Node{6},
                                           LineGraph::Node{17}};
 
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
   std::vector<LineGraph::Node> without_extend;
   assert(!layer.consume_heuristic(3, decltype(layer)::ExtendCandidates::No,
                                   decltype(layer)::KeepPrunedConnections::No,
                                   without_extend));
   assert((values(without_extend) == std::vector<int>{6, 17}));
 
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
   std::vector<LineGraph::Node> with_extend;
   assert(!layer.consume_heuristic(3, decltype(layer)::ExtendCandidates::Yes,
                                   decltype(layer)::KeepPrunedConnections::No,
@@ -559,7 +564,7 @@ void test_consume_heuristic_extend_candidates() {
 
   // With keep_pruned_connections, the remaining slot backfills from the
   // discarded candidates nearest to the query: 6 (dist 4) before 5, 17, 18.
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
   std::vector<LineGraph::Node> with_extend_and_keep;
   assert(!layer.consume_heuristic(3, decltype(layer)::ExtendCandidates::Yes,
                                   decltype(layer)::KeepPrunedConnections::Yes,
@@ -581,7 +586,7 @@ void test_consume_heuristic_extend_candidates_dedups_overlap() {
   // neighbour of 9).
   std::vector<LineGraph::Node> candidates{LineGraph::Node{7},
                                           LineGraph::Node{9}};
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
 
   std::vector<LineGraph::Node> result;
   assert(!layer.consume_heuristic(4, decltype(layer)::ExtendCandidates::Yes,
@@ -604,7 +609,7 @@ void test_consume_heuristic_m_zero() {
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{9},
                                           LineGraph::Node{11}};
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
   std::vector<LineGraph::Node> result;
   assert(!layer.consume_heuristic(0, decltype(layer)::ExtendCandidates::No,
                                   decltype(layer)::KeepPrunedConnections::No,
@@ -632,7 +637,7 @@ void test_consume_heuristic_is_dominated_distance_failure_propagates() {
   // is the first is_dominated() distance() call -- the fourth overall.
   std::vector<LineGraph::Node> candidates{
       LineGraph::Node{5}, LineGraph::Node{9}, LineGraph::Node{12}};
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
 
   std::vector<LineGraph::Node> result{LineGraph::Node{-1}};
   assert(layer.consume_heuristic(3, decltype(layer)::ExtendCandidates::No,
@@ -656,7 +661,7 @@ void test_consume_heuristic_extend_candidates_neighbours_failure_propagates() {
   // ExtendCandidates::Yes makes it fetch each candidate's neighbours.
   std::vector<LineGraph::Node> candidates{LineGraph::Node{5},
                                           LineGraph::Node{9}};
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
 
   std::vector<LineGraph::Node> result{LineGraph::Node{-1}};
   assert(layer.consume_heuristic(2, decltype(layer)::ExtendCandidates::Yes,
@@ -680,7 +685,7 @@ void test_consume_heuristic_extend_candidates_distance_failure_propagates() {
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{6},
                                           LineGraph::Node{17}};
-  assert(!layer.seed(candidates));
+  assert(!layer.seed(candidates, LineGraph::LevelId{}));
 
   std::vector<LineGraph::Node> result{LineGraph::Node{-1}};
   assert(layer.consume_heuristic(3, decltype(layer)::ExtendCandidates::Yes,

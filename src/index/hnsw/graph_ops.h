@@ -56,14 +56,14 @@ namespace svector::hnsw {
 //   // Maximum neighbour degree permitted at 'level' (Mmax / Mmax0).
 //   uint32_t Mmax(LevelId level) const;
 //
-//   // Severs the edges between 'node' and its neighbours at node's level.
-//   // No: unlinks only the neighbours that have another edge of their own
-//   // and so won't be left orphaned by losing this one; 'out' is set to
-//   // the neighbours actually unlinked. Yes: unlinks the rest -- the ones
-//   // that do become orphaned; 'out' is set to those.
+//   // Severs the edges between 'node' and its neighbours at 'level' (node's
+//   // own level). No: unlinks only the neighbours that have another edge of
+//   // their own and so won't be left orphaned by losing this one; 'out' is
+//   // set to the neighbours actually unlinked. Yes: unlinks the rest -- the
+//   // ones that do become orphaned; 'out' is set to those.
 //   enum class UnlinkOrphans { No, Yes };
-//   bool unlink_neighbours(const Node& node, UnlinkOrphans orphans,
-//                          std::vector<Node>& out);
+//   bool unlink_neighbours(const Node& node, LevelId level,
+//                          UnlinkOrphans orphans, std::vector<Node>& out);
 template <typename Graph> class GraphOperations {
 public:
   using Node = typename Graph::Node;
@@ -86,7 +86,8 @@ private:
   static constexpr uint32_t GREEDY_DESCENT_EF = 1;
 
   // Replaces each candidate with its counterpart at the next lower level.
-  bool advance_to_next_level(std::vector<Node> &candidates);
+  // level is the level every candidate currently lives at.
+  bool advance_to_next_level(std::vector<Node> &candidates, LevelId level);
 
   // Reselects up to Mmax(level) neighbours for each node in 'overflowed',
   // after 'linked_node' was withheld from being linked back to it by

@@ -33,7 +33,8 @@ namespace {
 // Level 0 has the largest Mmax (2*M, vs. M above it) and every level's
 // overflow capacity is the same regardless of level, so level 0 sizes the
 // worst case for both buffers.
-GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size) {
+GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size,
+                                std::span<char> err) {
   const uint32_t M = store.num_neighbours();
   const uint32_t mmax0 = LevelStore::max_neighbours(LevelStore::LevelId{0}, M);
   const uint32_t overflow_capacity =
@@ -44,13 +45,15 @@ GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size) {
   const size_t overflow_buf_size =
       OverflowEntry::storage_size(overflow_capacity);
   return GraphContext(neighbour_buf_size, overflow_buf_size, vector_buf_size,
-                      /*max_update_slots=*/mmax0);
+                      /*max_update_slots=*/mmax0, err);
 }
 
 } // namespace
 
-IndexGraph::IndexGraph(IndexStore &store, size_t vector_buf_size)
-    : m_store(store), m_ctx(make_graph_context(store, vector_buf_size)) {}
+IndexGraph::IndexGraph(IndexStore &store, Index &index, Segment::TrxRef trx_ref,
+                       size_t vector_buf_size, std::span<char> err)
+    : m_store(store), m_index(index), m_trx_ref(trx_ref),
+      m_ctx(make_graph_context(store, vector_buf_size, err)) {}
 
 bool IndexGraph::distance(const Node & /*a*/, const Node & /*b*/,
                           DistanceType &out) {
@@ -64,7 +67,8 @@ bool IndexGraph::distance(const NodeData & /*a*/, const Node & /*b*/,
   return false;
 }
 
-bool IndexGraph::neighbours(const Node & /*node*/, std::vector<Node> &out) {
+bool IndexGraph::neighbours(const Node & /*node*/, LevelId /* level */,
+                            std::vector<Node> &out) {
   out.clear();
   return false;
 }
@@ -106,33 +110,34 @@ bool IndexGraph::set_entry_point(const std::vector<Node> & /*nodes*/,
 
 bool IndexGraph::create_node(const std::optional<Node> & /*parent*/,
                              LevelId /*level*/, const NodeData & /*data*/,
-                             const std::vector<Node> & /*neighbours*/,
+                             std::vector<Node> & /*neighbours*/,
                              Node & /*out*/) {
   return false;
 }
 
 bool IndexGraph::drop_node(const std::optional<Node> & /*parent*/,
-                           const Node & /*node*/) {
+                           LevelId /*level*/, const Node & /*node*/) {
   return false;
 }
 
-bool IndexGraph::get_next_level(const Node & /*node*/, Node &out) {
+bool IndexGraph::get_next_level(const Node & /*node*/, LevelId /*level*/,
+                                Node &out) {
   out = Node{};
   return false;
 }
 
-bool IndexGraph::link_neighbours(const Node & /*node*/,
+bool IndexGraph::link_neighbours(const Node & /*node*/, LevelId /*level*/,
                                  std::vector<Node> &out) {
   out.clear();
   return false;
 }
 
-bool IndexGraph::replace_neighbours(const Node & /*node*/,
+bool IndexGraph::replace_neighbours(const Node & /*node*/, LevelId /*level*/,
                                     const std::vector<Node> & /*neighbours*/) {
   return false;
 }
 
-bool IndexGraph::unlink_neighbours(const Node & /*node*/,
+bool IndexGraph::unlink_neighbours(const Node & /*node*/, LevelId /*level*/,
                                    UnlinkOrphans /*orphans*/,
                                    std::vector<Node> &out) {
   out.clear();
