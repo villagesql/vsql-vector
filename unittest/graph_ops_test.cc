@@ -342,7 +342,7 @@ struct MockGraph {
     return false;
   }
 
-  bool get_next_level(const Node &node, LevelId level, Node &out) {
+  bool get_next_level_node(const Node &node, LevelId level, Node &out) {
     assert(level == node.level);
     if (fail_get_next_level) {
       return true;
