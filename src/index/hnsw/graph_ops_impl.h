@@ -350,7 +350,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
         break;
       }
       Node next{};
-      if (m_graph.get_next_level(current, level, next)) {
+      if (m_graph.get_next_level_node(current, level, next)) {
         return true;
       }
       current = next;
@@ -470,7 +470,7 @@ bool GraphOperations<Graph>::advance_to_next_level(
     std::vector<Node> &candidates, LevelId level) {
   for (Node &n : candidates) {
     Node next{};
-    if (m_graph.get_next_level(n, level, next)) {
+    if (m_graph.get_next_level_node(n, level, next)) {
       return true;
     }
     n = next;
