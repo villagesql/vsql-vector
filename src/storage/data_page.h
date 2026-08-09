@@ -111,6 +111,16 @@ public:
   // Sentinel value for invalid slot number
   static constexpr uint16_t INVALID_SLOT = 0xFFFF;
 
+  // Column::Ref is a 64-bit value. Column Storage uses only the low 46 bits.
+  // The high 18 bits are guaranteed to be zero for every valid Column::Ref.
+  //
+  // This guarantee allows consumers of Column Storage to embed Column::Ref
+  // in a wider identifier and use the unused high bits for their own
+  // purposes.
+  static constexpr uint8_t SLOT_INDEX_BITS = 14;
+  static constexpr uint16_t MAX_SLOT_INDEX =
+      (1u << SLOT_INDEX_BITS) - 1; // 16383
+
   static_assert(VERSION_OFF == Page::HEADER_SIZE,
                 "VERSION_OFF must start after page header");
   static_assert(PAGE_TYPE_OFF == VERSION_OFF + VERSION_LEN,

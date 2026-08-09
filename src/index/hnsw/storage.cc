@@ -293,8 +293,7 @@ bool LevelStore::insert(MtrCtx::Ref mtr, const OverflowEntry &entry,
 bool LevelStore::remove(MtrCtx::Ref mtr, StoreKind kind, NID nid,
                         Segment::TrxRef trx_ref, char *err, uint32_t err_len) {
   ColumnStore &store = (kind == StoreKind::Neighbour) ? m_store : m_overflow;
-  return store.purge(mtr, trx_ref, static_cast<Column::Ref>(nid.value), err,
-                     err_len);
+  return store.purge(mtr, trx_ref, nid.column_ref(), err, err_len);
 }
 
 bool LevelStore::update(MtrCtx::Ref mtr, NID id, const NeighbourEntry &entry,
@@ -341,7 +340,7 @@ bool LevelStore::update(MtrCtx::Ref mtr, NID id, const NeighbourEntry &entry,
 
   Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
                         static_cast<uint32_t>(len)};
-  return m_store.update(mtr, static_cast<Column::Ref>(id.value), col_data,
+  return m_store.update(mtr, id.column_ref(), col_data,
                         chunk_ids.span(num_chunks), CHUNK_SIZE, err, err_len);
 }
 
@@ -378,22 +377,21 @@ bool LevelStore::update(MtrCtx::Ref mtr, NID id, const OverflowEntry &entry,
 
   Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
                         static_cast<uint32_t>(len)};
-  return m_overflow.update(mtr, static_cast<Column::Ref>(id.value), col_data,
+  return m_overflow.update(mtr, id.column_ref(), col_data,
                            chunk_ids.span(num_chunks), CHUNK_SIZE, err,
                            err_len);
 }
 
 bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
                        NeighbourEntry &entry, size_t &num_valid, char *err,
-                       uint32_t err_len, NodeField mask,
+                       uint32_t err_len, NodeField mask, IncomingFilter filter,
                        const ScratchChunkIds *slots) {
   Column::Data col_data;
   Column::Data rowid_prefix;
   Segment::TrxRef trx_ref;
   bool delete_marked = false;
-  if (m_store.fetch(mtr, static_cast<Column::Ref>(id.value), for_update,
-                    col_data, rowid_prefix, trx_ref, delete_marked, err,
-                    err_len))
+  if (m_store.fetch(mtr, id.column_ref(), for_update, col_data, rowid_prefix,
+                    trx_ref, delete_marked, err, err_len))
     return true;
 
   const auto *base = reinterpret_cast<const std::byte *>(col_data.data);
@@ -410,22 +408,25 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
 
   if (has(mask, NodeField::Neighbours)) {
     // for_update: a later update() will write back by slot, so every
-    // requested slot -- INVALID ones included -- is written in place to
-    // keep entry.neighbours aligned with slots. Read-only: no such
-    // alignment is needed, so INVALID slots are dropped and the valid ones
-    // are compacted to the front.
+    // requested slot -- INVALID and filtered-out ones included -- is
+    // written in place to keep entry.neighbours aligned with slots.
+    // Read-only: no such alignment is needed, so INVALID and filtered-out
+    // slots are dropped and the rest are compacted to the front.
     size_t write_idx = 0;
     size_t valid_count = 0;
     auto handle_slot = [&](uint16_t slot) {
       const uint64_t nid_val = read_chunk(neighbour_nid_chunk(slot));
-      const bool valid = NID{nid_val}.is_valid();
-      if (valid) {
+      const NID nid{nid_val};
+      const bool include =
+          nid.is_valid() &&
+          !(filter == IncomingFilter::ExcludeIncoming && nid.is_incoming());
+      if (include) {
         ++valid_count;
       } else if (!for_update) {
         return;
       }
       entry.neighbours[write_idx++] =
-          Node{NID{nid_val}, VID{read_chunk(neighbour_vid_chunk(slot))}};
+          Node{nid, VID{read_chunk(neighbour_vid_chunk(slot))}};
     };
 
     if (slots != nullptr) {
@@ -458,9 +459,8 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
   Column::Data rowid_prefix;
   Segment::TrxRef trx_ref;
   bool delete_marked = false;
-  if (m_overflow.fetch(mtr, static_cast<Column::Ref>(id.value), for_update,
-                       col_data, rowid_prefix, trx_ref, delete_marked, err,
-                       err_len))
+  if (m_overflow.fetch(mtr, id.column_ref(), for_update, col_data, rowid_prefix,
+                       trx_ref, delete_marked, err, err_len))
     return true;
 
   const auto *base = reinterpret_cast<const std::byte *>(col_data.data);
@@ -514,8 +514,8 @@ LevelStore *IndexStore::locate(NID nid, StoreKind &kind, char *err,
   auto mtr = mtr_ctx.start();
 
   uint8_t root_idx = 0;
-  bool failed = m_multi_store.get_root_index(
-      mtr, static_cast<Column::Ref>(nid.value), root_idx, err, err_len);
+  bool failed = m_multi_store.get_root_index(mtr, nid.column_ref(), root_idx,
+                                             err, err_len);
   mtr_ctx.commit();
 
   if (failed)
