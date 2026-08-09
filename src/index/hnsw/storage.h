@@ -172,22 +172,29 @@ public:
   // max_neighbours() is decoded; otherwise entry.neighbours[i] is decoded
   // from on-disk slot (*slots)[i] for each i (unlike update(), slots need
   // not be in any particular order for a fetch). num_valid is set to how
-  // many of the decoded neighbours are valid (non-INVALID); fields outside
-  // mask leave it untouched.
+  // many of the decoded neighbours are valid (non-INVALID and, per filter
+  // below, not excluded); fields outside mask leave it untouched.
+  //
+  // filter selects whether a decoded neighbour whose NID has the incoming
+  // flag set (Id<NIDTag>::is_incoming()) counts as valid: All keeps it,
+  // ExcludeIncoming treats it exactly like an INVALID slot for num_valid
+  // and the for_update compaction described below.
   //
   // for_update distinguishes a read meant to feed a later slot-aligned
   // update() from a read-only lookup: when true, every requested slot is
-  // written to entry.neighbours in place (including INVALID ones), so
-  // positions still line up with slots for that later update() call, and
-  // entry.neighbours must be sized to hold every requested slot. When
-  // false, INVALID slots are skipped and the valid ones are compacted to
-  // the front of entry.neighbours, which is then shrunk to
-  // entry.neighbours.first(num_valid) -- there's no later update() to stay
-  // aligned with, so entry.neighbours only needs to be sized for the
-  // number of slots requested, not exactly num_valid.
+  // written to entry.neighbours in place (including INVALID and
+  // filtered-out ones), so positions still line up with slots for that
+  // later update() call, and entry.neighbours must be sized to hold every
+  // requested slot. When false, INVALID and filtered-out slots are skipped
+  // and the remaining ones are compacted to the front of entry.neighbours,
+  // which is then shrunk to entry.neighbours.first(num_valid) -- there's no
+  // later update() to stay aligned with, so entry.neighbours only needs to
+  // be sized for the number of slots requested, not exactly num_valid.
   bool fetch(MtrCtx::Ref mtr, NID id, bool for_update, NeighbourEntry &entry,
              size_t &num_valid, char *err, uint32_t err_len,
-             NodeField mask = FieldAll, const ScratchChunkIds *slots = nullptr);
+             NodeField mask = FieldAll,
+             IncomingFilter filter = IncomingFilter::ExcludeIncoming,
+             const ScratchChunkIds *slots = nullptr);
 
   // Same as above, for m_overflow's record layout: slots[i] identifies the
   // on-disk incoming-slot decoded into entry.incoming[i] when mask includes

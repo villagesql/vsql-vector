@@ -32,7 +32,11 @@
 #include <span>
 #include <vector>
 
+#include <villagesql/preview/storage_api.h>
+
 namespace svector::hnsw {
+
+using vsql::preview_storage::Column;
 
 // Fixed-size reusable scratch storage.
 // Allocated once during construction and reused to avoid allocations in
@@ -100,6 +104,38 @@ template <typename Tag> struct Id {
 struct NIDTag {};
 struct VIDTag {};
 
+// NID's value is the Column::Ref of the NeighbourEntry/OverflowEntry record
+// it names. Column Storage guarantees the high 18 bits of a Column::Ref are
+// always zero (see DataPage::MAX_SLOT_INDEX), so bit 46 -- the lowest of
+// those guaranteed-free bits -- is repurposed here as the "incoming" flag.
+template <> struct Id<NIDTag> {
+  static constexpr uint64_t INVALID = 0;
+  static constexpr size_t STORAGE_SIZE = 6;
+
+  static constexpr uint64_t INCOMING_BIT = uint64_t{1} << 46;
+  static constexpr uint64_t COLUMN_REF_MASK = INCOMING_BIT - 1;
+
+  uint64_t value{INVALID};
+
+  constexpr Id() = default;
+  constexpr explicit Id(uint64_t v) : value(v) {}
+
+  constexpr bool is_valid() const { return value != INVALID; }
+  constexpr explicit operator bool() const { return is_valid(); }
+
+  constexpr auto operator<=>(const Id &) const = default;
+
+  // The Column::Ref this NID's record lives at, with the incoming flag
+  // masked off.
+  constexpr Column::Ref column_ref() const {
+    return static_cast<Column::Ref>(value & COLUMN_REF_MASK);
+  }
+
+  constexpr bool is_incoming() const { return (value & INCOMING_BIT) != 0; }
+  constexpr Id set_incoming() const { return Id(value | INCOMING_BIT); }
+  constexpr Id clear_incoming() const { return Id(value & ~INCOMING_BIT); }
+};
+
 // Node ID
 using NID = Id<NIDTag>;
 
@@ -159,6 +195,11 @@ constexpr bool has(NodeField mask, NodeField field) {
 // Every NeighbourEntry field -- the default fetch mask for a full read.
 constexpr NodeField FieldAll = NodeField::Owner | NodeField::LowerLevel |
                                NodeField::Neighbours | NodeField::Overflow;
+
+// Whether LevelStore::fetch()'s NeighbourEntry overload includes or drops
+// neighbours whose NID has the incoming flag set (Id<NIDTag>::is_incoming())
+// when decoding NodeField::Neighbours.
+enum class IncomingFilter { All, ExcludeIncoming };
 
 // Overflow entry to hold extra incoming connections to a Node. Overflow
 // entries are chained.
