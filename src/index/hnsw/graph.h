@@ -25,6 +25,7 @@
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 
 #include "index.h"
+#include <cassert>
 #include <stack>
 
 namespace svector::hnsw {
@@ -64,15 +65,21 @@ public:
 
     // Upgrades the lock from S to X by releasing the shared lock and
     // acquiring the exclusive lock. The operation is not atomic, so
-    // there is a window during which no lock is held. No-op if the
-    // lock is already held in X mode.
-    void upgrade() { relock(LockMode::Exclusive); }
+    // there is a window during which no lock is held. Callers must
+    // already hold the lock in S mode.
+    void upgrade() {
+      assert(m_mode == LockMode::Shared);
+      relock(LockMode::Exclusive);
+    }
 
     // Downgrades the lock from X to S by releasing the exclusive lock
     // and acquiring the shared lock. The operation is not atomic, so
-    // there is a window during which no lock is held. No-op if the
-    // lock is already held in S mode.
-    void downgrade() { relock(LockMode::Shared); }
+    // there is a window during which no lock is held. Callers must
+    // already hold the lock in X mode.
+    void downgrade() {
+      assert(m_mode == LockMode::Exclusive);
+      relock(LockMode::Shared);
+    }
 
     // Returns the mode in which the graph is currently locked.
     LockMode lock_mode() const { return m_mode; }

@@ -147,6 +147,15 @@ template <typename Graph> bool GraphOperations<Graph>::insert(Node &new_node) {
     }
 
     if (level.has_lower_level()) {
+      if (level <= entry_level) {
+        // candidates is this level's real search result -- promote it to
+        // its counterparts one level down before searching there next.
+        // Above entry_level nothing real has been searched yet, so there's
+        // nothing to promote.
+        if (promote_children(candidates)) {
+          return true;
+        }
+      }
       level = levels.descend();
     } else {
       break;
