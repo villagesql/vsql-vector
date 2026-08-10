@@ -21,25 +21,31 @@
 // along with this program; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-#include "hnsw_search.h"
+// Out-of-line template definitions for LayerOperations, declared in
+// layer_ops.h. Split out into this header (rather than folded into
+// layer_ops.h directly) so a caller can explicitly instantiate
+// LayerOperations for its own Graph/Policy without also linking against a
+// production Graph type -- see layer_ops.cc for the IndexGraph
+// instantiation, and unittest/layer_ops_test.cc for the standalone-mock
+// instantiation.
+
+#ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_IMPL_H
+#define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_IMPL_H
+
+#include "layer_ops.h"
 
 namespace svector::hnsw {
 
-// Instantiate a search layer type
-// template class LayerOperations<MyGraph, MyPolicy>;
+template <typename Graph, template <typename> class Policy>
+LayerOperations<Graph, Policy>::LayerOperations(Graph &graph, const Node &query)
+    : m_graph(graph), m_query(query) {}
 
-template <typename Graph, typename Policy>
-LayerOperations<Graph, Policy>::LayerOperations(Graph &graph, const Node &query,
-                                                Policy policy)
-    : m_graph(graph), m_query(query), m_policy(std::move(policy)) {}
-
-template <typename Graph, typename Policy>
-bool LayerOperations<Graph, Policy>::search_layer(
-    const std::vector<Node> &entry_points, uint32_t ef,
-    std::vector<Node> &out) {
+template <typename Graph, template <typename> class Policy>
+bool LayerOperations<Graph, Policy>::search_layer(std::vector<Node> &candidates,
+                                                  uint32_t ef) {
   reset();
 
-  if (seed(entry_points)) {
+  if (seed(candidates)) {
     return true;
   }
 
@@ -60,11 +66,11 @@ bool LayerOperations<Graph, Policy>::search_layer(
     }
   }
 
-  consume_result(out);
+  consume_result(candidates);
   return false;
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 void LayerOperations<Graph, Policy>::consume_result(std::vector<Node> &out) {
   out.clear();
   if (!m_results.empty()) {
@@ -79,7 +85,7 @@ void LayerOperations<Graph, Policy>::consume_result(std::vector<Node> &out) {
   }
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 void LayerOperations<Graph, Policy>::reset(const Node *query) {
   if (query != nullptr) {
     m_query = *query;
@@ -93,7 +99,7 @@ void LayerOperations<Graph, Policy>::reset(const Node *query) {
   m_neighbour_buf.clear();
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::select_neighbours_simple(
     const std::vector<Node> &candidates, uint32_t M, std::vector<Node> &out) {
   reset();
@@ -121,10 +127,11 @@ bool LayerOperations<Graph, Policy>::select_neighbours_simple(
   return false;
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::select_neighbours_heuristic(
-    const std::vector<Node> &candidates, uint32_t M, bool extend_candidates,
-    bool keep_pruned_connections, std::vector<Node> &out) {
+    const std::vector<Node> &candidates, uint32_t M,
+    ExtendCandidates extend_candidates,
+    KeepPrunedConnections keep_pruned_connections, std::vector<Node> &out) {
   reset();
 
   // Algorithm 4, lines 2-8: W <- C, optionally extended with neighbours.
@@ -164,7 +171,7 @@ bool LayerOperations<Graph, Policy>::select_neighbours_heuristic(
 
   // Algorithm 4, lines 15-17: backfill from the discarded candidates,
   // nearest-first.
-  if (keep_pruned_connections) {
+  if (keep_pruned_connections == KeepPrunedConnections::Yes) {
     for (size_t i = 0; i < m_expand_buf.size() && m_neighbour_buf.size() < M;
          ++i) {
       m_neighbour_buf.push_back(std::move(m_expand_buf[i].node));
@@ -179,9 +186,9 @@ bool LayerOperations<Graph, Policy>::select_neighbours_heuristic(
   return false;
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::gather_candidates(
-    const std::vector<Node> &candidates, bool extend_candidates) {
+    const std::vector<Node> &candidates, ExtendCandidates extend_candidates) {
   // Algorithm 4, line 2: W <- C.
   for (const Node &node : candidates) {
     if (m_visited.insert(node.key()).second) {
@@ -190,7 +197,7 @@ bool LayerOperations<Graph, Policy>::gather_candidates(
   }
 
   // Algorithm 4, lines 3-7: extend W with each candidate's neighbours.
-  if (extend_candidates) {
+  if (extend_candidates == ExtendCandidates::Yes) {
     for (const Node &node : candidates) {
       if (m_graph.neighbours(node, m_neighbour_buf)) {
         return true;
@@ -206,7 +213,7 @@ bool LayerOperations<Graph, Policy>::gather_candidates(
   return evaluate_distances(m_expand_buf);
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::is_dominated(
     const Candidate &e, const std::vector<Node> &result, bool &dominated) {
   // Algorithm 4, line 11 (negated): does some element of result already
@@ -225,7 +232,7 @@ bool LayerOperations<Graph, Policy>::is_dominated(
   return false;
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::evaluate_distances(
     std::vector<Candidate> &candidates) {
   // Distance computations are independent and could be parallelized
@@ -238,7 +245,7 @@ bool LayerOperations<Graph, Policy>::evaluate_distances(
   return false;
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::seed(
     const std::vector<Node> &entry_points) {
   // Algorithm 2, lines 1-3: v = C = W = ep.
@@ -258,7 +265,7 @@ bool LayerOperations<Graph, Policy>::seed(
     // Invisible entry points are still traversed from, but must not seed
     // the result set.
     bool visible = false;
-    if (m_policy.is_visible(m_graph, candidate.node, visible)) {
+    if (PolicyType::is_visible(m_graph, candidate.node, visible)) {
       return true;
     }
     if (visible) {
@@ -268,7 +275,7 @@ bool LayerOperations<Graph, Policy>::seed(
   return false;
 }
 
-template <typename Graph, typename Policy>
+template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::expand(const Node &node, uint32_t ef) {
   if (m_graph.neighbours(node, m_neighbour_buf)) {
     return true;
@@ -295,7 +302,7 @@ bool LayerOperations<Graph, Policy>::expand(const Node &node, uint32_t ef) {
       // visible nodes beyond them, but must not enter the result set or
       // count against ef.
       bool visible = false;
-      if (m_policy.is_visible(m_graph, candidate.node, visible)) {
+      if (Policy<Graph>::is_visible(m_graph, candidate.node, visible)) {
         return true;
       }
       if (visible) {
@@ -310,3 +317,5 @@ bool LayerOperations<Graph, Policy>::expand(const Node &node, uint32_t ef) {
 }
 
 } // namespace svector::hnsw
+
+#endif // VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_IMPL_H
