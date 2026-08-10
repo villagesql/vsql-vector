@@ -88,7 +88,7 @@ bool RootPage::format(Page &root_page, MtrCtx::Ref mtr, uint8_t format_version,
       reinterpret_cast<const unsigned char *>(metadata.data()), metadata.size(),
       mtr);
 
-  // Write K and initialize the K-1 other root page REFs to INVALID_REF.
+  // Write K and initialize the K other root page REFs to INVALID_REF.
   root_page.write_integer_1(num_other_root_pages_off(), m_num_other_root_pages,
                             mtr);
   for (uint8_t i = 0; i < m_num_other_root_pages; ++i) {

@@ -74,8 +74,8 @@ public:
   // [Metadata Len(M)] [Storage Metadata]
   // |--------1-------|--------M---------|
   //
-  // [Number of root pages (K)] [Other root page REFs]
-  // |------------1------------|-------4 x K---------|
+  // [Number of other root pages (K)] [Other root page REFs]
+  // |----------------1--------------|-------4 x K---------|
   //
   // [Column Size] [Data Page Head] [Data Page Tail]
   // |-----2------|-------4--------|-------4-------|
@@ -94,7 +94,7 @@ public:
   static constexpr Page::Offset VERSION_LEN = 1;
   static constexpr Page::Offset PAGE_TYPE_LEN = 1;
   static constexpr Page::Offset STORAGE_METADATA_LEN_SIZE = 1;
-  static constexpr Page::Offset NUM_ROOT_PAGES_LEN = 1;
+  static constexpr Page::Offset NUM_OTHER_ROOT_PAGES_LEN = 1;
   static constexpr Page::Offset ROOT_PAGE_REF_LEN = 4;
   static constexpr Page::Offset COLUMN_SIZE_LEN = 2;
   static constexpr Page::Offset ALL_SLOT_HEAD_LEN = 4;
@@ -123,7 +123,7 @@ public:
     return storage_metadata_off() + m_storage_metadata_len;
   }
   inline Page::Offset other_root_pages_off() const {
-    return num_other_root_pages_off() + NUM_ROOT_PAGES_LEN;
+    return num_other_root_pages_off() + NUM_OTHER_ROOT_PAGES_LEN;
   }
 
   inline Page::Offset column_size_off() const {
@@ -171,7 +171,7 @@ public:
     m_num_other_root_pages = num_other_root_pages;
   }
 
-  // Initialize root page parameters. num_segments (N), num_root_pages (K), and
+  // Initialize root page parameters. num_segments (N), num_root_pages, and
   // storage_metadata_len are fixed at creation time and must not change.
   void init(Space::Ref space_ref, uint16_t col_len, uint8_t num_segments,
             uint8_t num_root_pages, uint8_t storage_metadata_len);
