@@ -98,7 +98,8 @@ bool MultiColumnStore::create(Space::Ref space_ref, Segment::TrxRef trx_ref,
   // allocated and assigned on first use.
   for (size_t i = 1; i < storages.size(); ++i) {
     m_stores[i].init(space_ref, Page::INVALID_REF, storages[i].col_len,
-                     num_segments, num_root_pages, storages[i].metadata);
+                     /*num_segments=*/0, /*num_root_pages=*/1,
+                     storages[i].metadata);
   }
 
   {
@@ -204,7 +205,7 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
   // further offsets before the MTR is committed.
   struct PageInfo {
     uint8_t num_segs;
-    uint8_t num_root_pages;
+    uint8_t num_other_root_pages;
     uint16_t col_len;
     std::string metadata;
     RootPage rp;
@@ -214,11 +215,11 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
     // Stage 1: set N only (enables storage_metadata_len_off()).
     uint8_t ns = page.read_integer_1(Page::HEADER_SIZE);
     rp.set_layout(ns, 0, 1);
-    // Stage 2: read metadata length (enables num_root_pages_off()).
+    // Stage 2: read metadata length (enables num_other_root_pages_off()).
     uint8_t ml = page.read_integer_1(rp.storage_metadata_len_off());
     rp.set_layout(ns, ml, 1);
     // Stage 3: read K and finalize layout.
-    uint8_t nrp = page.read_integer_1(rp.num_root_pages_off());
+    uint8_t nrp = page.read_integer_1(rp.num_other_root_pages_off());
     rp.set_layout(ns, ml, nrp);
     return {ns, nrp, page.read_integer_2(rp.column_size_off()),
             rp.read_metadata(page), std::move(rp)};
@@ -235,21 +236,13 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
     return true;
   }
   auto info0 = read_page_info(primary_root);
+  uint8_t num_root_pages = info0.num_other_root_pages + 1;
 
-  // Sanity check. A primary root page must contain at least one root page.
-  // A value of zero indicates corruption or an invalid root page ID.
-  // Do not proceed, as the code below assumes num_root_pages > 0.
-  if (info0.num_root_pages == 0) {
-    fill_error("load: primary root page contains no root pages", error_msg,
-               error_msg_len, false);
-    mtr_ctx.commit();
-    return true;
-  }
+  // Collect all K other root page refs before releasing the latch.
+  std::vector<Page::Ref> other_refs(
+      static_cast<size_t>(info0.num_other_root_pages));
 
-  // Collect all K-1 other root page refs before releasing the latch.
-  std::vector<Page::Ref> other_refs(static_cast<size_t>(info0.num_root_pages) -
-                                    1);
-  for (uint8_t i = 0; i < info0.num_root_pages - 1; ++i) {
+  for (uint8_t i = 0; i < info0.num_other_root_pages; ++i) {
     Page::Offset off =
         info0.rp.other_root_pages_off() +
         static_cast<Page::Offset>(i) * RootPage::ROOT_PAGE_REF_LEN;
@@ -259,17 +252,18 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
 
   // Single resize to avoid triggering the assert(false) move constructor.
   assert(m_stores.empty());
-  m_stores.resize(info0.num_root_pages);
+  m_stores.resize(num_root_pages);
   m_stores[0].init(space_ref, root_page_ref, info0.col_len, info0.num_segs,
-                   info0.num_root_pages, info0.metadata);
+                   num_root_pages, info0.metadata);
 
-  assert(info0.num_root_pages == specs.size());
+  assert(num_root_pages == specs.size());
 
-  for (uint8_t i = 1; i < info0.num_root_pages; ++i) {
+  for (uint8_t i = 1; i < num_root_pages; ++i) {
     Page::Ref ref = other_refs[i - 1];
     if (ref == Page::INVALID_REF) {
       m_stores[i].init(space_ref, Page::INVALID_REF, specs[i].col_len,
-                       info0.num_segs, info0.num_root_pages, specs[i].metadata);
+                       /*num_segments=*/0, /*num_root_pages=*/1,
+                       specs[i].metadata);
       continue;
     }
 
@@ -285,8 +279,12 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
     }
     auto info = read_page_info(sec_root);
     sec_mtr_ctx.commit();
+
+    assert(info.num_segs == 0);
+    assert(info.num_other_root_pages == 0);
+
     m_stores[i].init(space_ref, ref, info.col_len, info.num_segs,
-                     info.num_root_pages, info.metadata);
+                     info.num_other_root_pages + 1, info.metadata);
   }
 
   encode_ref(space_ref, root_page_ref);

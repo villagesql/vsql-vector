@@ -74,8 +74,8 @@ public:
   // [Metadata Len(M)] [Storage Metadata]
   // |--------1-------|--------M---------|
   //
-  // [Number of root pages (K)] [Other root page REFs]
-  // |------------1------------|----4 x (K - 1)------|
+  // [Number of other root pages (K)] [Other root page REFs]
+  // |----------------1--------------|-------4 x K---------|
   //
   // [Column Size] [Data Page Head] [Data Page Tail]
   // |-----2------|-------4--------|-------4-------|
@@ -90,11 +90,11 @@ public:
   // |------------M * 4-------------|-----L-----|-----8-------|
 
   // Fixed-size field lengths. All offsets are dynamic based on number of
-  // segments (N) and Number of root pages(K).
+  // segments (N) and Number of other root pages(K).
   static constexpr Page::Offset VERSION_LEN = 1;
   static constexpr Page::Offset PAGE_TYPE_LEN = 1;
   static constexpr Page::Offset STORAGE_METADATA_LEN_SIZE = 1;
-  static constexpr Page::Offset NUM_ROOT_PAGES_LEN = 1;
+  static constexpr Page::Offset NUM_OTHER_ROOT_PAGES_LEN = 1;
   static constexpr Page::Offset ROOT_PAGE_REF_LEN = 4;
   static constexpr Page::Offset COLUMN_SIZE_LEN = 2;
   static constexpr Page::Offset ALL_SLOT_HEAD_LEN = 4;
@@ -119,15 +119,16 @@ public:
   inline Page::Offset storage_metadata_off() const {
     return storage_metadata_len_off() + STORAGE_METADATA_LEN_SIZE;
   }
-  inline Page::Offset num_root_pages_off() const {
+  inline Page::Offset num_other_root_pages_off() const {
     return storage_metadata_off() + m_storage_metadata_len;
   }
   inline Page::Offset other_root_pages_off() const {
-    return num_root_pages_off() + NUM_ROOT_PAGES_LEN;
+    return num_other_root_pages_off() + NUM_OTHER_ROOT_PAGES_LEN;
   }
 
   inline Page::Offset column_size_off() const {
-    return other_root_pages_off() + ROOT_PAGE_REF_LEN * (m_num_root_pages - 1);
+    return other_root_pages_off() +
+           ROOT_PAGE_REF_LEN * (m_num_other_root_pages);
   }
   inline Page::Offset all_slot_head_off() const {
     return column_size_off() + COLUMN_SIZE_LEN;
@@ -161,16 +162,16 @@ public:
   // bootstrap offset functions before col_len is known. Must be followed by
   // init(). Call in three stages during load:
   //   1. set_layout(N, 0, 1)  — enables storage_metadata_len_off()
-  //   2. set_layout(N, M, 1)  — enables num_root_pages_off()
+  //   2. set_layout(N, M, 1)  — enables num_other_root_pages_off()
   //   3. set_layout(N, M, K)  — final layout
   void set_layout(uint8_t num_segments, uint8_t storage_metadata_len,
-                  uint8_t num_root_pages) {
+                  uint8_t num_other_root_pages) {
     m_num_segments = num_segments;
     m_storage_metadata_len = storage_metadata_len;
-    m_num_root_pages = num_root_pages;
+    m_num_other_root_pages = num_other_root_pages;
   }
 
-  // Initialize root page parameters. num_segments (N), num_root_pages (K), and
+  // Initialize root page parameters. num_segments (N), num_root_pages, and
   // storage_metadata_len are fixed at creation time and must not change.
   void init(Space::Ref space_ref, uint16_t col_len, uint8_t num_segments,
             uint8_t num_root_pages, uint8_t storage_metadata_len);
@@ -251,7 +252,7 @@ public:
   // Set by init() and fixed for the lifetime of this RootPage. Must be
   // initialized before any offset function is called.
   uint8_t m_num_segments = 0;
-  uint8_t m_num_root_pages = 0;
+  uint8_t m_num_other_root_pages = 0;
   uint8_t m_storage_metadata_len = 0;
 
   // Maximum number of free slots for concurrent insert. Might need to reduce
