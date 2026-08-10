@@ -236,7 +236,7 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
     return true;
   }
   auto info0 = read_page_info(primary_root);
-  auto num_root_pages = info0.num_other_root_pages + 1;
+  uint8_t num_root_pages = info0.num_other_root_pages + 1;
 
   // Collect all K other root page refs before releasing the latch.
   std::vector<Page::Ref> other_refs(
