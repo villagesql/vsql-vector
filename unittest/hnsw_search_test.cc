@@ -185,8 +185,9 @@ void test_ef_bounds_result_size() {
 
   std::vector<LineGraph::Node> entry_points{LineGraph::Node{10}};
   std::vector<LineGraph::Node> result;
-  assert(!layer.search_layer(entry_points, 1, result));
-  assert(result.size() == 1);
+  uint32_t ef = 1;
+  assert(!layer.search_layer(entry_points, ef, result));
+  assert(result.size() == ef);
   assert(result[0].value == 10);
 }
 

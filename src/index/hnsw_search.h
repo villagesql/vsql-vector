@@ -52,7 +52,10 @@ namespace svector::hnsw {
 //   // Sets 'out' to whether the node is eligible for inclusion in the
 //   // result set. Nodes that are not eligible are still traversed so the
 //   // search can reach eligible nodes beyond them, but they never appear
-//   // in search_layer()'s output or count against ef.
+//   // in search_layer()'s output or count against ef. The bool return
+//   // value follows the same convention as Graph's methods above: it
+//   // signals failure of the visibility check itself, not the node's
+//   // visibility -- that result is carried in 'out'.
 //   template <typename Graph>
 //   bool is_visible(Graph&, const typename Graph::Node&, bool& out) const;
 namespace detail {

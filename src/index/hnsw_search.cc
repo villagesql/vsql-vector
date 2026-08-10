@@ -71,7 +71,7 @@ void LayerOperations<Graph, Policy>::consume_result(std::vector<Node> &out) {
     // m_results is a max-heap (largest distance first). Fill out
     // back-to-front as we pop, so the final order is ascending by distance
     // without a separate reverse pass.
-    out.resize(m_results.size(), m_results.top().node);
+    out.resize(m_results.size());
     for (auto i = out.size(); i-- > 0;) {
       out[i] = m_results.top().node;
       m_results.pop();
