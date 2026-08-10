@@ -49,6 +49,7 @@ class DataPageParser {
     uint8_t version;
     uint8_t page_type;
     uint16_t free_slot_number;
+    uint32_t root_page_ref;
     uint32_t prev_free_page;
     uint32_t next_free_page;
     uint16_t max_num_recs;

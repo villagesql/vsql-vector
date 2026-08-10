@@ -117,6 +117,7 @@ bool DataPageParser::parse(const std::vector<uint8_t> &page_data,
   info.page_type = read_uint8(page_data, DataPage::PAGE_TYPE_OFF);
   info.free_slot_number =
       read_uint16(page_data, DataPage::FREE_SLOT_NUMBER_OFF);
+  info.root_page_ref = read_uint32(page_data, DataPage::ROOT_PAGE_REF_OFF);
   info.prev_free_page = read_uint32(page_data, DataPage::PREV_FREE_PAGE_OFF);
   info.next_free_page = read_uint32(page_data, DataPage::NEXT_FREE_PAGE_OFF);
   info.max_num_recs = read_uint16(page_data, DataPage::MAX_NUM_RECS_OFF);
@@ -189,7 +190,8 @@ void DataPageParser::display(const DataPageInfo &info, bool verbose,
   if (info.free_slot_number == DataPage::INVALID_SLOT) {
     std::cout << " (not in free list)";
   }
-  std::cout << "\n\n";
+  std::cout << "\n";
+  std::cout << "Root Page:         " << info.root_page_ref << "\n\n";
 
   std::cout << "SVECTOR Data Page Links:\n";
   std::cout << "  Previous:        Page #" << info.fil_page_prev;

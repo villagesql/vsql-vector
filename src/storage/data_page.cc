@@ -88,8 +88,8 @@ void DataPage::init(Space::Ref space_ref, uint16_t col_len) {
 #endif  // NDEBUG
 }
 
-void DataPage::format(Page &data_page, MtrCtx::Ref mtr,
-                      uint8_t format_version) {
+void DataPage::format(Page &data_page, MtrCtx::Ref mtr, uint8_t format_version,
+                      Page::Ref root_page_ref) {
   assert(data_page.is_loaded(Page::Latch::EXCLUSIVE));
 
   assert(has_capacity());
@@ -103,6 +103,9 @@ void DataPage::format(Page &data_page, MtrCtx::Ref mtr,
 
   // Write free slot number (initially invalid)
   data_page.write_integer_2(FREE_SLOT_NUMBER_OFF, INVALID_SLOT, mtr);
+
+  // Write the owning root page reference
+  data_page.write_integer_4(ROOT_PAGE_REF_OFF, root_page_ref, mtr);
 
   // Write previous free page (initially invalid)
   data_page.write_integer_4(PREV_FREE_PAGE_OFF, Page::INVALID_REF, mtr);
@@ -141,6 +144,12 @@ uint16_t DataPage::get_free_slot_number(Page &data_page) const {
   assert(data_page.is_loaded(Page::Latch::EXCLUSIVE) ||
          data_page.is_loaded(Page::Latch::SHARED));
   return data_page.read_integer_2(FREE_SLOT_NUMBER_OFF);
+}
+
+Page::Ref DataPage::get_root_page_ref(Page &data_page) const {
+  assert(data_page.is_loaded(Page::Latch::EXCLUSIVE) ||
+         data_page.is_loaded(Page::Latch::SHARED));
+  return data_page.read_integer_4(ROOT_PAGE_REF_OFF);
 }
 
 void DataPage::set_free_links(Page &data_page, Page::Ref *prev_free_page,
