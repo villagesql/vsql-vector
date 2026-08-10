@@ -40,7 +40,6 @@ template <typename Tag> struct Id {
   constexpr explicit Id(uint64_t v) : value(v) {}
 
   constexpr bool is_valid() const { return value != INVALID; }
-  constexpr explicit operator bool() const { return is_valid(); }
 
   constexpr auto operator<=>(const Id &) const = default;
 };
