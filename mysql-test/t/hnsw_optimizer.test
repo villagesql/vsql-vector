@@ -1,0 +1,80 @@
+# The server optimizer chooses the hnsw custom index for an ORDER BY <distance>
+# LIMIT k query. This is a PLAN-level test: EXPLAIN does not execute the scan,
+# so it verifies optimizer index selection independently of the scan callbacks
+# (whose execution is exercised elsewhere).
+#
+# It also demonstrates that recognition is driven ENTIRELY by what the extension
+# REGISTERS, not by any server-side knowledge of distance functions. The server
+# has no built-in distance functions; l2_distance / cosine_distance are VDFs the
+# vsql_vector extension registers and binds into index profiles (hnsw_l2,
+# hnsw_cosine). The optimizer recognizes a query's ORDER BY function only by
+# matching it against those registered profile bindings. This test shows:
+#   1. the L2 function is recognized for an L2-profile index,
+#   2. a DIFFERENT registered function (cosine) is recognized for a
+#      cosine-profile index -- so it is not hardcoded to one function,
+#   3. a registered function bound to a DIFFERENT profile (cosine) is NOT used
+#      for an L2-profile index -- so it is the registered binding, not merely
+#      "a distance-shaped function on an indexed vector column", that drives it.
+#
+# villagesql_custom_index_proceed bypasses the parse-time "not yet implemented"
+# guard for USING EXTENDED indexes (debug builds only).
+--source include/have_debug.inc
+--source include/have_hypergraph.inc
+
+SET PERSIST vsql_allow_preview_extensions = ON;
+SET SESSION debug='+d,villagesql_custom_index_proceed';
+INSTALL EXTENSION vsql_vector;
+
+# Two tables: one index on the default (L2) profile, one on the cosine profile.
+CREATE TABLE t_l2 (
+  id INT PRIMARY KEY,
+  v SVECTOR(4) NOT NULL
+);
+CREATE INDEX idx_l2 ON t_l2 (v) USING EXTENDED(hnsw);
+
+CREATE TABLE t_cos (
+  id INT PRIMARY KEY,
+  v SVECTOR(4) NOT NULL
+);
+CREATE INDEX idx_cos ON t_cos (v hnsw_cosine) USING EXTENDED(hnsw);
+
+--echo #
+--echo # (1) L2 function recognized for the L2-profile index -> custom scan.
+--echo #
+--replace_regex /cost=[0-9.e+-]+\.\.[0-9.e+-]+/cost=COST/ /rows=[0-9.e+-]+/rows=ROWS/
+EXPLAIN FORMAT=tree
+SELECT id FROM t_l2
+ORDER BY L2_DISTANCE(v, SVECTOR::FROM_STRING('[1,0,0,0]'))
+LIMIT 3;
+
+--echo #
+--echo # (2) A DIFFERENT registered function (cosine) is recognized for the
+--echo # cosine-profile index -> custom scan. Recognition is not tied to one
+--echo # hardcoded function name.
+--echo #
+--replace_regex /cost=[0-9.e+-]+\.\.[0-9.e+-]+/cost=COST/ /rows=[0-9.e+-]+/rows=ROWS/
+EXPLAIN FORMAT=tree
+SELECT id FROM t_cos
+ORDER BY COSINE_DISTANCE(v, SVECTOR::FROM_STRING('[1,0,0,0]'))
+LIMIT 3;
+
+--echo #
+--echo # (3) cosine is a registered distance function, but it is bound to the
+--echo # cosine profile, NOT the L2 index's profile. Ordering the L2 index's
+--echo # table by cosine must NOT take a custom scan -- it falls back to a sort.
+--echo # This proves selection follows the registered binding, not just "a
+--echo # distance function on an indexed vector column".
+--echo #
+--replace_regex /cost=[0-9.e+-]+\.\.[0-9.e+-]+/cost=COST/ /rows=[0-9.e+-]+/rows=ROWS/
+EXPLAIN FORMAT=tree
+SELECT id FROM t_l2
+ORDER BY COSINE_DISTANCE(v, SVECTOR::FROM_STRING('[1,0,0,0]'))
+LIMIT 3;
+
+DROP TABLE t_l2;
+DROP TABLE t_cos;
+UNINSTALL EXTENSION vsql_vector;
+
+SET SESSION debug='-d,villagesql_custom_index_proceed';
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

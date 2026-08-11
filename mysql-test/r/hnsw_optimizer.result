@@ -1,0 +1,58 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
+SET SESSION debug='+d,villagesql_custom_index_proceed';
+INSTALL EXTENSION vsql_vector;
+CREATE TABLE t_l2 (
+id INT PRIMARY KEY,
+v SVECTOR(4) NOT NULL
+);
+CREATE INDEX idx_l2 ON t_l2 (v) USING EXTENDED(hnsw);
+CREATE TABLE t_cos (
+id INT PRIMARY KEY,
+v SVECTOR(4) NOT NULL
+);
+CREATE INDEX idx_cos ON t_cos (v hnsw_cosine) USING EXTENDED(hnsw);
+#
+# (1) L2 function recognized for the L2-profile index -> custom scan.
+#
+EXPLAIN FORMAT=tree
+SELECT id FROM t_l2
+ORDER BY L2_DISTANCE(v, SVECTOR::FROM_STRING('[1,0,0,0]'))
+LIMIT 3;
+EXPLAIN
+-> Limit: 3 row(s)  (cost=COST rows=ROWS)
+    -> Custom index distance scan on idx_l2  (cost=COST rows=ROWS)
+
+#
+# (2) A DIFFERENT registered function (cosine) is recognized for the
+# cosine-profile index -> custom scan. Recognition is not tied to one
+# hardcoded function name.
+#
+EXPLAIN FORMAT=tree
+SELECT id FROM t_cos
+ORDER BY COSINE_DISTANCE(v, SVECTOR::FROM_STRING('[1,0,0,0]'))
+LIMIT 3;
+EXPLAIN
+-> Limit: 3 row(s)  (cost=COST rows=ROWS)
+    -> Custom index distance scan on idx_cos  (cost=COST rows=ROWS)
+
+#
+# (3) cosine is a registered distance function, but it is bound to the
+# cosine profile, NOT the L2 index's profile. Ordering the L2 index's
+# table by cosine must NOT take a custom scan -- it falls back to a sort.
+# This proves selection follows the registered binding, not just "a
+# distance function on an indexed vector column".
+#
+EXPLAIN FORMAT=tree
+SELECT id FROM t_l2
+ORDER BY COSINE_DISTANCE(v, SVECTOR::FROM_STRING('[1,0,0,0]'))
+LIMIT 3;
+EXPLAIN
+-> Sort: vsql_vector.cosine_distance(t_l2.v,vsql_vector.SVECTOR::from_string('[1,0,0,0]')), limit input to 3 row(s) per chunk  (cost=COST rows=ROWS)
+    -> Table scan on t_l2  (cost=COST rows=ROWS)
+
+DROP TABLE t_l2;
+DROP TABLE t_cos;
+UNINSTALL EXTENSION vsql_vector;
+SET SESSION debug='-d,villagesql_custom_index_proceed';
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;
