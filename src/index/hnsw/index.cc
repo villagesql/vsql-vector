@@ -60,6 +60,7 @@ void StorageMeta::encode(std::string *out) const {
   out->push_back(static_cast<char>(VERSION));
   out->push_back(static_cast<char>(name.size()));
   out->append(name);
+  out->push_back(static_cast<char>(level.value));
   out->push_back(static_cast<char>(entry_level.value));
   out->push_back(static_cast<char>(entry_points.size()));
   for (auto ref : entry_points)
@@ -88,6 +89,11 @@ bool StorageMeta::decode(std::string_view data) {
   name.assign(reinterpret_cast<const char *>(p), name_len);
   p += name_len;
   rem -= name_len;
+
+  uint8_t lvl;
+  if (read1(lvl))
+    return true;
+  level = LevelStore::LevelId{lvl};
 
   uint8_t el;
   if (read1(el))
@@ -224,11 +230,14 @@ void IndexStore::build_storage_specs(std::vector<Storage_spec> &specs) {
     if (l == 0)
       entry_pts.push_back(m_entry_point);
     auto el = (l == 0) ? m_entry_level : LevelStore::LevelId{0};
-    StorageMeta{("HNSW-L" + std::to_string(l)), el, entry_pts}.encode(&meta);
+    StorageMeta{("HNSW-L" + std::to_string(l)), level, el, entry_pts}.encode(
+        &meta);
     specs.push_back({entry_len(level), std::move(meta)});
 
-    StorageMeta{
-        ("HNSW-L" + std::to_string(l) + "-OV"), LevelStore::LevelId{0}, {}}
+    StorageMeta{("HNSW-L" + std::to_string(l) + "-OV"),
+                level,
+                LevelStore::LevelId{0},
+                {}}
         .encode(&meta);
     specs.push_back({overflow_len(level), std::move(meta)});
   }
@@ -284,6 +293,7 @@ bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
     return true;
   }
   assert(level0_meta.entry_points.size() <= 1);
+  assert(level0_meta.level == LevelStore::LevelId{0});
   m_entry_level = level0_meta.entry_level;
   m_entry_point = level0_meta.entry_points.empty()
                       ? IndexScanKey::EMPTY_REF
@@ -296,6 +306,14 @@ bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
     if (si + 1 >= num_root_pages || !m_multi_store.m_stores[si].initialized() ||
         !m_multi_store.m_stores[si + 1].initialized())
       break;
+
+#ifndef NDEBUG
+    StorageMeta primary_meta, overflow_meta;
+    assert(!primary_meta.decode(m_multi_store.m_stores[si].m_metadata));
+    assert(!overflow_meta.decode(m_multi_store.m_stores[si + 1].m_metadata));
+    assert(primary_meta.level == LevelStore::LevelId{lvl});
+    assert(overflow_meta.level == LevelStore::LevelId{lvl});
+#endif // NDEBUG
     m_levels[lvl].emplace(LevelStore::LevelId{lvl}, m_multi_store.m_stores[si],
                           m_multi_store.m_stores[si + 1], m_num_neighbours);
   }

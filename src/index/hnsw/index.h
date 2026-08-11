@@ -110,8 +110,8 @@ private:
 //
 // Binary layout - Version 1:
 //
-// [Version] [Name Len (L)] [Name]
-// |---1----|------1--------|---L--|
+// [Version] [Name Len (L)] [Name] [Level]
+// |---1----|------1--------|---L--|---1---|
 //
 // [Entry Level] [Num Entry Points (N)] [Entry Points]
 // |-----1-------|----------1----------|---N * 8------|
@@ -120,15 +120,19 @@ struct StorageMeta {
 
   static constexpr size_t VERSION_LEN = 1;
   static constexpr size_t NAME_LEN_SIZE = 1;
+  static constexpr size_t LEVEL_LEN = 1;
   static constexpr size_t ENTRY_LEVEL_LEN = 1;
   static constexpr size_t NUM_ENTRY_POINTS_LEN = 1;
   static constexpr size_t ENTRY_POINT_LEN = sizeof(IndexScanKey::KeyPartRef);
 
   // Minimum encoded size: fixed fields only, empty name, zero entry points.
-  static constexpr size_t MIN_ENCODED_LEN =
-      VERSION_LEN + NAME_LEN_SIZE + ENTRY_LEVEL_LEN + NUM_ENTRY_POINTS_LEN;
+  static constexpr size_t MIN_ENCODED_LEN = VERSION_LEN + NAME_LEN_SIZE +
+                                            LEVEL_LEN + ENTRY_LEVEL_LEN +
+                                            NUM_ENTRY_POINTS_LEN;
 
   std::string name;
+  // Level of the root page this metadata is stored in.
+  LevelStore::LevelId level{0};
   LevelStore::LevelId entry_level{0};
   std::vector<IndexScanKey::KeyPartRef> entry_points;
 
