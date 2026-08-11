@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <queue>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace svector::hnsw {
@@ -53,10 +54,15 @@ private:
 //
 // Graph must provide:
 //   using Node = ...;
+//   using NodeData = ...;
 //   using DistanceType = ...;  // DefaultConstructible and LessThanComparable
 //
 //   // Computes the distance between two nodes and stores the result in 'out'.
 //   bool distance(const Node&, const Node&, DistanceType& out);
+//
+//   // Computes the distance between the query and a node and stores the
+//   // result in 'out'.
+//   bool distance(const NodeData&, const Node&, DistanceType& out);
 //
 //   // Replaces the contents of 'out' with the neighbours of the node.
 //   bool neighbours(const Node&, std::vector<Node>& out);
@@ -80,12 +86,16 @@ class LayerOperations {
 public:
   using PolicyType = Policy<Graph>;
   using Node = typename Graph::Node;
+  using NodeData = typename Graph::NodeData;
   enum class ExtendCandidates { No, Yes };
   enum class KeepPrunedConnections { No, Yes };
 
-  // Creates a search context for a single query node.
-  // The object may be reused to perform multiple searches for the same
-  // query by calling search_layer() repeatedly.
+  // Creates a search context for a single query node. The query may be a
+  // NodeData not yet present in the graph (e.g. the vector being inserted
+  // or searched for) or an existing Node already stored in the graph. The
+  // object may be reused to perform multiple searches for the same query
+  // by calling search_layer() repeatedly.
+  LayerOperations(Graph &graph, const NodeData &query);
   LayerOperations(Graph &graph, const Node &query);
 
   // Executes the search from the entry points in candidates (Algorithm 2,
@@ -121,10 +131,13 @@ public:
                               KeepPrunedConnections keep_pruned_connections,
                               std::vector<Node> &out);
 
-  // Resets the search state, allowing the object to be reused for
-  // another search. If query is non-null, the object is rebound to that
-  // query node; otherwise the current query node is kept.
-  void reset(const Node *query = nullptr);
+  // Resets the search state, allowing the object to be reused for another
+  // search with the current query node kept.
+  void reset();
+
+  // Resets the search state and rebinds the object to a new query node.
+  void reset(const NodeData &query);
+  void reset(const Node &query);
 
 private:
   using Distance = typename Graph::DistanceType;
@@ -192,7 +205,7 @@ private:
                     bool &dominated);
 
   Graph &m_graph;
-  Node m_query;
+  std::variant<Node, NodeData> m_query;
 
   std::unordered_set<typename Node::KeyType> m_visited;
   MinQueue m_candidates;

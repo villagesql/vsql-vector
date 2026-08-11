@@ -67,16 +67,17 @@ namespace svector::hnsw {
 template <typename Graph> class GraphOperations {
 public:
   using Node = typename Graph::Node;
+  using NodeData = typename Graph::NodeData;
   using LevelId = typename Graph::LevelId;
 
   GraphOperations(Graph &graph) : m_graph(graph) {};
 
-  bool insert(Node &new_node);
+  bool insert(const NodeData &new_node_data);
 
-  bool remove(const Node &target_node);
+  bool remove(const Node &target_node, LevelId target_level);
 
-  bool search_knn(const Node &query_node, uint32_t k, uint32_t ef_search,
-                  std::vector<Node> &nearest_nodes);
+  bool search_knn(const NodeData &query_node_data, uint32_t k,
+                  uint32_t ef_search, std::vector<Node> &nearest_nodes);
 
 private:
   using LayerOps = LayerOperations<Graph, AlwaysVisiblePolicy>;
@@ -84,14 +85,15 @@ private:
   // Algorithm 1, lines 5-7: ef is fixed at 1 for the greedy descent.
   static constexpr uint32_t GREEDY_DESCENT_EF = 1;
 
-  // Replaces each candidate with its child at the next lower level.
-  bool promote_children(std::vector<Node> &candidates);
+  // Replaces each candidate with its counterpart at the next lower level.
+  bool advance_to_next_level(std::vector<Node> &candidates);
 
-  // Reselects up to Mmax neighbours for each node in 'overflowed', after
-  // 'linked_node' was withheld from being linked back to it by
-  // link_neighbours_back() (Algorithm 1, lines 14-15).
+  // Reselects up to Mmax(level) neighbours for each node in 'overflowed',
+  // after 'linked_node' was withheld from being linked back to it by
+  // link_neighbours() (Algorithm 1, lines 14-15). level is the level shared
+  // by linked_node and every node in overflowed.
   bool shrink_neighbours(LayerOps &layer, const Node &linked_node,
-                         const std::vector<Node> &overflowed);
+                         LevelId level, const std::vector<Node> &overflowed);
 
   Graph &m_graph;
 };

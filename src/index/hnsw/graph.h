@@ -24,7 +24,7 @@
 #ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 
-#include "index.h"
+#include "storage.h"
 #include <cassert>
 #include <stack>
 
@@ -34,18 +34,11 @@ class IndexGraph {
 public:
   using LevelId = LevelStore::LevelId;
 
-  struct Node {
-    using KeyType = IndexScanKey::KeyPartRef;
-    using Data = IndexScanKey::KeyPartData;
-
-    KeyType key() const { return ref; }
-
-    void set_data(const Node &other) { materialized = other.materialized; }
-
-    LevelId level;
-    KeyType ref;
-    Data materialized;
+  struct NodeData {
+    IndexScanKey::KeyPartData data;
   };
+
+  using Node = hnsw::Node;
 
   using DistanceType = double;
   enum class LockMode { Shared, Exclusive };
@@ -139,6 +132,8 @@ public:
 
   bool distance(const Node &a, const Node &b, DistanceType &out);
 
+  bool distance(const NodeData &a, const Node &b, DistanceType &out);
+
   bool neighbours(const Node &node, std::vector<Node> &out);
 
   bool visible(const Node &node, bool &out);
@@ -160,20 +155,19 @@ public:
   bool set_entry_point(const std::vector<Node> &nodes, LevelId level);
 
   bool create_node(const std::optional<Node> &parent, LevelId level,
-                   Node &node);
+                   const NodeData &data, const std::vector<Node> &neighbours,
+                   Node &out);
 
   bool drop_node(const std::optional<Node> &parent, const Node &node);
 
-  bool get_child(const Node &parent, Node &out);
-
-  bool link_neighbours(const Node &node, const std::vector<Node> &neighbours);
+  bool get_next_level(const Node &node, Node &out);
 
   // Adds the reciprocal edges from node's neighbours back to node. If doing
   // so would push a neighbour's degree past Mmax for node's level, the edge
   // is withheld and that neighbour is appended to out instead, leaving
   // GraphOperations::insert() to reselect and replace its full neighbour set
   // (Algorithm 1, lines 14-15).
-  bool link_neighbours_back(const Node &node, std::vector<Node> &out);
+  bool link_neighbours(const Node &node, std::vector<Node> &out);
 
   // Replaces the full set of node's neighbours at node's level with
   // neighbours, discarding any existing edges not present in the new list.

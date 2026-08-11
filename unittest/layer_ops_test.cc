@@ -42,6 +42,9 @@ struct LineGraph {
     int value;
     KeyType key() const { return value; }
   };
+  struct NodeData {
+    int value;
+  };
   using DistanceType = float;
 
   int n = 0;
@@ -61,6 +64,18 @@ struct LineGraph {
   int distance_calls = 0;
 
   bool distance(const Node &a, const Node &b, DistanceType &out) {
+    ++distance_calls;
+    if (fail_distance) {
+      return true;
+    }
+    if (fail_distance_after >= 0 && distance_calls > fail_distance_after) {
+      return true;
+    }
+    out = std::abs(a.value - b.value);
+    return false;
+  }
+
+  bool distance(const NodeData &a, const Node &b, DistanceType &out) {
     ++distance_calls;
     if (fail_distance) {
       return true;
@@ -145,7 +160,7 @@ std::vector<int> values(const std::vector<LineGraph::Node> &nodes) {
 void test_basic_knn() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{15};
+  LineGraph::NodeData query{15};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -171,7 +186,7 @@ void test_basic_knn() {
 void test_reuse_after_search_layer() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{15};
+  LineGraph::NodeData query{15};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -193,15 +208,15 @@ void test_reuse_after_search_layer() {
 void test_reset_rebinds_query() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node initial_query{5};
+  LineGraph::NodeData initial_query{5};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(
       graph, initial_query);
 
   // Rebind to a different query node via the public reset(query) overload,
-  // before search_layer's own internal reset() (which passes nullptr and
-  // so must preserve whatever query is currently bound) ever runs.
-  LineGraph::Node new_query{15};
-  layer.reset(&new_query);
+  // before search_layer's own internal no-arg reset() (which must preserve
+  // whatever query is currently bound) ever runs.
+  LineGraph::NodeData new_query{15};
+  layer.reset(new_query);
 
   std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
   assert(!layer.search_layer(candidates, 5));
@@ -213,7 +228,7 @@ void test_reset_rebinds_query() {
   assert((sorted_got == std::vector<int>{13, 14, 15, 16, 17}));
 
   // The rebind must stick across further reuse too: search_layer's
-  // internal reset(nullptr) call must not revert to the constructor's
+  // internal no-arg reset() call must not revert to the constructor's
   // query.
   std::vector<LineGraph::Node> second_candidates{LineGraph::Node{19}};
   assert(!layer.search_layer(second_candidates, 3));
@@ -225,7 +240,7 @@ void test_reset_rebinds_query() {
 void test_ef_bounds_result_size() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -239,7 +254,7 @@ void test_ef_bounds_result_size() {
 void test_search_layer_dedups_entry_points() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -260,7 +275,7 @@ void test_distance_failure_propagates() {
   LineGraph graph;
   graph.n = 20;
   graph.fail_distance = true;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -272,7 +287,7 @@ void test_neighbours_failure_propagates() {
   LineGraph graph;
   graph.n = 20;
   graph.fail_neighbours = true;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -287,7 +302,7 @@ void test_is_visible_failure_propagates() {
   LineGraph graph;
   graph.n = 20;
   graph.fail_is_visible = true;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -306,7 +321,7 @@ void test_expand_is_visible_failure_propagates() {
   // which already establishes that the search reaches and checks node 15
   // via expand() before it can be excluded from the result.
   graph.fail_is_visible_for = {15};
-  LineGraph::Node query{15};
+  LineGraph::NodeData query{15};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -321,7 +336,7 @@ void test_invisible_nodes_excluded_from_result() {
   // must traverse through it to reach the surrounding visible nodes
   // instead of returning it.
   graph.invisible = {15};
-  LineGraph::Node query{15};
+  LineGraph::NodeData query{15};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -351,7 +366,7 @@ void test_invisible_entry_point_does_not_seed_result() {
   LineGraph graph;
   graph.n = 20;
   graph.invisible = {0};
-  LineGraph::Node query{0};
+  LineGraph::NodeData query{0};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -370,7 +385,7 @@ void test_always_visible_policy_ignores_invisibility() {
   // VisibilityPolicy, but AlwaysVisiblePolicy never consults either.
   graph.invisible = {0};
   graph.fail_is_visible = true;
-  LineGraph::Node query{0};
+  LineGraph::NodeData query{0};
   svector::hnsw::LayerOperations<LineGraph, AlwaysVisiblePolicy> layer(graph,
                                                                        query);
 
@@ -382,7 +397,7 @@ void test_always_visible_policy_ignores_invisibility() {
 void test_select_neighbours_simple() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -411,7 +426,7 @@ void test_select_neighbours_simple_distance_failure_propagates() {
   LineGraph graph;
   graph.n = 20;
   graph.fail_distance = true;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -423,7 +438,7 @@ void test_select_neighbours_simple_distance_failure_propagates() {
 void test_select_neighbours_heuristic_prefers_diverse_candidates() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -446,7 +461,7 @@ void test_select_neighbours_heuristic_prefers_diverse_candidates() {
 void test_select_neighbours_heuristic_keeps_pruned_connections() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -467,7 +482,7 @@ void test_select_neighbours_heuristic_keeps_pruned_connections() {
 void test_select_neighbours_heuristic_extend_candidates() {
   LineGraph graph;
   graph.n = 30;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -503,7 +518,7 @@ void test_select_neighbours_heuristic_extend_candidates() {
 void test_select_neighbours_heuristic_extend_candidates_dedups_overlap() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -530,7 +545,7 @@ void test_select_neighbours_heuristic_extend_candidates_dedups_overlap() {
 void test_select_neighbours_heuristic_m_zero() {
   LineGraph graph;
   graph.n = 20;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -547,7 +562,7 @@ void test_select_neighbours_heuristic_distance_failure_propagates() {
   LineGraph graph;
   graph.n = 20;
   graph.fail_distance = true;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -572,7 +587,7 @@ void test_select_neighbours_heuristic_is_dominated_distance_failure_propagates()
   // front, so a graph that fails unconditionally (fail_distance) would
   // always fail there first, before is_dominated() ever runs.
   graph.fail_distance_after = 3;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
@@ -593,7 +608,7 @@ void test_select_neighbours_heuristic_neighbours_failure_propagates() {
   LineGraph graph;
   graph.n = 20;
   graph.fail_neighbours = true;
-  LineGraph::Node query{10};
+  LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
                                                                     query);
 
