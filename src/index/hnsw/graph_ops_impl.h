@@ -47,10 +47,6 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
   using LockLevels = typename Graph::LockLevels;
   using DescendPolicy = typename Graph::LockLevels::DescendPolicy;
 
-  using LayerOps = LayerOperations<Graph, AlwaysVisiblePolicy>;
-  using ExtendCandidates = typename LayerOps::ExtendCandidates;
-  using KeepPrunedConnections = typename LayerOps::KeepPrunedConnections;
-
   // Lock graph in Shared Mode.
   LockGraph graph_lock(m_graph, LockMode::Shared);
 
@@ -129,13 +125,7 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
       if (layer.search(candidates, level, m_graph.ef_construction())) {
         return true;
       }
-      // Use the standard HNSW Algorithm 4 settings:
-      //   - extend_candidates = false
-      //   - keep_pruned_connections = true
-      // TODO(villagesql-indexing): Consider making these options configurable.
-      if (layer.consume_heuristic(m_graph.M(), ExtendCandidates::No,
-                                  KeepPrunedConnections::Yes, neighbours,
-                                  &candidates)) {
+      if (consume_heuristic(layer, m_graph.M(), neighbours, &candidates)) {
         return true;
       }
     }
@@ -211,10 +201,6 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
   using LockLevels = typename Graph::LockLevels;
   using DescendPolicy = typename Graph::LockLevels::DescendPolicy;
   using UnlinkOrphans = typename Graph::UnlinkOrphans;
-
-  using LayerOps = LayerOperations<Graph, AlwaysVisiblePolicy>;
-  using ExtendCandidates = typename LayerOps::ExtendCandidates;
-  using KeepPrunedConnections = typename LayerOps::KeepPrunedConnections;
 
   // Lock graph in Shared Mode.
   LockGraph graph_lock(m_graph, LockMode::Shared);
@@ -312,9 +298,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
           return true;
         }
         std::vector<Node> new_neighbours;
-        if (layer.consume_heuristic(m_graph.M(), ExtendCandidates::No,
-                                    KeepPrunedConnections::Yes,
-                                    new_neighbours)) {
+        if (consume_heuristic(layer, m_graph.M(), new_neighbours)) {
           return true;
         }
         if (m_graph.replace_neighbours(orphan, level, new_neighbours)) {
@@ -478,6 +462,15 @@ bool GraphOperations<Graph>::advance_to_next_level(
   return false;
 }
 
+template <typename Graph>
+bool GraphOperations<Graph>::consume_heuristic(
+    LayerOps &layer, uint32_t M, std::vector<Node> &out,
+    std::vector<Node> *candidate_pool, ExtendCandidates extend_candidates,
+    KeepPrunedConnections keep_pruned_connections) {
+  return layer.consume_heuristic(M, extend_candidates, keep_pruned_connections,
+                                 out, candidate_pool);
+}
+
 // Algorithm 1, lines 14-15: shrink connections of neighbours whose degree
 // would otherwise exceed Mmax. link_neighbours() withholds the edge to
 // linked_node for exactly these nodes rather than adding it outright, so
@@ -487,9 +480,6 @@ template <typename Graph>
 bool GraphOperations<Graph>::shrink_neighbours(
     LayerOps &layer, const Node &linked_node, LevelId level,
     const std::vector<Node> &overflowed) {
-  using ExtendCandidates = typename LayerOps::ExtendCandidates;
-  using KeepPrunedConnections = typename LayerOps::KeepPrunedConnections;
-
   for (const Node &neighbour : overflowed) {
     std::vector<Node> connections;
     if (m_graph.neighbours(neighbour, level, connections)) {
@@ -506,8 +496,7 @@ bool GraphOperations<Graph>::shrink_neighbours(
       return true;
     }
     std::vector<Node> shrunk;
-    if (layer.consume_heuristic(m_graph.Mmax(level), ExtendCandidates::No,
-                                KeepPrunedConnections::No, shrunk)) {
+    if (consume_heuristic(layer, m_graph.Mmax(level), shrunk)) {
       return true;
     }
     if (m_graph.replace_neighbours(neighbour, level, shrunk)) {

@@ -69,6 +69,29 @@ public:
   using Node = typename Graph::Node;
   using NodeData = typename Graph::NodeData;
   using LevelId = typename Graph::LevelId;
+  using LayerOps = LayerOperations<Graph, AlwaysVisiblePolicy>;
+  using ExtendCandidates = typename LayerOps::ExtendCandidates;
+  using KeepPrunedConnections = typename LayerOps::KeepPrunedConnections;
+
+  // Algorithm 4 heuristic parameters used by all GraphOperations calls to
+  // consume_heuristic(): insert()'s own-neighbour selection, remove()'s
+  // repair-neighbour selection, and shrink_neighbours()'s Mmax reselection.
+  //
+  // Per Section 3 of the HNSW paper, extendCandidates is false by default
+  // and extends the candidate set with neighbours of the candidates. We use
+  // the default (disabled) behavior.
+  //
+  // keepPrunedConnections retains pruned candidates to maintain a fixed
+  // number of connections per element. We disable it, allowing the heuristic
+  // to select the most diverse neighbours without retaining pruned candidates.
+  //
+  // Keep these centralized as named constants rather than literals at each
+  // call site, so there is a single place to change the policy if needed.
+  // TODO(villagesql-indexing): Consider making EXTEND_CANDIDATES and
+  // KEEP_PRUNED_CONNECTIONS configurable.
+  static constexpr ExtendCandidates EXTEND_CANDIDATES = ExtendCandidates::No;
+  static constexpr KeepPrunedConnections KEEP_PRUNED_CONNECTIONS =
+      KeepPrunedConnections::No;
 
   GraphOperations(Graph &graph) : m_graph(graph) {};
 
@@ -80,14 +103,23 @@ public:
                   uint32_t ef_search, std::vector<Node> &nearest_nodes);
 
 private:
-  using LayerOps = LayerOperations<Graph, AlwaysVisiblePolicy>;
-
   // Algorithm 1, lines 5-7: ef is fixed at 1 for the greedy descent.
   static constexpr uint32_t GREEDY_DESCENT_EF = 1;
 
   // Replaces each candidate with its counterpart at the next lower level.
   // level is the level every candidate currently lives at.
   bool advance_to_next_level(std::vector<Node> &candidates, LevelId level);
+
+  // Wraps LayerOps::consume_heuristic(), defaulting extend_candidates and
+  // keep_pruned_connections to EXTEND_CANDIDATES and
+  // KEEP_PRUNED_CONNECTIONS so call sites only need to supply what varies --
+  // M, the output, and (optionally) candidate_pool -- while still allowing
+  // either policy to be overridden explicitly.
+  bool consume_heuristic(
+      LayerOps &layer, uint32_t M, std::vector<Node> &out,
+      std::vector<Node> *candidate_pool = nullptr,
+      ExtendCandidates extend_candidates = EXTEND_CANDIDATES,
+      KeepPrunedConnections keep_pruned_connections = KEEP_PRUNED_CONNECTIONS);
 
   // Reselects up to Mmax(level) neighbours for each node in 'overflowed',
   // after 'linked_node' was withheld from being linked back to it by

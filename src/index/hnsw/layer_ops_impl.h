@@ -313,6 +313,12 @@ bool LayerOperations<Graph, Policy>::evaluate_distances(
 template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::seed_impl(
     const std::vector<Node> &entry_points) {
+  // If the query is an existing graph node, mark it visited up front so it
+  // cannot reappear as its own candidate during neighbour expansion.
+  if (const Node *query_node = std::get_if<Node>(&m_query)) {
+    m_visited.insert(query_node->key());
+  }
+
   // Algorithm 2, lines 1-3: v = C = W = ep.
   for (const Node &node : entry_points) {
     if (m_visited.insert(node.key()).second) {
