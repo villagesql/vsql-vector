@@ -30,6 +30,100 @@
 #include <span>
 #include <stack>
 
+// Lock hierarchy
+//
+//   Graph Lock
+//       -> Level Lock
+//           -> Level Operation Lock
+//               -> Neighbour Storage Lock (InnoDB MTR data-page latch)
+//                   -> Overflow Storage Lock (InnoDB MTR data-page latch)
+//
+// Locks must be acquired from left to right. A lock at a higher level in
+// this hierarchy must not be acquired while holding a lock at a lower
+// level.
+//
+//   Level Locks:
+//     - Acquire top-down by level.
+//
+//   Level Operation Locks:
+//     - Never acquire/hold multiple Level Operation Locks.
+//
+//   Neighbour Storage Locks across levels:
+//     - Acquire top-down by level.
+//     - At most two may be held simultaneously.
+//
+//   Neighbour Storage Locks within one level:
+//     - We don't acquire multiple storage locks simultaneously. It would
+//       require ordering rules based on underlying pages, if needed.
+//     - Instead, hold Level Operation Lock while adjusting links between nodes.
+//
+//   Overflow Storage Locks:
+//     - Acquired only after all corresponding Neighbour Storage Locks.
+//
+// Operation-specific ordering:
+//
+//   Insert: linking neighbours
+//     - Level Operation Lock: S.
+//       Two concurrently inserted nodes cannot choose one another as
+//       neighbours. Therefore, concurrent inserts do not require exclusive
+//       serialization at the level.
+//
+//     - Neighbour Storage Locks:
+//       Acquire the storage locks needed to update the new node and its
+//       selected neighbours while holding the Level Operation Lock.
+//
+//   Insert/Delete: adjusting an existing node's neighbours
+//     - Level Operation Lock: X.
+//       This modifies an established connection and must be serialized
+//       with other operations that may adjust the same existing node.
+//
+//     - Neighbour Storage Locks:
+//       Acquire the storage locks needed for the affected nodes while
+//       holding the Level Operation Lock. The operation lock prevents
+//       concurrent graph operations from modifying the same relationships.
+//
+// Storage locks are logical node locks backed by InnoDB MTR page latches.
+// Multiple nodes may reside on the same data page, so two logical storage
+// locks may correspond to the same physical page latch.
+//
+// In particular, an MTR permits repeated X-latching of the same page, but
+// does not permit repeated S-latching of the same page. Callers must
+// therefore account for page identity when acquiring multiple storage
+// locks, even when the corresponding nodes are distinct.
+//
+// Currently, the link operations do not require multiple shared storage
+// latches: an operation holds at most one S|X node storage latch at a
+// time.
+
+// Bidirectional links
+//
+// A node's outgoing link is a directed connection from the current node to
+// another node. The target node must exist, but it need not have a link back
+// to the current node.
+//
+// A node's incoming link represents the fact that another node may have a
+// connection to the current node. The source node must have existed when the
+// incoming link was created, but may subsequently be deleted and exist as a
+// free node. The target node must belong to the storage level segment for
+// the current level.
+//
+// A bidirectional connection between N1 and N2 can therefore be established
+// without simultaneously latching both nodes:
+//
+//   1. N1:  Create an incoming link for N2.
+//   2. N2:  Create a directed link to N1.
+//   3. N1:  Replace the incoming link for N2 with the outgoing link to N2.
+//
+// Each step is an independent atomic operation and leaves the graph in a
+// valid state. In practice, steps 2 and 3 are performed while holding the
+// Level Operation Lock.
+//
+// An incoming link must never be removed without holding the Level Operation
+// Lock and the storage latches required to modify both the source and target
+// records. The Level Operation Lock prevents a concurrent graph operation
+// from establishing or retaining the corresponding outgoing link while the
+// incoming link is being removed.
+
 namespace svector::hnsw {
 
 // Reusable scratch buffers shared by graph operations.
@@ -44,8 +138,10 @@ struct GraphContext {
                size_t max_update_chunks, std::span<char> error)
       : m_neighbour_buf(neighbour_buf_size), m_overflow_buf(overflow_buf_size),
         m_vector_buf_1(vector_buf_size), m_vector_buf_2(vector_buf_size),
-        m_update_slots(max_update_slots), m_chunk_ids(max_update_chunks),
-        m_error(error) {}
+        m_update_slots(max_update_slots), m_link_slots(max_update_slots),
+        m_chunk_ids(max_update_chunks), m_node_buf_1(max_update_slots),
+        m_node_buf_2(max_update_slots), m_incoming_buf_1(max_update_slots),
+        m_incoming_buf_2(max_update_slots), m_error(error) {}
 
   ScratchBytes m_neighbour_buf;
   ScratchBytes m_overflow_buf;
@@ -53,7 +149,29 @@ struct GraphContext {
   ScratchBytes m_vector_buf_2;
 
   ScratchSlots m_update_slots;
+  // On-disk slot indices of the incoming-flagged neighbour links
+  // link_neighbours() is reciprocating, collected as it walks them and
+  // consumed by the flag-clearing update at the end of that walk. A second
+  // slot array is needed because m_update_slots is claimed by the
+  // per-neighbour update performed inside the same walk.
+  ScratchSlots m_link_slots;
   ScratchChunkIds m_chunk_ids;
+
+  // Two reusable Node-array buffers (sized to Mmax0, the largest possible
+  // neighbour list) for graph operations that need to hold two decoded
+  // neighbour lists live at once -- e.g. link_neighbours() keeps node's own
+  // list in one while scanning each neighbour's slot layout into the other.
+  ScratchNodes m_node_buf_1;
+  ScratchNodes m_node_buf_2;
+
+  // Decoded OverflowEntry::incoming slots (for_update layout: every slot up
+  // to overflow_capacity(), valid or not) -- sized to max_update_slots like
+  // the buffers above since overflow_capacity() never exceeds it. Two of
+  // them for the same reason as the Node buffers above: unlink_neighbours()
+  // walks node's own overflow chain in one while the per-neighbour unlink it
+  // performs at each step searches a neighbour's chain in the other.
+  ScratchNIDs m_incoming_buf_1;
+  ScratchNIDs m_incoming_buf_2;
 
   // Non-owning error buffer for the single API call this GraphContext (and
   // its owning IndexGraph) was constructed for -- IndexGraph is constructed
@@ -175,6 +293,18 @@ public:
   // of rediscovering it with a locate() call.
   bool neighbours(const Node &node, LevelId level, std::vector<Node> &out);
 
+  // The counterpart to neighbours(): every node still recorded as an incoming
+  // link to node, which is what neighbours() drops -- the incoming-flagged
+  // slots of node's own list plus every link in its overflow chain, where the
+  // incoming links that had no room in that list live. A chained link carries
+  // a NID alone, so its vid is read from the owner field of its own record.
+  //
+  // After unlink_neighbours() these are exactly the neighbours it left
+  // orphaned, which is what GraphOperations::remove() reconnects. level is
+  // node's own level.
+  bool incoming_neighbours(const Node &node, LevelId level,
+                           std::vector<Node> &out);
+
   bool visible(const Node &node, bool &out);
 
   // Returns the randomly-generated level for the element about to be
@@ -216,9 +346,12 @@ public:
   // identically by every create_node() call for that vector).
   bool get_next_level_node(const Node &node, LevelId level, Node &out);
 
-  // Adds the reciprocal edges from node's neighbours back to node. If doing
-  // so would push a neighbour's degree past Mmax for node's level, the edge
-  // is withheld and that neighbour is appended to out instead, leaving
+  // Adds the reciprocal edges back to node for those of node's neighbours
+  // whose link is still incoming-flagged, i.e. not yet reciprocated
+  // (Bidirectional links, steps 2-3 above), and clears the flag on each once
+  // its edge has landed. If doing so would push a neighbour's degree past
+  // Mmax for node's level, the edge is withheld and that neighbour is
+  // appended to out instead, leaving
   // GraphOperations::insert() to reselect and replace its full neighbour set
   // (Algorithm 1, lines 14-15). level is node's own level.
   bool link_neighbours(const Node &node, LevelId level, std::vector<Node> &out);
@@ -229,12 +362,30 @@ public:
   bool replace_neighbours(const Node &node, LevelId level,
                           const std::vector<Node> &neighbours);
 
-  // No: unlink only the neighbours that have another edge of their own and
-  // so won't be left orphaned by losing this one; out is set to the
-  // neighbours actually unlinked. Yes: unlink the rest (the ones that do
-  // become orphaned); out is set to those. level is node's own level.
-  enum class UnlinkOrphans { No, Yes };
-  bool unlink_neighbours(const Node &node, LevelId level, UnlinkOrphans orphans,
+  // Severs every edge between node and its neighbours at node's level, one
+  // node -- and one storage latch -- at a time: node's own links are first all
+  // demoted to incoming links, taking node out of every traversal while still
+  // recording which neighbours are left to visit, then each neighbour's link
+  // back to node is removed. The X-mode Level Operation Lock held throughout
+  // is what keeps the two halves consistent (see the lock hierarchy above).
+  //
+  // Every edge is severed, those of orphaned neighbours -- the ones left with
+  // no outgoing link of their own -- included. What tells them apart
+  // afterwards is node's own list: their slots are the only ones left behind
+  // there (as incoming links), every other link having been freed. A caller
+  // that reconnects them can call this again to have those slots freed too,
+  // now that they are no longer orphaned.
+  //
+  // Only a neighbour that really did link back to node is ever called an
+  // orphan of it. A link nothing answers to -- a placeholder its source never
+  // reciprocated, or one naming a node since freed -- has nothing to sever, so
+  // its slot is simply freed and it is left out of both counts.
+  //
+  // out is set to the neighbours severed from node that keep an outgoing link
+  // of their own, capped at Mmax for level: out serves only as a pool of
+  // still-connected nodes to search from, so there is no use for more of them
+  // than a node's own degree limit. level is node's own level.
+  bool unlink_neighbours(const Node &node, LevelId level,
                          std::vector<Node> &out);
 
   // Configured construction parameters.
@@ -295,6 +446,78 @@ private:
   // remaining) chain successor, so clearing to NID{} rather than splicing
   // in a further successor is always correct.
   bool drop_overflow_node(LevelId level, const OverflowLink &link);
+
+  // link_neighbours() proper, minus the Level Operation Lock: the caller must
+  // already hold it, in S mode (link_neighbours()) or X mode (the operations
+  // that adjust an existing node's neighbours, e.g. replace_neighbours(),
+  // which links its newly added -- and therefore incoming-flagged -- edges
+  // under the X lock it already holds).
+  bool link_neighbours_locked(const Node &node, LevelId level,
+                              std::vector<Node> &out);
+
+  // Records node as an incoming connection in neighbour's overflow chain,
+  // for when link_neighbours() finds neighbour's primary neighbour list
+  // already full (Algorithm 1, lines 14-15 land the edge here instead).
+  // mtr is the caller's already-open mtr, so this joins the same Neighbour
+  // Storage Lock ordering the caller established. overflow_head is
+  // neighbour's NeighbourEntry::overflow field -- the caller already has it
+  // in hand from the same for_update fetch that read neighbour's primary
+  // list, on the very page mtr holds exclusively-latched, so it is passed
+  // in rather than re-fetched here. level is neighbour's (and node's)
+  // level.
+  bool add_overflow_incoming(MtrCtx::Ref mtr, LevelId level,
+                             const Node &neighbour, NID overflow_head,
+                             const Node &node);
+
+  // One endpoint's record of a single edge: the slot, within the record
+  // record/kind names, holding the other endpoint's NID -- either a slot in a
+  // node's own primary neighbour list (StoreKind::Neighbour) or an incoming
+  // slot in one of the OverflowEntry records chained off it
+  // (StoreKind::Overflow). kind travels with record so clear_link() knows
+  // which record layout -- and which LevelStore::update() overload -- to use.
+  struct LinkSlot {
+    NID record{};
+    StoreKind kind = StoreKind::Neighbour;
+    SlotIndex slot{};
+  };
+
+  // Clears the single edge record link names, leaving the rest of that record
+  // untouched. A Neighbour link is written under mtr, which already holds the
+  // record's page latch; an Overflow link gets its own short-lived mtr, per
+  // the Overflow-after-Neighbour ordering in the lock hierarchy above.
+  bool clear_link(MtrCtx::Ref mtr, LevelId level, const LinkSlot &link);
+
+  // Searches the overflow chain starting at head for the incoming slot
+  // holding target, one chain entry per short-lived mtr (as in
+  // add_overflow_incoming()). out's slot is left invalid if no entry in the
+  // chain names target.
+  bool find_overflow_link(LevelId level, NID head, NID target, LinkSlot &out);
+
+  // Resolves nid to a full Node, reading its vid from the owner field of its
+  // own record -- for the links recorded as a bare NID in an overflow chain.
+  bool resolve_node(LevelId level, NID nid, Node &out);
+
+  // Removes the neighbour's own link back to node, wherever the neighbour
+  // records it -- its primary neighbour list, or its overflow chain for a link
+  // it had no room for there. Only the neighbour's record is latched; node's
+  // own list is adjusted by unlink_neighbours() once every neighbour is done.
+  //
+  // orphan reports whether the neighbour is left with no outgoing link of its
+  // own, and is only ever set for a neighbour that really did have a link back
+  // to node. out_neighbour is that neighbour resolved to a full Node, its vid
+  // read from the owner field of its own record (a link recorded in an overflow
+  // chain carries a NID alone).
+  //
+  // Nothing having named node is not an error: node's link may be a
+  // placeholder incoming link its source never reciprocated (Bidirectional
+  // links, step 1 above), one an earlier interrupted run already removed, or
+  // one naming a node since freed, which an incoming link may legitimately do
+  // (as noted above) and which the read of the neighbour's record fails on.
+  // There is then nothing to sever and nothing observed about the neighbour, so
+  // out_neighbour is left unset -- which is how the caller tells this case from
+  // a severed link -- and orphan stays false.
+  bool unlink_neighbour(LevelId level, const Node &node, NID neighbour_nid,
+                        Node &out_neighbour, bool &orphan);
 
   IndexStore &m_store;
   Index &m_index;

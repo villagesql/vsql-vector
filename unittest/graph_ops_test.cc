@@ -95,7 +95,6 @@ struct MockGraph {
   using LevelId = MockLevelId;
   using DistanceType = float;
   enum class LockMode { Shared, Exclusive };
-  enum class UnlinkOrphans { No, Yes };
 
   // ---- RAII lock guards. Single-threaded bookkeeping only: these tests
   // don't exercise real mutual exclusion, only the sequence of mode/level
@@ -256,6 +255,16 @@ struct MockGraph {
     return false;
   }
 
+  // The mock's adjacency is a single undirected edge list per node, with no
+  // incoming/outgoing distinction to filter on: whatever unlink_neighbours()
+  // left recorded on node -- exactly the neighbours it orphaned -- is what this
+  // reports, which is all remove() uses it for. Failure injection rides on
+  // fail_neighbours, the flag for the read it delegates to.
+  bool incoming_neighbours(const Node &node, LevelId level,
+                           std::vector<Node> &out) {
+    return neighbours(node, level, out);
+  }
+
   bool visible(const Node &node, bool &out) {
     if (fail_visible) {
       return true;
@@ -407,42 +416,31 @@ struct MockGraph {
     return false;
   }
 
-  bool unlink_neighbours(const Node &node, LevelId level, UnlinkOrphans orphans,
+  bool unlink_neighbours(const Node &node, LevelId level,
                          std::vector<Node> &out) {
     assert(level == node.level);
     if (fail_unlink_neighbours) {
       return true;
     }
     out.clear();
-    std::vector<int> to_remove;
-    if (orphans == UnlinkOrphans::No) {
-      // Sever exactly the neighbours that have another edge of their own.
-      for (int nb_id : adjacency[node.level.value][node.id]) {
-        auto &nb_adj = adjacency[node.level.value][nb_id];
-        bool has_other_edge = nb_adj.size() > 1 ||
-                              (nb_adj.size() == 1 && nb_adj.front() != node.id);
-        if (has_other_edge) {
-          to_remove.push_back(nb_id);
-        }
-      }
-    } else {
-      // Whatever's still linked at this point is exactly what the prior No
-      // call left behind on purpose: the ones that would have been
-      // orphaned by cutting them too.
-      to_remove = adjacency[node.level.value][node.id];
-    }
-    for (int nb_id : to_remove) {
-      auto &node_adj = adjacency[node.level.value][node.id];
-      node_adj.erase(std::remove(node_adj.begin(), node_adj.end(), nb_id),
-                     node_adj.end());
+    // Every edge is severed, orphans included; what's left in node's own list
+    // afterwards is exactly the neighbours that were orphaned by it -- the
+    // graph's record that they still need reconnecting -- while out reports
+    // the ones whose slots were freed (see IndexGraph::unlink_neighbours()).
+    std::vector<int> links = adjacency[node.level.value][node.id];
+    std::vector<int> orphaned;
+    for (int nb_id : links) {
       auto &nb_adj = adjacency[node.level.value][nb_id];
       nb_adj.erase(std::remove(nb_adj.begin(), nb_adj.end(), node.id),
                    nb_adj.end());
+      if (nb_adj.empty()) {
+        orphaned.push_back(nb_id);
+        continue;
+      }
       out.push_back(Node{node.level, nb_id});
     }
-    call_log.push_back(
-        (orphans == UnlinkOrphans::No ? "unlink_no:" : "unlink_yes:") +
-        std::to_string(node.id));
+    adjacency[node.level.value][node.id] = orphaned;
+    call_log.push_back("unlink:" + std::to_string(node.id));
     return false;
   }
 };
@@ -725,8 +723,9 @@ void test_insert_upgrade_recheck_suppresses_unneeded_entry_point_update() {
 
   // The upgrade still happened (the stale first read looked like an empty
   // graph), but the recheck must have found new_entry_point no longer
-  // necessary, per the comment at graph_ops_impl.h:77-80 -- so the entry
-  // point recorded by the *other* insert must survive untouched.
+  // necessary -- insert() deliberately keeps the X lock rather than
+  // downgrading in that case -- so the entry point recorded by the *other*
+  // insert must survive untouched.
   assert(g.upgrade_calls == 1);
   assert(g.entry_points.front().id == 999);
   assert(g.entry_level == LevelId(0));
@@ -744,9 +743,9 @@ void test_insert_reciprocal_links_after_all_levels_created() {
 
   // Every "create"/"link" entry (top-down record creation and forward
   // linking) must precede every "link_back" entry (bottom-up reciprocal
-  // linking) -- see the comment at graph_ops_impl.h:137-140: any node
-  // reachable at level N must already be fully inserted at all lower
-  // levels before back-links are added.
+  // linking) -- per the invariant insert() documents around its create_node()
+  // call: any node reachable at level N must already be fully inserted at all
+  // lower levels before back-links are added.
   size_t last_forward = 0, first_back = g.call_log.size();
   for (size_t i = 0; i < g.call_log.size(); ++i) {
     const std::string &entry = g.call_log[i];
@@ -978,7 +977,7 @@ void test_remove_sole_entry_point_selects_survivor_as_replacement() {
   assert(!ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 
   // 1 was 0's only neighbour and had no other edge, so it's the orphan
-  // that "seeds" the survivor pool (graph_ops_impl.h:266-274) rather than
+  // that "seeds" the survivor pool in remove()'s repair loop rather than
   // going through a real repair search -- and it becomes the sole entry
   // point's replacement.
   assert(g.present[0].count(0) == 0);
@@ -1000,7 +999,7 @@ void test_remove_only_element_clears_entry_point() {
   assert(!ops.remove(Node{LevelId(0), 0}, LevelId(0)));
 
   // Nothing survives node's removal at any level, so there's no
-  // replacement (graph_ops_impl.h:346-352): the entry point is cleared.
+  // replacement for remove() to install: the entry point is cleared instead.
   assert(g.entry_points.empty());
   assert(g.entry_level == LevelId(0));
   assert(g.upgrade_calls == 1);
@@ -1081,7 +1080,7 @@ void test_remove_set_entry_point_failure_propagates() {
 void test_remove_get_next_level_failure_propagates() {
   MockGraph g;
   // Node 7 exists at levels 1 and 0, so removing it descends through its
-  // own level chain via get_next_level() (graph_ops_impl.h:313-317).
+  // own level chain via get_next_level_node() in remove()'s descent.
   add_element(g, 7, 7);
   add_presence(g, 7, 1);
   add_presence(g, 7, 0);
