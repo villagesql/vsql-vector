@@ -62,14 +62,20 @@ namespace svector::hnsw {
 //   // Maximum neighbour degree permitted at 'level' (Mmax / Mmax0).
 //   uint32_t Mmax(LevelId level) const;
 //
-//   // Severs the edges between 'node' and its neighbours at 'level' (node's
-//   // own level). No: unlinks only the neighbours that have another edge of
-//   // their own and so won't be left orphaned by losing this one; 'out' is
-//   // set to the neighbours actually unlinked. Yes: unlinks the rest -- the
-//   // ones that do become orphaned; 'out' is set to those.
-//   enum class UnlinkOrphans { No, Yes };
+//   // Severs every edge between 'node' and its neighbours at 'level' (node's
+//   // own level). 'out' is set to the neighbours whose link slots were freed
+//   // -- the ones not left orphaned (with no outgoing link of their own) by
+//   // losing this edge -- capped at Mmax(level); an orphaned neighbour keeps
+//   // its slot in node's list, which is what records that it still needs
+//   // reconnecting.
 //   bool unlink_neighbours(const Node& node, LevelId level,
-//                          UnlinkOrphans orphans, std::vector<Node>& out);
+//                          std::vector<Node>& out);
+//
+//   // Sets 'out' to every node still recorded as an incoming link to 'node'
+//   // at 'level' -- the links neighbours() drops. After unlink_neighbours()
+//   // these are exactly the neighbours it left orphaned.
+//   bool incoming_neighbours(const Node& node, LevelId level,
+//                            std::vector<Node>& out);
 template <typename Graph> class GraphOperations {
 public:
   using Node = typename Graph::Node;

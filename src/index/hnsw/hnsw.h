@@ -153,6 +153,9 @@ struct Node {
   static constexpr size_t STORAGE_SIZE = NID::STORAGE_SIZE + VID::STORAGE_SIZE;
 };
 
+using ScratchNodes = ScratchArray<Node>;
+using ScratchNIDs = ScratchArray<NID>;
+
 // Which of a level's two stores a node (or NID) belongs to.
 enum class StoreKind { Neighbour, Overflow };
 

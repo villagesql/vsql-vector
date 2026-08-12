@@ -90,7 +90,19 @@ public:
       : m_level(level), m_store(store), m_overflow(overflow),
         m_num_neighbours(num_neighbours) {}
 
+  // Level Lock: guards traversal and existence of this level's storage.
+  // Levels are locked top-down and, during lock-coupled descent, released
+  // bottom-up by IndexGraph::LockLevels. See the lock hierarchy comment in
+  // graph.h for the acquisition order.
   std::shared_mutex &mutex() { return m_mutex; }
+
+  // Level Operation Lock: serializes graph operations performed at this level,
+  // such as linking or adjusting neighbours. Unlike mutex(), this lock does
+  // not guard access to the level itself; it coordinates operations on the
+  // graph structure within the level. Only one Level Operation Lock is held at
+  // a time. See the lock hierarchy comment in graph.h for acquisition order
+  // and per-operation S/X mode.
+  std::shared_mutex &operation_mutex() { return m_op_mutex; }
 
   // Target neighbour degree (M) at a given level. Equal to the configured M
   // for every level today, but kept level-parameterized since the HNSW
@@ -275,6 +287,7 @@ private:
   }
 
   mutable std::shared_mutex m_mutex;
+  mutable std::shared_mutex m_op_mutex;
   LevelId m_level;
   ColumnStore &m_store;
   ColumnStore &m_overflow;
