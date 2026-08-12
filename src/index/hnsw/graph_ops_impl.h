@@ -319,11 +319,11 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
         // never before, and what unlink_neighbours() put there is disjoint
         // from the orphans by construction.
         assert(!new_neighbours.empty());
-        if (m_graph.replace_neighbours(orphan, level, new_neighbours)) {
-          return true;
-        }
+        // replace_neighbours() adds the reciprocal edges itself, under the same
+        // lock, and reports the neighbours whose own list had no room for one.
         std::vector<Node> overflowed;
-        if (m_graph.link_neighbours(orphan, level, overflowed)) {
+        if (m_graph.replace_neighbours(orphan, level, new_neighbours,
+                                       overflowed)) {
           return true;
         }
         if (shrink_neighbours(layer, orphan, level, overflowed)) {
@@ -493,6 +493,14 @@ template <typename Graph>
 bool GraphOperations<Graph>::shrink_neighbours(
     LayerOps &layer, const Node &linked_node, LevelId level,
     const std::vector<Node> &overflowed) {
+  // Whatever replace_neighbours() has to withhold in turn is left withheld:
+  // the shrink stops at the neighbours linked_node itself overflowed, and does
+  // not go on replacing the neighbours of those. The graph stays consistent
+  // either way -- a withheld edge is recorded as an incoming link on the node
+  // that had no room for it -- and this keeps one insert from cascading into an
+  // unbounded rewrite of the layer, which the heuristic's extendCandidates can
+  // otherwise feed by selecting nodes that were not connections to begin with.
+  std::vector<Node> withheld;
   for (const Node &neighbour : overflowed) {
     std::vector<Node> connections;
     if (m_graph.neighbours(neighbour, level, connections)) {
@@ -512,7 +520,7 @@ bool GraphOperations<Graph>::shrink_neighbours(
     if (consume_heuristic(layer, m_graph.Mmax(level), shrunk)) {
       return true;
     }
-    if (m_graph.replace_neighbours(neighbour, level, shrunk)) {
+    if (m_graph.replace_neighbours(neighbour, level, shrunk, withheld)) {
       return true;
     }
   }

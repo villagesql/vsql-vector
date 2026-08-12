@@ -358,9 +358,29 @@ public:
 
   // Replaces the full set of node's neighbours at node's level with
   // neighbours, discarding any existing edges not present in the new list.
+  //
+  // A link the updated list names too is left exactly where and as it is,
+  // incoming flag included: the flag records that the neighbour is not known to
+  // link back yet, which only the linking step can settle. The rest of the
+  // updated list lands in the slots the dropped links vacate (or in the free
+  // ones), and the whole list is then reciprocated as link_neighbours() does,
+  // under the same lock -- out reports the neighbours whose own list had no
+  // room for the edge, exactly as it does there.
+  //
+  // A dropped link is severed on the far side as well, unless the neighbour has
+  // an outgoing link of its own back to node: only node's half of that edge is
+  // being dropped, so node goes on recording the neighbour -- as an incoming
+  // link in its overflow chain, where such a record lives once it is out of the
+  // primary list. Conversely, a link the updated list names that node already
+  // records in that chain is promoted back into the primary list as a confirmed
+  // outgoing link rather than added afresh: a chain record is written while the
+  // edge it belongs to is being landed, so its source holds a slot for node
+  // already and linking it again would only give it a second one.
+  //
   // level is node's own level.
   bool replace_neighbours(const Node &node, LevelId level,
-                          const std::vector<Node> &neighbours);
+                          const std::vector<Node> &neighbours,
+                          std::vector<Node> &out);
 
   // Severs every edge between node and its neighbours at node's level, one
   // node -- and one storage latch -- at a time: node's own links are first all
@@ -518,6 +538,23 @@ private:
   // a severed link -- and orphan stays false.
   bool unlink_neighbour(LevelId level, const Node &node, NID neighbour_nid,
                         Node &out_neighbour, bool &orphan);
+
+  // Removes the neighbour's own record of node -- wherever it keeps it, its
+  // primary neighbour list or its overflow chain -- for an edge
+  // replace_neighbours() is dropping. Only the neighbour's record is latched;
+  // node's own list is adjusted by replace_neighbours() once every dropped link
+  // is done.
+  //
+  // keeps_link reports that the neighbour has an outgoing link of its own back
+  // to node, in which case nothing is removed at all: only node's half of that
+  // edge is being dropped, and the neighbour's link -- along with node's
+  // obligation to go on recording it as an incoming one -- outlives it.
+  //
+  // Nothing having named node is not an error, for the reasons
+  // unlink_neighbour() documents; there is then nothing to remove and
+  // keeps_link stays false.
+  bool drop_neighbour_link(LevelId level, const Node &node, NID neighbour_nid,
+                           bool &keeps_link);
 
   IndexStore &m_store;
   Index &m_index;
