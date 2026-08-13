@@ -76,6 +76,10 @@ namespace svector::hnsw {
 //   // these are exactly the neighbours it left orphaned.
 //   bool incoming_neighbours(const Node& node, LevelId level,
 //                            std::vector<Node>& out);
+//
+//   // Sets or clears the delete mark on 'node' at 'level' (node's own
+//   // level), leaving every link to and from it in place.
+//   bool mark_delete(const Node& node, LevelId level, bool delete_mark);
 template <typename Graph> class GraphOperations {
 public:
   using Node = typename Graph::Node;
@@ -108,7 +112,16 @@ public:
 
   GraphOperations(Graph &graph) : m_graph(graph) {};
 
-  bool insert(const NodeData &new_node_data);
+  // out_node is set to the newly inserted vector's node at its own top
+  // level -- the entry into its whole per-level chain via LowerLevel, and
+  // so a caller's natural handle on this call's insertion as a whole.
+  bool insert(const NodeData &new_node_data, Node &out_node);
+
+  // target_node is the vector's node at target_level, its own top level --
+  // the handle insert() returned. Every level below is marked too, so the
+  // whole per-level chain agrees on the vector's visibility.
+  bool mark_delete(const Node &target_node, LevelId target_level,
+                   bool delete_mark);
 
   bool remove(const Node &target_node, LevelId target_level);
 

@@ -42,7 +42,8 @@ namespace svector::hnsw {
 
 // Algorithm 1, INSERT.
 template <typename Graph>
-bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
+bool GraphOperations<Graph>::insert(const NodeData &new_node_data,
+                                    Node &out_node) {
   using LockMode = typename Graph::LockMode;
   using LockGraph = typename Graph::LockGraph;
   using LockLevels = typename Graph::LockLevels;
@@ -191,6 +192,7 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
       return true;
     }
   }
+  out_node = top_node;
 
   // Lines 18-19: Make q the new entry point if the graph is empty or if q's
   // level exceeds the previous top level.
@@ -199,6 +201,52 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
     return m_graph.set_entry_point({top_node}, insert_level);
   }
   return false;
+}
+
+// A vector is one node per level, each with its own delete mark, so marking
+// the vector means walking that whole chain: descend from target_node's top
+// level down to level 0, marking every node along the way. Nothing structural
+// changes -- the marked nodes keep every edge they have and stay navigable --
+// so this only needs each level to hold still while it is visited, which the
+// Shared locks give it: the destructive multi-level delete it has to be kept
+// out of takes them exclusively (remove()'s phase 1).
+//
+// An error partway down is reported as-is, leaving the levels already visited
+// marked. Unwinding them here would buy nothing: a crash at that same point
+// leaves exactly the same partially marked chain with nothing left running to
+// undo it, so rollback has to cope with one regardless -- which makes it the
+// one place that has to get this right, and an in-line unwind redundant.
+template <typename Graph>
+bool GraphOperations<Graph>::mark_delete(const Node &target_node,
+                                         LevelId target_level,
+                                         bool delete_mark) {
+  using LockMode = typename Graph::LockMode;
+  using LockGraph = typename Graph::LockGraph;
+  using LockLevels = typename Graph::LockLevels;
+  using DescendPolicy = typename Graph::LockLevels::DescendPolicy;
+
+  // Nothing here touches the graph-wide metadata this lock protects: it is
+  // held only because the level locks below it are never acquired without it
+  // (see the lock hierarchy in graph.h).
+  LockGraph graph_lock(m_graph, LockMode::Shared);
+  LockLevels levels(m_graph, LockMode::Shared, target_level,
+                    DescendPolicy::Release);
+
+  Node current = target_node;
+  for (LevelId level = target_level;;) {
+    if (m_graph.mark_delete(current, level, delete_mark)) {
+      return true;
+    }
+    if (!level.has_lower_level()) {
+      return false;
+    }
+    Node next{};
+    if (m_graph.get_next_level_node(current, level, next)) {
+      return true;
+    }
+    current = next;
+    level = levels.descend();
+  }
 }
 
 // Two-phase delete: first sever target_node's edges at every level (X lock,
