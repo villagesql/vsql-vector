@@ -846,34 +846,59 @@ bool purge(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
                                                    level_store->level());
 }
 
-bool begin(StorageCtx * /*ctx*/, const Index & /*index*/, MtrCtx::Ref /*mctx*/,
-           const IndexScanDesc & /*scan_desc*/, Index::Cursor *cursor,
-           bool *eof, char * /*err*/, uint32_t /*err_len*/) {
-  *cursor = new Cursor{};
-  *eof = true;
+bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
+           const IndexScanDesc &scan_desc, Index::Cursor *cursor, bool *eof,
+           char *err, uint32_t err_len) {
+  // The only capability this index registers is KNN (see vector.cc), so the
+  // server never issues a Point/Range scan against it.
+  assert(scan_desc.is_knn());
+  assert(scan_desc.num_keys() == 1 && scan_desc[0].is_knn());
+
+  IndexGraph graph(*ctx->user(), index, Segment::TrxRef{},
+                   index.get_max_col_len(VECTOR_KEY_POS),
+                   std::span<char>(err, err_len));
+
+  IndexGraph::NodeData query{scan_desc[0][VECTOR_KEY_POS]};
+  const uint32_t k = scan_desc.limit();
+  const uint32_t ef_search = std::max(k, Cursor::DEFAULT_EF_SEARCH);
+
+  std::vector<Node> nodes;
+  if (GraphOperations<IndexGraph>(graph).search_knn(query, k, ef_search, nodes))
+    return true;
+
+  auto *c = new Cursor(std::move(nodes));
+  *cursor = c;
+  *eof = c->eof();
   return false;
 }
 
-bool position(Index::Cursor /*cursor*/, Index::CursorOp /*op*/, bool *eof,
+bool position(Index::Cursor cursor, Index::CursorOp op, bool *eof,
               char * /*err*/, uint32_t /*err_len*/) {
-  *eof = true;
+  *eof = static_cast<Cursor *>(cursor)->advance(op);
   return false;
 }
 
-bool fetch(Index::Cursor /*cursor*/, IndexScanKey::KeyPartRef * /*key_ref*/,
+bool fetch(Index::Cursor cursor, Column::Ref *col_refs,
            IndexScanKey::KeyPartData * /*key_columns*/,
            IndexScanKey::KeyPartData * /*pkey_columns*/, char * /*err*/,
            uint32_t /*err_len*/) {
+  const Node *node = static_cast<Cursor *>(cursor)->current();
+  assert(node != nullptr);
+
+  // vid is the vector's own stable column reference.
+  col_refs[VECTOR_KEY_POS] = static_cast<Column::Ref>(node->vid.value);
   return false;
 }
 
 bool save(Index::Cursor /*cursor*/, char * /*err*/, uint32_t /*err_len*/) {
+  // The cursor holds no page latches or mtr state of its own -- the result
+  // set was fully materialized in begin() -- so there's nothing to detach.
   return false;
 }
 
-bool restore(Index::Cursor /*cursor*/, MtrCtx::Ref /*mctx*/, bool *eof,
+bool restore(Index::Cursor cursor, MtrCtx::Ref /*mctx*/, bool *eof,
              char * /*err*/, uint32_t /*err_len*/) {
-  *eof = true;
+  *eof = static_cast<Cursor *>(cursor)->eof();
   return false;
 }
 
