@@ -34,6 +34,10 @@ namespace svector::hnsw {
 
 namespace {
 
+// The key column whose bound index profile the distance helper is dispatched
+// through. An HNSW index has exactly one key column, the indexed vector.
+constexpr uint32_t VECTOR_KEY_POS = 0;
+
 // Level 0 has the largest Mmax (2*M, vs. M above it) and every level's
 // overflow capacity is the same regardless of level, so level 0 sizes the
 // worst case for both buffers.
@@ -75,16 +79,50 @@ IndexGraph::IndexGraph(IndexStore &store, Index &index, Segment::TrxRef trx_ref,
     : m_store(store), m_index(index), m_trx_ref(trx_ref),
       m_ctx(make_graph_context(store, vector_buf_size, err)) {}
 
-bool IndexGraph::distance(const Node & /*a*/, const Node & /*b*/,
+bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
+  assert(vid.is_valid());
+
+  // The server fills the vector data into the buffer it is handed, so out
+  // arrives pointing at buf, sized from the indexed column's maximum length --
+  // which every stored vector fits in by construction.
+  out.data.data = reinterpret_cast<const unsigned char *>(buf.data());
+  out.data.length = static_cast<uint32_t>(buf.size());
+  return m_index.get_key_data(static_cast<IndexScanKey::KeyPartRef>(vid.value),
+                              &out.data);
+}
+
+bool IndexGraph::distance(const NodeData &a, const NodeData &b,
                           DistanceType &out) {
-  out = 0.0;
+  // The helper rather than the profile function proper: it is the
+  // index-internal variant of the same distance, which for L2 is the squared
+  // one -- it orders nodes identically while skipping the sqrt.
+  //
+  // Profile functions are infallible, so there is no error to report past the
+  // operand resolution the callers below do.
+  m_index.helper(VECTOR_KEY_POS, DISTANCE_HELPER_FN_ID, &out, a.data, b.data);
   return false;
 }
 
-bool IndexGraph::distance(const NodeData & /*a*/, const Node & /*b*/,
-                          DistanceType &out) {
-  out = 0.0;
-  return false;
+bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
+  NodeData a_data;
+  NodeData b_data;
+  if (resolve_node_data(a.vid, m_ctx.m_vector_buf_1, a_data) ||
+      resolve_node_data(b.vid, m_ctx.m_vector_buf_2, b_data))
+    return true;
+
+  return distance(a_data, b_data, out);
+}
+
+bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
+  // a is the caller's own vector -- the one being inserted or queried for,
+  // which is not in the graph and so has no vid to resolve. Only b needs a
+  // buffer, and it takes the second one so the roles of the two never shift
+  // between the overloads.
+  NodeData b_data;
+  if (resolve_node_data(b.vid, m_ctx.m_vector_buf_2, b_data))
+    return true;
+
+  return distance(a, b_data, out);
 }
 
 bool IndexGraph::neighbours(const Node &node, LevelId level,

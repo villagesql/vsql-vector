@@ -438,6 +438,17 @@ private:
   bool debug_check_level(const Node &node, LevelId level) const;
 #endif // NDEBUG
 
+  // The single distance computation both public distance() overloads end at,
+  // once each of their operands has been resolved to the vector data it names.
+  bool distance(const NodeData &a, const NodeData &b, DistanceType &out);
+
+  // Resolves a node's vid -- which is the server's stable column reference for
+  // the vector the node indexes -- back to that vector's data, which the server
+  // fills into buf. Each operand of a distance() call gets its own buffer
+  // (m_vector_buf_1/m_vector_buf_2), so the first stays valid while the second
+  // is resolved.
+  bool resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out);
+
   // One link in a node's overflow chain: the overflow entry to drop (nid),
   // and the record whose Overflow field currently points to it (prev, of
   // kind prev_kind) -- either the owning node's own NeighbourEntry
