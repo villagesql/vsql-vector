@@ -23,6 +23,9 @@
 
 #include "storage.h"
 
+#include "graph.h"
+#include "graph_ops.h"
+
 #include <cassert>
 #include <cerrno>
 #include <cmath>
@@ -296,6 +299,12 @@ bool LevelStore::remove(MtrCtx::Ref mtr, StoreKind kind, NID nid,
   return store.purge(mtr, trx_ref, nid.column_ref(), err, err_len);
 }
 
+bool LevelStore::mark_delete(MtrCtx::Ref mtr, NID nid, Segment::TrxRef trx_ref,
+                             bool delete_mark, char *err, uint32_t err_len) {
+  return m_store.mark_delete(mtr, trx_ref, nid.column_ref(), delete_mark, err,
+                             err_len);
+}
+
 bool LevelStore::update(MtrCtx::Ref mtr, NID id, const NeighbourEntry &entry,
                         NodeField mask, const ScratchSlots &slots,
                         ScratchBytes &buffer, ScratchChunkIds &chunk_ids,
@@ -508,6 +517,22 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
   return false;
 }
 
+bool LevelStore::resolve_owner(NID nid, Node &out, char *err,
+                               uint32_t err_len) {
+  NeighbourEntry entry;
+  size_t num_valid;
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+  bool failed = fetch(mtr, nid, /*for_update=*/false, entry, num_valid, err,
+                      err_len, NodeField::Owner);
+  mtr_ctx.commit();
+  if (failed)
+    return true;
+
+  out = Node{nid, entry.owner};
+  return false;
+}
+
 LevelStore *IndexStore::locate(NID nid, StoreKind &kind, char *err,
                                uint32_t err_len) {
   MtrCtx mtr_ctx;
@@ -712,16 +737,8 @@ bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
     LevelStore *store = get_level(m_entry_level);
     assert(store != nullptr);
 
-    NeighbourEntry entry;
-    size_t num_valid = 0;
-    MtrCtx mtr_ctx;
-    auto mtr = mtr_ctx.start();
-    bool failed = store->fetch(mtr, entry_nid, /*for_update=*/false, entry,
-                               num_valid, err, err_len, NodeField::Owner);
-    mtr_ctx.commit();
-    if (failed)
+    if (store->resolve_owner(entry_nid, m_entry_point, err, err_len))
       return true;
-    m_entry_point = Node{entry_nid, entry.owner};
   }
 
   m_initialized = true;
@@ -751,30 +768,80 @@ bool load(StorageCtx *ctx, const Index &index, Index::StorageRef storage_ref,
   return ctx->user()->load(storage_ref, *opts, err, err_len);
 }
 
-bool insert(StorageCtx * /*ctx*/, const Index & /*index*/,
-            Segment::TrxRef /*trx_ref*/,
-            IndexScanKey::KeyPartData * /*key_columns*/,
+bool insert(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
+            IndexScanKey::KeyPartData *key_columns,
             IndexScanKey::KeyPartData * /*pkey_columns*/,
-            IndexScanKey::KeyPartRef * /*key_ref*/, char * /*err*/,
-            uint32_t /*err_len*/) {
+            IndexScanKey::KeyPartRef *key_ref, char *err, uint32_t err_len) {
+  IndexGraph graph(*ctx->user(), index, trx_ref,
+                   index.get_max_col_len(VECTOR_KEY_POS),
+                   std::span<char>(err, err_len));
+
+  IndexGraph::NodeData node_data{key_columns[VECTOR_KEY_POS]};
+  Node top_node;
+  if (GraphOperations<IndexGraph>(graph).insert(node_data, top_node))
+    return true;
+
+  *key_ref = static_cast<IndexScanKey::KeyPartRef>(top_node.nid.value);
   return false;
 }
 
-bool mark_delete(StorageCtx * /*ctx*/, const Index & /*index*/,
-                 Segment::TrxRef /*trx_ref*/,
-                 IndexScanKey::KeyPartRef * /*key_ref*/,
+bool mark_delete(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
+                 IndexScanKey::KeyPartRef *key_ref,
                  IndexScanKey::KeyPartData * /*key_columns*/,
-                 IndexScanKey::KeyPartData * /*pkey_columns*/,
-                 bool /*delete_mark*/, char * /*err*/, uint32_t /*err_len*/) {
-  return false;
+                 IndexScanKey::KeyPartData * /*pkey_columns*/, bool delete_mark,
+                 char *err, uint32_t err_len) {
+  IndexStore *store = ctx->user();
+  NID nid{static_cast<uint64_t>(*key_ref)};
+
+  // key_ref always names the vector's top-level NeighbourEntry (see
+  // insert()), so it always resolves to a Neighbour-kind record whose level
+  // is that vector's top level -- exactly as in purge() below.
+  StoreKind kind;
+  LevelStore *level_store = store->locate(nid, kind, err, err_len);
+  if (level_store == nullptr)
+    return true;
+  assert(kind == StoreKind::Neighbour);
+
+  Node target;
+  if (level_store->resolve_owner(nid, target, err, err_len))
+    return true;
+
+  // The mark belongs on every level's record for this vector, not just the
+  // top one key_ref names, so it goes through the graph operation that walks
+  // the whole per-level chain.
+  IndexGraph graph(*store, index, trx_ref,
+                   index.get_max_col_len(VECTOR_KEY_POS),
+                   std::span<char>(err, err_len));
+  return GraphOperations<IndexGraph>(graph).mark_delete(
+      target, level_store->level(), delete_mark);
 }
 
-bool purge(StorageCtx * /*ctx*/, const Index & /*index*/,
-           Segment::TrxRef /*trx_ref*/, IndexScanKey::KeyPartRef * /*key_ref*/,
+bool purge(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
+           IndexScanKey::KeyPartRef *key_ref,
            IndexScanKey::KeyPartData * /*key_columns*/,
-           IndexScanKey::KeyPartData * /*pkey_columns*/, char * /*err*/,
-           uint32_t /*err_len*/) {
-  return false;
+           IndexScanKey::KeyPartData * /*pkey_columns*/, char *err,
+           uint32_t err_len) {
+  IndexStore *store = ctx->user();
+  NID nid{static_cast<uint64_t>(*key_ref)};
+
+  // key_ref is always the NID insert() returned -- the vector's own
+  // top-level NeighbourEntry (see storage.cc's insert()) -- so it locates a
+  // Neighbour-kind record whose level is that vector's top level.
+  StoreKind kind;
+  LevelStore *level_store = store->locate(nid, kind, err, err_len);
+  if (level_store == nullptr)
+    return true;
+  assert(kind == StoreKind::Neighbour);
+
+  Node target;
+  if (level_store->resolve_owner(nid, target, err, err_len))
+    return true;
+
+  IndexGraph graph(*store, index, trx_ref,
+                   index.get_max_col_len(VECTOR_KEY_POS),
+                   std::span<char>(err, err_len));
+  return GraphOperations<IndexGraph>(graph).remove(target,
+                                                   level_store->level());
 }
 
 bool begin(StorageCtx * /*ctx*/, const Index & /*index*/, MtrCtx::Ref /*mctx*/,

@@ -172,8 +172,11 @@ struct MockGraph {
   // so tests read this map directly to check data survived a round trip.
   std::unordered_map<int, int> node_data;
 
-  // ---- Soft-deletion, for visible().
-  std::set<int> deleted;
+  // ---- Soft-deletion, for visible(). Per level, like the real delete mark:
+  // it lives on each level's own record, so mark_delete() writes one entry
+  // per level of the marked element's chain and visible() reads the entry for
+  // the level the node it is handed lives at.
+  std::map<uint8_t, std::set<int>> deleted;
 
   // ---- Entry point(s). Real HNSW only ever has one, but the interface
   // takes a vector (see is_sole_entry_point() in remove()), so tests can
@@ -209,6 +212,7 @@ struct MockGraph {
   bool fail_ensure_levels = false;
   bool fail_create_node = false;
   bool fail_drop_node = false;
+  bool fail_mark_delete = false;
   bool fail_get_next_level = false;
   bool fail_link_neighbours = false;
   bool fail_replace_neighbours = false;
@@ -269,7 +273,9 @@ struct MockGraph {
     if (fail_visible) {
       return true;
     }
-    out = deleted.find(node.id) == deleted.end();
+    auto level_it = deleted.find(node.level.value);
+    out = level_it == deleted.end() ||
+          level_it->second.find(node.id) == level_it->second.end();
     return false;
   }
 
@@ -360,6 +366,25 @@ struct MockGraph {
     adjacency[node.level.value].erase(node.id);
     call_log.push_back("drop:" + std::to_string(node.id) + "@" +
                        std::to_string(node.level.value));
+    return false;
+  }
+
+  // Only this level's record is touched, and only its delete mark: the
+  // element's presence and every edge it has stay exactly as they were, which
+  // is what keeps a marked node navigable.
+  bool mark_delete(const Node &node, LevelId level, bool delete_mark) {
+    assert(level == node.level);
+    if (fail_mark_delete) {
+      return true;
+    }
+    if (delete_mark) {
+      deleted[level.value].insert(node.id);
+    } else {
+      deleted[level.value].erase(node.id);
+    }
+    call_log.push_back((delete_mark ? "mark:" : "unmark:") +
+                       std::to_string(node.id) + "@" +
+                       std::to_string(level.value));
     return false;
   }
 
@@ -516,7 +541,8 @@ void build_line_level0(MockGraph &g, int n) {
 bool do_insert(MockGraph &g, int id, int pos, int data = 0) {
   add_element(g, id, pos);
   svector::hnsw::GraphOperations<MockGraph> ops(g);
-  return ops.insert(NodeData{id, data});
+  Node out_node;
+  return ops.insert(NodeData{id, data}, out_node);
 }
 
 // ============================== search_knn ==============================
@@ -604,7 +630,7 @@ void test_search_knn_visibility_filters_only_bottom_layer() {
   // 15 is the query itself (would otherwise be the unique nearest); 16 is
   // its only distance-1 rival. Deleting both leaves 14 as the unique
   // nearest *visible* node.
-  g.deleted = {15, 16};
+  g.deleted[0] = {15, 16};
   svector::hnsw::GraphOperations<MockGraph> ops(g);
 
   std::vector<Node> result;
@@ -928,6 +954,104 @@ void test_insert_then_search_returns_inserted_data() {
   }
 }
 
+// ============================== mark_delete ==============================
+
+// Builds one element present at levels 2, 1 and 0, connected at each of them,
+// which is what a mark has to walk down and what must survive it untouched.
+void build_marked_chain(MockGraph &g, int id) {
+  add_element(g, id, id);
+  add_element(g, id + 1, id + 1);
+  for (uint8_t level = 0; level <= 2; ++level) {
+    add_presence(g, id, level);
+    add_presence(g, id + 1, level);
+    add_edge(g, level, id, id + 1);
+  }
+}
+
+void test_mark_delete_marks_every_level_of_the_chain() {
+  MockGraph g;
+  build_marked_chain(g, 7);
+  svector::hnsw::GraphOperations<MockGraph> ops(g);
+
+  assert(!ops.mark_delete(Node{LevelId(2), 7}, LevelId(2), true));
+
+  // The mark belongs on every level's record, not just the top one the
+  // caller's handle names.
+  for (uint8_t level = 0; level <= 2; ++level) {
+    assert(g.deleted[level].count(7) == 1);
+  }
+  // Marking is not structural: the element stays present, and both halves of
+  // every edge it has stay recorded, at every level.
+  for (uint8_t level = 0; level <= 2; ++level) {
+    assert(g.present[level].count(7) == 1);
+    assert((g.adjacency[level][7] == std::vector<int>{8}));
+    assert((g.adjacency[level][8] == std::vector<int>{7}));
+  }
+  // Top-down: each level is marked before the one below it is reached, so the
+  // level locks are only ever acquired in that order.
+  assert((g.call_log ==
+          std::vector<std::string>{"mark:7@2", "mark:7@1", "mark:7@0"}));
+}
+
+void test_mark_delete_unmarks_every_level_of_the_chain() {
+  MockGraph g;
+  build_marked_chain(g, 7);
+  svector::hnsw::GraphOperations<MockGraph> ops(g);
+  assert(!ops.mark_delete(Node{LevelId(2), 7}, LevelId(2), true));
+
+  // Rollback of the mark above: the same walk, clearing instead of setting.
+  assert(!ops.mark_delete(Node{LevelId(2), 7}, LevelId(2), false));
+  for (uint8_t level = 0; level <= 2; ++level) {
+    assert(g.deleted[level].count(7) == 0);
+  }
+}
+
+void test_mark_delete_leaves_marked_node_navigable() {
+  MockGraph g;
+  build_line_level0(g, 20);
+  for (int id : {0, 5, 10, 15}) {
+    add_presence(g, id, 1);
+  }
+  add_edge(g, 1, 0, 5);
+  add_edge(g, 1, 5, 10);
+  add_edge(g, 1, 10, 15);
+  g.entry_points = {Node{LevelId(1), 0}};
+  g.entry_level = LevelId(1);
+  svector::hnsw::GraphOperations<MockGraph> ops(g);
+
+  // 15 is present at both levels, so marking it exercises the descent; 16 is
+  // level 0 only. Both are marked, leaving 14 the unique nearest visible node
+  // to a query at 15 (as in the visibility test above).
+  assert(!ops.mark_delete(Node{LevelId(1), 15}, LevelId(1), true));
+  assert(!ops.mark_delete(Node{LevelId(0), 16}, LevelId(0), true));
+
+  // 15 is still the only level-1 route into the query's neighbourhood, so a
+  // search reaching 14 at all proves the marked node kept its edges and went
+  // on serving as a stepping stone.
+  std::vector<Node> result;
+  assert(!ops.search_knn(NodeData{15}, 1, 6, result));
+  assert((values(result) == std::vector<int>{14}));
+}
+
+void test_mark_delete_failure_propagates() {
+  MockGraph g;
+  build_marked_chain(g, 7);
+  g.fail_mark_delete = true;
+  svector::hnsw::GraphOperations<MockGraph> ops(g);
+  assert(ops.mark_delete(Node{LevelId(2), 7}, LevelId(2), true));
+}
+
+void test_mark_delete_get_next_level_failure_propagates() {
+  MockGraph g;
+  build_marked_chain(g, 7);
+  g.fail_get_next_level = true;
+  svector::hnsw::GraphOperations<MockGraph> ops(g);
+  assert(ops.mark_delete(Node{LevelId(2), 7}, LevelId(2), true));
+  // The levels reached before the failure keep their mark -- unwinding them is
+  // the transaction's rollback to do, not this call's.
+  assert(g.deleted[2].count(7) == 1);
+}
+
 // ================================ remove =================================
 
 void test_remove_severs_edges_without_orphaning_safe_neighbours() {
@@ -1123,6 +1247,12 @@ int main() {
   test_insert_ensure_levels_precedes_level_locks();
   test_insert_get_next_level_failure_propagates();
   test_insert_then_search_returns_inserted_data();
+
+  test_mark_delete_marks_every_level_of_the_chain();
+  test_mark_delete_unmarks_every_level_of_the_chain();
+  test_mark_delete_leaves_marked_node_navigable();
+  test_mark_delete_failure_propagates();
+  test_mark_delete_get_next_level_failure_propagates();
 
   test_remove_severs_edges_without_orphaning_safe_neighbours();
   test_remove_sole_entry_point_selects_survivor_as_replacement();

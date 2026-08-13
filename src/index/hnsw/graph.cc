@@ -34,10 +34,6 @@ namespace svector::hnsw {
 
 namespace {
 
-// The key column whose bound index profile the distance helper is dispatched
-// through. An HNSW index has exactly one key column, the indexed vector.
-constexpr uint32_t VECTOR_KEY_POS = 0;
-
 // Level 0 has the largest Mmax (2*M, vs. M above it) and every level's
 // overflow capacity is the same regardless of level, so level 0 sizes the
 // worst case for both buffers.
@@ -74,8 +70,9 @@ bool IndexGraph::debug_check_level(const Node &node, LevelId level) const {
 }
 #endif // NDEBUG
 
-IndexGraph::IndexGraph(IndexStore &store, Index &index, Segment::TrxRef trx_ref,
-                       size_t vector_buf_size, std::span<char> err)
+IndexGraph::IndexGraph(IndexStore &store, const Index &index,
+                       Segment::TrxRef trx_ref, size_t vector_buf_size,
+                       std::span<char> err)
     : m_store(store), m_index(index), m_trx_ref(trx_ref),
       m_ctx(make_graph_context(store, vector_buf_size, err)) {}
 
@@ -502,6 +499,21 @@ bool IndexGraph::drop_node(const std::optional<Node> &parent, LevelId level,
 
   mtr_ctx.commit();
   return false;
+}
+
+bool IndexGraph::mark_delete(const Node &node, LevelId level,
+                             bool delete_mark) {
+  assert(debug_check_level(node, level));
+
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+  bool failed = store->mark_delete(mtr, node.nid, m_trx_ref, delete_mark, err(),
+                                   err_len());
+  mtr_ctx.commit();
+  return failed;
 }
 
 bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
