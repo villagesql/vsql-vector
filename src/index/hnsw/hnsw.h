@@ -38,6 +38,18 @@ namespace svector::hnsw {
 
 using vsql::preview_storage::Column;
 
+// fn_ids of the functions every hnsw index profile binds, shared by the profile
+// registrations and the graph operations that dispatch through them. A
+// profile's SQL-visible functions and its index-internal helpers are numbered
+// in independent namespaces, so each gets its own enumeration.
+enum ProfileFnId : uint32_t {
+  DISTANCE_PROFILE_FN_ID = 1,
+};
+
+enum HelperFnId : uint32_t {
+  DISTANCE_HELPER_FN_ID = 1,
+};
+
 // Fixed-size reusable scratch storage.
 // Allocated once during construction and reused to avoid allocations in
 // performance-critical graph operations.
