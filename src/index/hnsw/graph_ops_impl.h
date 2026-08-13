@@ -119,6 +119,8 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data,
   std::optional<Node> parent;
   Node top_node{};
 
+  std::vector<Node> neighbours;
+
   // Lines 8-16: from min(L, l) down to 0, gather efConstruction candidates
   // and connect q to its selected neighbours at each layer. Levels above L
   // (only possible when l > L, i.e. q is becoming the new tallest entry
@@ -127,7 +129,7 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data,
   // stays exactly what get_entry_point() returned until level actually
   // reaches L, at which point it's finally valid to search with.
   for (;;) {
-    std::vector<Node> neighbours;
+    neighbours.clear();
     if (level > entry_level) {
       // Brand-new top level: no search, no neighbours.
     } else {
@@ -176,6 +178,7 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data,
   // Complete the insertion by adding the reciprocal links bottom-up. Shared
   // locks are retained across all levels to prevent concurrent deletion of
   // the inserted nodes while still allowing concurrent searches and inserts.
+  std::vector<Node> overflowed;
   while (!inserted_nodes.empty()) {
     auto [node, node_level] = inserted_nodes.top();
     inserted_nodes.pop();
@@ -184,7 +187,7 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data,
     // link_neighbours() withholds those edges rather than adding them
     // outright, leaving shrink_neighbours() below to decide their final
     // neighbour set (Algorithm 1, lines 14-15).
-    std::vector<Node> overflowed;
+    overflowed.clear();
     if (m_graph.link_neighbours(node, node_level, overflowed)) {
       return true;
     }
@@ -322,11 +325,16 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
     LockLevels levels(m_graph, LockMode::Exclusive, target_level,
                       DescendPolicy::Release);
     Node current = target_node;
+    std::vector<Node> unlinked;
+    std::vector<Node> orphaned;
+    std::vector<Node> candidates;
+    std::vector<Node> new_neighbours;
+    std::vector<Node> overflowed;
     for (;;) {
       // Sever every edge at this level. The neighbours that keep an edge of
       // their own come back in unlinked -- they're good entry points for
       // repairing the ones that don't.
-      std::vector<Node> unlinked;
+      unlinked.clear();
       if (m_graph.unlink_neighbours(current, level, unlinked)) {
         return true;
       }
@@ -336,7 +344,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
       // at this same level -- being orphaned is a level-specific phenomenon,
       // so we never descend further to do it -- using the survivors above as
       // search_layer's entry points.
-      std::vector<Node> orphaned;
+      orphaned.clear();
       if (m_graph.incoming_neighbours(current, level, orphaned)) {
         return true;
       }
@@ -353,12 +361,12 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
           unlinked.push_back(orphan);
           continue;
         }
-        std::vector<Node> candidates(unlinked);
+        candidates = unlinked;
         layer.reset(orphan);
         if (layer.search(candidates, level, m_graph.ef_construction())) {
           return true;
         }
-        std::vector<Node> new_neighbours;
+        new_neighbours.clear();
         if (consume_heuristic(layer, m_graph.M(), new_neighbours)) {
           return true;
         }
@@ -372,7 +380,7 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
         assert(!new_neighbours.empty());
         // replace_neighbours() adds the reciprocal edges itself, under the same
         // lock, and reports the neighbours whose own list had no room for one.
-        std::vector<Node> overflowed;
+        overflowed.clear();
         if (m_graph.replace_neighbours(orphan, level, new_neighbours,
                                        overflowed)) {
           return true;
@@ -552,8 +560,10 @@ bool GraphOperations<Graph>::shrink_neighbours(
   // unbounded rewrite of the layer, which the heuristic's extendCandidates can
   // otherwise feed by selecting nodes that were not connections to begin with.
   std::vector<Node> withheld;
+  std::vector<Node> connections;
+  std::vector<Node> shrunk;
   for (const Node &neighbour : overflowed) {
-    std::vector<Node> connections;
+    connections.clear();
     if (m_graph.neighbours(neighbour, level, connections)) {
       return true;
     }
@@ -567,10 +577,11 @@ bool GraphOperations<Graph>::shrink_neighbours(
     if (layer.seed(connections, level)) {
       return true;
     }
-    std::vector<Node> shrunk;
+    shrunk.clear();
     if (consume_heuristic(layer, m_graph.Mmax(level), shrunk)) {
       return true;
     }
+    withheld.clear();
     if (m_graph.replace_neighbours(neighbour, level, shrunk, withheld)) {
       return true;
     }
