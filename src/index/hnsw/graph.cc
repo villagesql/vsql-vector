@@ -53,8 +53,15 @@ GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size,
 
 #ifndef NDEBUG
 bool IndexGraph::debug_check_level(const Node &node, LevelId level) const {
+  // Nothing here is reportable -- the assert at every call site aborts
+  // instead -- so locate() is given no error buffer rather than the caller's,
+  // which a debug-only check has no business overwriting.
   StoreKind kind;
-  LevelStore *located = m_store.locate(node.nid, kind, err(), err_len());
+  LevelStore *located =
+      m_store.locate(node.nid, kind, /*err=*/nullptr, /*err_len=*/0);
+  // Separate assert so an abort names the cause: locate() failing to resolve
+  // the NID at all, rather than resolving it to a different level.
+  assert(located != nullptr);
   return located != nullptr && located->level() == level;
 }
 #endif // NDEBUG
@@ -89,7 +96,7 @@ bool IndexGraph::neighbours(const Node &node, LevelId level,
   out.resize(store->max_neighbours());
   NeighbourEntry entry;
   entry.neighbours = out;
-  size_t num_valid;
+  size_t num_valid = 0;
   bool failed =
       store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid, err(),
                    err_len(), NodeField::Neighbours);
@@ -152,6 +159,10 @@ bool IndexGraph::set_entry_point(const std::vector<Node> &nodes,
   return failed;
 }
 
+bool IndexGraph::ensure_levels(LevelId level) {
+  return m_store.ensure_levels(level, err(), err_len()) == nullptr;
+}
+
 bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
                              const NodeData &data,
                              std::vector<Node> &neighbours, Node &out) {
@@ -161,13 +172,15 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
   if (m_index.get_key_ref(data.data, &owner_ref))
     return true;
 
+  // ~MtrCtx() commits, and commit() is idempotent, so an early return below
+  // needs nothing beyond the return itself; the explicit commit at the end
+  // marks the success path.
   MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
-  auto on_error = [&] {
-    mtr_ctx.commit();
-    return true;
-  };
 
+  // Every level this insert touches was materialized by
+  // GraphOperations::insert() before it locked them, so get_level() below
+  // always resolves.
   LevelStore *parent_store = nullptr;
   if (parent) {
     // Select parent node for update from upper level. Always exactly one
@@ -184,21 +197,13 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
     // current level, so mtr always acquires page latches top-down and never
     // risks a lock-order inversion against a concurrent top-down search.
     NeighbourEntry parent_check;
-    // Unused: only meaningful when mask includes NodeField::Neighbours.
-    size_t unused_num_valid;
+    size_t num_valid = 0;
     if (parent_store->fetch(mtr, parent->nid, /*for_update=*/true, parent_check,
-                            unused_num_valid, err(), err_len(),
-                            NodeField::LowerLevel))
-      return on_error();
+                            num_valid, err(), err_len(), NodeField::LowerLevel))
+      return true;
     // The node one level down doesn't exist yet -- this call is the one
     // that creates it, below.
     assert(!parent_check.lower_level.is_valid());
-  } else {
-    // Create levels if needed. Only required on the first (topmost) call
-    // for this insert -- every lower level visited afterwards already
-    // exists once the topmost one does.
-    if (m_store.ensure_levels(level, err(), err_len()) == nullptr)
-      return on_error();
   }
 
   LevelStore *store = m_store.get_level(level);
@@ -215,7 +220,7 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
   NID new_nid;
   if (store->insert(mtr, entry, m_trx_ref, m_ctx.m_neighbour_buf, new_nid,
                     err(), err_len()))
-    return on_error();
+    return true;
 
   out.nid = new_nid;
   out.vid = entry.owner;
@@ -228,7 +233,7 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
                              NodeField::LowerLevel, m_ctx.m_update_slots,
                              m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(),
                              err_len()))
-      return on_error();
+      return true;
   }
 
   mtr_ctx.commit();
@@ -248,17 +253,17 @@ bool IndexGraph::drop_overflow_nodes(LevelId level, const Node &node) {
     MtrCtx mtr_ctx;
     auto mtr = mtr_ctx.start();
     NeighbourEntry entry;
-    size_t unused_num_valid;
+    size_t num_valid = 0;
     bool failed =
-        store->fetch(mtr, node.nid, /*for_update=*/false, entry,
-                     unused_num_valid, err(), err_len(), NodeField::Overflow);
+        store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
+                     err(), err_len(), NodeField::Overflow);
     mtr_ctx.commit();
     if (failed)
       return true;
     head = entry.overflow;
   }
 
-  // Walk the chain, collecting (overflow NID, parent NID) links on a stack
+  // Walk the chain, collecting (overflow NID, prev NID) links on a stack
   // -- one fetch, in its own mtr, per chain entry -- so the loop below can
   // unwind them tail-to-head.
   std::stack<OverflowLink> links;
@@ -269,10 +274,9 @@ bool IndexGraph::drop_overflow_nodes(LevelId level, const Node &node) {
     MtrCtx mtr_ctx;
     auto mtr = mtr_ctx.start();
     OverflowEntry entry;
-    size_t unused_num_valid;
-    bool failed =
-        store->fetch(mtr, cur, /*for_update=*/false, entry, unused_num_valid,
-                     err(), err_len(), OverflowField::Overflow);
+    size_t num_valid = 0;
+    bool failed = store->fetch(mtr, cur, /*for_update=*/false, entry, num_valid,
+                               err(), err_len(), OverflowField::Overflow);
     mtr_ctx.commit();
     if (failed)
       return true;
@@ -284,7 +288,7 @@ bool IndexGraph::drop_overflow_nodes(LevelId level, const Node &node) {
 
   // Unwind tail-to-head: each popped link's nid is, at the time it's
   // processed, the last remaining entry in what's left of the chain, so
-  // dropping it and pointing its parent at NID{} is always correct.
+  // dropping it and clearing its prev's Overflow field is always correct.
   while (!links.empty()) {
     if (drop_overflow_node(level, links.top()))
       return true;
@@ -297,34 +301,30 @@ bool IndexGraph::drop_overflow_node(LevelId level, const OverflowLink &link) {
   LevelStore *store = m_store.get_level(level);
   assert(store != nullptr);
   assert(debug_check_level(Node{link.nid, VID{}}, level));
-  assert(debug_check_level(Node{link.parent, VID{}}, level));
+  assert(debug_check_level(Node{link.prev, VID{}}, level));
 
   MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
-  auto on_error = [&] {
-    mtr_ctx.commit();
-    return true;
-  };
 
-  if (link.parent_kind == StoreKind::Neighbour) {
-    NeighbourEntry parent_entry;
-    parent_entry.overflow = NID{};
-    if (store->update(mtr, link.parent, parent_entry, NodeField::Overflow,
+  if (link.prev_kind == StoreKind::Neighbour) {
+    NeighbourEntry prev_entry;
+    prev_entry.overflow = NID{};
+    if (store->update(mtr, link.prev, prev_entry, NodeField::Overflow,
                       m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
                       m_ctx.m_chunk_ids, err(), err_len()))
-      return on_error();
+      return true;
   } else {
-    OverflowEntry parent_entry;
-    parent_entry.overflow = NID{};
-    if (store->update(mtr, link.parent, parent_entry, OverflowField::Overflow,
+    OverflowEntry prev_entry;
+    prev_entry.overflow = NID{};
+    if (store->update(mtr, link.prev, prev_entry, OverflowField::Overflow,
                       m_ctx.m_update_slots, m_ctx.m_overflow_buf,
                       m_ctx.m_chunk_ids, err(), err_len()))
-      return on_error();
+      return true;
   }
 
   if (store->remove(mtr, StoreKind::Overflow, link.nid, m_trx_ref, err(),
                     err_len()))
-    return on_error();
+    return true;
 
   mtr_ctx.commit();
   return false;
@@ -337,10 +337,6 @@ bool IndexGraph::drop_node(const std::optional<Node> &parent, LevelId level,
 
   MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
-  auto on_error = [&] {
-    mtr_ctx.commit();
-    return true;
-  };
 
   if (parent) {
     // Parent is always exactly one level above the current one -- mirrors
@@ -358,7 +354,7 @@ bool IndexGraph::drop_node(const std::optional<Node> &parent, LevelId level,
                              NodeField::LowerLevel, m_ctx.m_update_slots,
                              m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(),
                              err_len()))
-      return on_error();
+      return true;
   }
 
   LevelStore *store = m_store.get_level(level);
@@ -366,7 +362,7 @@ bool IndexGraph::drop_node(const std::optional<Node> &parent, LevelId level,
 
   if (store->remove(mtr, StoreKind::Neighbour, node.nid, m_trx_ref, err(),
                     err_len()))
-    return on_error();
+    return true;
 
   mtr_ctx.commit();
   return false;
@@ -384,10 +380,10 @@ bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
   auto mtr = mtr_ctx.start();
 
   NeighbourEntry entry;
-  size_t unused_num_valid;
+  size_t num_valid = 0;
   bool failed =
-      store->fetch(mtr, node.nid, /*for_update=*/false, entry, unused_num_valid,
-                   err(), err_len(), NodeField::LowerLevel);
+      store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid, err(),
+                   err_len(), NodeField::LowerLevel);
   mtr_ctx.commit();
   if (failed) {
     out = Node{};

@@ -207,6 +207,7 @@ struct MockGraph {
   bool fail_visible = false;
   bool fail_get_entry_point = false;
   bool fail_set_entry_point = false;
+  bool fail_ensure_levels = false;
   bool fail_create_node = false;
   bool fail_drop_node = false;
   bool fail_get_next_level = false;
@@ -298,6 +299,17 @@ struct MockGraph {
                        (nodes.empty() ? std::string("none")
                                       : std::to_string(nodes.front().id)) +
                        "@" + std::to_string(level.value));
+    return false;
+  }
+
+  // Levels are implicit in this mock (adjacency/present are indexed by
+  // level), so there is nothing to materialize -- only the call itself and
+  // its failure path are interesting here.
+  bool ensure_levels(LevelId level) {
+    if (fail_ensure_levels) {
+      return true;
+    }
+    call_log.push_back("ensure_levels:" + std::to_string(level.value));
     return false;
   }
 
@@ -818,6 +830,37 @@ void test_insert_set_entry_point_failure_propagates() {
   assert(do_insert(g, 0, 0));
 }
 
+void test_insert_ensure_levels_failure_propagates() {
+  MockGraph g;
+  g.fail_ensure_levels = true;
+  assert(do_insert(g, 0, 0));
+}
+
+void test_insert_ensure_levels_precedes_level_locks() {
+  MockGraph g;
+  assert(!do_insert(g, 0, 0));
+  g.call_log.clear();
+
+  // Insert above the current entry level: the top levels do not exist yet,
+  // so they have to be materialized before insert() locks them and before
+  // any node is created there.
+  g.insert_levels = {2};
+  assert(!do_insert(g, 1, 1));
+
+  size_t ensure_idx = g.call_log.size();
+  size_t first_create = g.call_log.size();
+  for (size_t i = 0; i < g.call_log.size(); ++i) {
+    const std::string &entry = g.call_log[i];
+    if (entry == "ensure_levels:2") {
+      ensure_idx = std::min(ensure_idx, i);
+    } else if (entry.rfind("create:", 0) == 0) {
+      first_create = std::min(first_create, i);
+    }
+  }
+  assert(ensure_idx < g.call_log.size());
+  assert(ensure_idx < first_create);
+}
+
 void test_insert_get_next_level_failure_propagates() {
   MockGraph g;
   g.insert_levels = {1};
@@ -1046,6 +1089,8 @@ int main() {
   test_insert_shrinks_overflowed_neighbours_past_mmax();
   test_insert_replace_neighbours_failure_propagates();
   test_insert_set_entry_point_failure_propagates();
+  test_insert_ensure_levels_failure_propagates();
+  test_insert_ensure_levels_precedes_level_locks();
   test_insert_get_next_level_failure_propagates();
   test_insert_then_search_returns_inserted_data();
 

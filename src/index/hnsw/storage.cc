@@ -530,21 +530,33 @@ LevelStore *IndexStore::ensure_levels(LevelStore::LevelId target, char *err,
   assert(target <= max_level());
   assert(m_levels[m_entry_level.value].has_value());
 
+  // Levels above m_entry_level may already exist, wholly or in part: an
+  // insert that created them and then failed leaves them behind, since
+  // levels are never dropped. Every step below is therefore skipped when its
+  // work is already done rather than asserted against. Re-running
+  // init_root_page() for a half that exists would allocate a second root
+  // page and overwrite the stored ref, orphaning the first page along with
+  // any records already written into it.
   for (uint8_t l = m_entry_level.value + 1; l <= target.value; ++l) {
-    assert(!m_levels[l].has_value());
-
     RootId primary{LevelStore::LevelId{l}, RootId::Type::Primary};
     RootId overflow{LevelStore::LevelId{l}, RootId::Type::Overflow};
-    if (m_multi_store.init_root_page(segment_index(primary),
+
+    // The two halves are created by separate calls, so a failure (or a crash
+    // and restart) can leave a level with only its primary store: each half
+    // is checked on its own, not inferred from the other.
+    if (!m_multi_store.m_stores[root_index(primary)].initialized() &&
+        m_multi_store.init_root_page(segment_index(primary),
                                      root_index(primary), err, err_len))
       return nullptr;
-    if (m_multi_store.init_root_page(segment_index(overflow),
+    if (!m_multi_store.m_stores[root_index(overflow)].initialized() &&
+        m_multi_store.init_root_page(segment_index(overflow),
                                      root_index(overflow), err, err_len))
       return nullptr;
 
-    m_levels[l].emplace(
-        LevelStore::LevelId{l}, m_multi_store.m_stores[root_index(primary)],
-        m_multi_store.m_stores[root_index(overflow)], m_num_neighbours);
+    if (!m_levels[l].has_value())
+      m_levels[l].emplace(
+          LevelStore::LevelId{l}, m_multi_store.m_stores[root_index(primary)],
+          m_multi_store.m_stores[root_index(overflow)], m_num_neighbours);
   }
   return get_level(target);
 }
@@ -701,12 +713,11 @@ bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
     assert(store != nullptr);
 
     NeighbourEntry entry;
-    size_t unused_num_valid;
+    size_t num_valid = 0;
     MtrCtx mtr_ctx;
     auto mtr = mtr_ctx.start();
-    bool failed =
-        store->fetch(mtr, entry_nid, /*for_update=*/false, entry,
-                     unused_num_valid, err, err_len, NodeField::Owner);
+    bool failed = store->fetch(mtr, entry_nid, /*for_update=*/false, entry,
+                               num_valid, err, err_len, NodeField::Owner);
     mtr_ctx.commit();
     if (failed)
       return true;

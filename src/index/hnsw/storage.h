@@ -379,7 +379,8 @@ public:
 
   // Store owning nid's record, or nullptr if it cannot be resolved. On
   // success, kind is set to which of that level's two stores (Neighbour or
-  // Overflow) the record lives in.
+  // Overflow) the record lives in. A caller that will not report the failure
+  // may pass (nullptr, 0) for err/err_len (see MultiColumnStore::fill_error).
   LevelStore *locate(NID nid, StoreKind &kind, char *err, uint32_t err_len);
 
   // Materializes every level's storage from m_entry_level (exclusive) up to
@@ -391,11 +392,17 @@ public:
   // max_level(). Calling this with a target at or below m_entry_level is a
   // no-op that just returns get_level(target).
   //
-  // Caller must already hold mutex() in exclusive mode: this mutates
-  // graph-wide level storage and does not lock mutex() itself.
+  // Caller must already hold mutex(): this walks, and may mutate, graph-wide
+  // level storage and does not lock mutex() itself. Exclusive mode is
+  // required whenever target exceeds m_entry_level, since that is the case
+  // that mutates; shared mode suffices for the no-op case, which only reads
+  // m_levels and cannot run concurrently with a mutating call anyway.
   //
   // Returns the store for target, or nullptr on error (err/err_len set).
-  // Any levels created before the failing one remain created.
+  // Any levels created before the failing one remain created -- levels are
+  // never dropped, so levels above m_entry_level are a valid state, and this
+  // function is idempotent: a later call skips whatever already exists,
+  // including a level left with only one of its two root pages.
   LevelStore *ensure_levels(LevelStore::LevelId target, char *err,
                             uint32_t err_len);
 

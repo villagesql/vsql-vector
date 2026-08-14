@@ -55,6 +55,13 @@ class ConcurrencyGuard {
 
 void MultiColumnStore::fill_error(const char *info, char *msg, uint32_t len,
                                   bool local) {
+  // A caller with nothing to report passes (nullptr, 0) -- see the note on
+  // the declaration. Checked here rather than left to snprintf's tolerance
+  // of a null buffer with a zero length, so that any error path added below
+  // is safe by construction.
+  if (msg == nullptr || len == 0)
+    return;
+
   if (local) {
     snprintf(msg, len, "SVECTOR: %s", info);
   } else {

@@ -191,6 +191,14 @@ public:
   // line 19).
   bool set_entry_point(const std::vector<Node> &nodes, LevelId level);
 
+  // Materializes every level up to and including level. Called by
+  // GraphOperations::insert() before it takes any level lock, since a level
+  // that does not exist yet cannot be locked. A no-op once the levels
+  // exist, so only the insert that raises the graph's height pays for it.
+  // The caller must hold the graph lock in X mode whenever levels are
+  // actually created (see IndexStore::ensure_levels).
+  bool ensure_levels(LevelId level);
+
   bool create_node(const std::optional<Node> &parent, LevelId level,
                    const NodeData &data, std::vector<Node> &neighbours,
                    Node &out);
@@ -259,18 +267,18 @@ private:
   bool debug_check_level(const Node &node, LevelId level) const;
 #endif // NDEBUG
 
-  // One link in a node's overflow chain: the overflow entry to drop
-  // (nid), and the record whose Overflow field currently points to it
-  // (parent, of kind parent_kind) -- either the owning node's own
-  // NeighbourEntry (StoreKind::Neighbour) or an earlier OverflowEntry
-  // (StoreKind::Overflow) in the same chain. parent_kind travels with
-  // parent so drop_overflow_node() knows which record layout -- and which
+  // One link in a node's overflow chain: the overflow entry to drop (nid),
+  // and the record whose Overflow field currently points to it (prev, of
+  // kind prev_kind) -- either the owning node's own NeighbourEntry
+  // (StoreKind::Neighbour) or an earlier OverflowEntry
+  // (StoreKind::Overflow) in the same chain. prev_kind travels with prev so
+  // drop_overflow_node() knows which record layout -- and which
   // LevelStore::update() overload -- to use when clearing its Overflow
   // field.
   struct OverflowLink {
     NID nid;
-    NID parent;
-    StoreKind parent_kind;
+    NID prev;
+    StoreKind prev_kind;
   };
 
   // Drops every overflow entry chained off node at level (via its
@@ -281,7 +289,7 @@ private:
   bool drop_overflow_nodes(LevelId level, const Node &node);
 
   // Physically removes the single overflow entry link.nid identifies and
-  // clears the Overflow field of the record link.parent/link.parent_kind
+  // clears the Overflow field of the record link.prev/link.prev_kind
   // names. link.nid is always that record's current (and, by
   // construction of drop_overflow_nodes()'s tail-to-head unwind, last
   // remaining) chain successor, so clearing to NID{} rather than splicing

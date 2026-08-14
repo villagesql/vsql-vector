@@ -81,6 +81,17 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
   }
 
   auto level = std::max(entry_level, insert_level);
+
+  // Materialize the levels this insert will touch before locking any of
+  // them: when insert_level > entry_level the top levels do not exist yet,
+  // and a level cannot be locked until it does. Mutating level storage
+  // requires the graph lock in X mode, which is exactly the case that
+  // reached the upgrade above -- when level <= entry_level every level
+  // already exists and this is a no-op.
+  if (m_graph.ensure_levels(level)) {
+    return true;
+  }
+
   LockLevels levels(m_graph, LockMode::Shared, level, DescendPolicy::Release);
   LayerOps layer(m_graph, new_node_data);
 
