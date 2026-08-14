@@ -575,8 +575,8 @@ void test_consume_heuristic_extend_candidates_dedups_overlap() {
                                                                     query);
 
   // 8 is a neighbour of both 7 and 9, so extending each candidate must add
-  // it to the working set only once, via gather_candidates()'s shared
-  // m_visited set -- not once per candidate that reaches it. Distances to
+  // it to the working set only once, via the shared visited set -- not once
+  // per candidate that reaches it. Distances to
   // 10: 7->3, 9->1, 6->4, 8->2, 10->0 (10 is also pulled in, as a
   // neighbour of 9).
   std::vector<LineGraph::Node> candidates{LineGraph::Node{7},
@@ -652,8 +652,8 @@ void test_consume_heuristic_extend_candidates_neighbours_failure_propagates() {
 
   // fail_neighbours doesn't affect seed() (which never calls
   // neighbours()), so the failure can only be reached inside
-  // consume_heuristic()'s own gather_candidates() step, when
-  // ExtendCandidates::Yes makes it fetch each candidate's neighbours.
+  // consume_heuristic()'s own extension step, when ExtendCandidates::Yes
+  // makes it fetch each candidate's neighbours.
   std::vector<LineGraph::Node> candidates{LineGraph::Node{5},
                                           LineGraph::Node{9}};
   assert(!layer.seed(candidates));
@@ -671,8 +671,8 @@ void test_consume_heuristic_extend_candidates_distance_failure_propagates() {
   // seed()'s own evaluate_distances() call (for candidates {6,17}) makes
   // the first two distance() calls; let those succeed and fail from the
   // third call onward -- the first call evaluating a newly-extended
-  // neighbour's distance inside gather_candidates(), a branch only
-  // reachable once extend_candidates adds nodes beyond the seeded set.
+  // neighbour's distance, a branch only reachable once extend_candidates
+  // adds nodes beyond the seeded set.
   graph.fail_distance_after = 2;
   LineGraph::NodeData query{10};
   svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,

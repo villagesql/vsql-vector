@@ -102,16 +102,7 @@ public:
   // seed() -- gathers a result set and puts the object in the Consume
   // state; step 2 -- exactly one of consume_all(), consume_simple() or
   // consume_heuristic() -- extracts it and puts the object back in the
-  // Init state. Step 1 unconditionally discards whatever state a previous
-  // call left behind, even if it itself goes on to fail, so it's always
-  // safe to call regardless of the object's current state. Step 2 asserts
-  // that the object is in the Consume state: calling it without a
-  // preceding step 1 (or calling it twice in a row) is a programming
-  // error, not a runtime-recoverable one. This split exists so that a
-  // step 2 call immediately following step 1 -- the common case, e.g.
-  // search() then consume_heuristic() in INSERT's construction loop -- can
-  // reuse step 1's already-computed query distances instead of
-  // recomputing them.
+  // Init state.
 
   // Step 1: executes the search from the entry points (Algorithm 2,
   // SEARCH-LAYER). At most ef visible candidates are retained during the
@@ -210,8 +201,7 @@ private:
   // The output vector is replaced with the search result, ordered by
   // increasing distance from the query node (nearest first). Leaves
   // m_candidates and m_visited as-is; the next search()/seed() call is
-  // responsible for discarding them via reset(). Shared by consume_all()
-  // and consume_simple().
+  // responsible for discarding them via reset().
   void consume_result(std::vector<Node> &out);
 
   // Fills in the distance for each candidate from index begin onward.
@@ -222,22 +212,19 @@ private:
 
   // Seeds m_visited, m_candidates and m_results from the entry points
   // (Algorithm 2, lines 1-3). Returns true if a graph operation fails.
-  // The public search() and seed() both wrap this, after their own
-  // reset()+state transition.
+  // The public search() and seed() both wrap this, after their own reset().
   bool seed_impl(const std::vector<Node> &entry_points);
 
   // Expands node's neighbourhood into m_candidates and m_results
   // (Algorithm 2, lines 9-17). Returns true if a graph operation fails.
   bool expand(const Node &node, uint32_t ef);
 
-  // Drains m_results into m_expand_buf (Algorithm 4, line 2: W <- C) --
-  // distances are already known from the preceding search()/seed() call,
-  // so unlike a fresh candidate list this needs no evaluate_distances()
-  // call -- then, if extend_candidates is set, extends m_expand_buf with
-  // each of those candidates' neighbours (Algorithm 4, lines 3-7),
-  // evaluating distances only for the newly-added ones. Returns true if a
-  // graph operation fails.
-  bool gather_candidates(ExtendCandidates extend_candidates);
+  // Extends m_expand_buf, holding W, with each of its candidates'
+  // neighbours (Algorithm 4, lines 3-7), evaluating distances only for the
+  // newly-added ones -- W's own are already known from the preceding
+  // search()/seed() call. Only called for ExtendCandidates::Yes. Returns
+  // true if a graph operation fails.
+  bool extend_with_neighbours();
 
   // Returns true if a graph operation fails. On success, sets dominated
   // to whether e is closer to some element of result than to the query

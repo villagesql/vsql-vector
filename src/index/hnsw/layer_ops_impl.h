@@ -51,7 +51,6 @@ template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::search(
     const std::vector<Node> &entry_points, uint32_t ef) {
   reset();
-  m_state = State::Consume;
 
   if (seed_impl(entry_points)) {
     return true;
@@ -74,14 +73,20 @@ bool LayerOperations<Graph, Policy>::search(
     }
   }
 
+  m_state = State::Consume;
   return false;
 }
 
 template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::seed(const std::vector<Node> &candidates) {
   reset();
+
+  if (seed_impl(candidates)) {
+    return true;
+  }
+
   m_state = State::Consume;
-  return seed_impl(candidates);
+  return false;
 }
 
 template <typename Graph, template <typename> class Policy>
@@ -169,20 +174,20 @@ bool LayerOperations<Graph, Policy>::consume_heuristic(
   // the full pre-heuristic candidate pool alongside the narrowed result,
   // since the two serve different purposes -- W keeps being used as the
   // entry point for the next layer down, distinct from the neighbours
-  // actually linked at this layer. Filled from m_expand_buf before
-  // gather_candidates() below potentially grows it with extend_candidates,
-  // so this always reflects W itself, not the extended set.
+  // actually linked at this layer. Filled from m_expand_buf before the
+  // optional extension below potentially grows it, so this always reflects
+  // W itself, not the extended set.
   if (candidate_pool) {
     candidate_pool->clear();
     candidate_pool->reserve(m_expand_buf.size());
-    for (const Candidate &candidate : m_expand_buf) {
-      candidate_pool->push_back(candidate.node);
+    for (auto it = m_expand_buf.rbegin(); it != m_expand_buf.rend(); ++it) {
+      candidate_pool->push_back(it->node);
     }
   }
 
   // Algorithm 4, lines 3-8: optionally extend W with each candidate's
   // neighbours.
-  if (gather_candidates(extend_candidates)) {
+  if (extend_candidates == ExtendCandidates::Yes && extend_with_neighbours()) {
     return true;
   }
 
@@ -241,12 +246,7 @@ bool LayerOperations<Graph, Policy>::consume_heuristic(
 }
 
 template <typename Graph, template <typename> class Policy>
-bool LayerOperations<Graph, Policy>::gather_candidates(
-    ExtendCandidates extend_candidates) {
-  if (extend_candidates == ExtendCandidates::No) {
-    return false;
-  }
-
+bool LayerOperations<Graph, Policy>::extend_with_neighbours() {
   // Algorithm 4, lines 3-7: extend W with each candidate's neighbours.
   // Only the candidates already in m_expand_buf when this is called (W
   // itself) are walked for their neighbours, not the ones appended below,
@@ -310,6 +310,13 @@ bool LayerOperations<Graph, Policy>::evaluate_distances(
 template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::seed_impl(
     const std::vector<Node> &entry_points) {
+  // The callers must have already reset() the state.
+  assert(m_state == State::Init);
+  assert(m_visited.empty());
+  assert(m_candidates.empty());
+  assert(m_results.empty());
+  assert(m_expand_buf.empty());
+
   // Algorithm 2, lines 1-3: v = C = W = ep.
   for (const Node &node : entry_points) {
     if (m_visited.insert(node.key()).second) {
