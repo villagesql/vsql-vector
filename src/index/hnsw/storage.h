@@ -113,6 +113,19 @@ public:
     return std::min(MAX_OVERFLOW_LEN, M);
   }
 
+  // Upper bound, over every level, on the number of chunk ids a single
+  // update() can emit: the owner, the nid/vid pair for each neighbour slot,
+  // the lower level link and the trailing overflow link. Level 0 dominates,
+  // since it carries twice the degree and has no lower level field. Sizes the
+  // caller's chunk id scratch buffer, so it is derived from the chunk layout
+  // below rather than restated at the call site. Also covers the overflow
+  // record, whose update() emits at most overflow_capacity() + 1 ids.
+  static constexpr size_t max_update_chunks(uint32_t M) {
+    return static_cast<size_t>(neighbour_overflow_chunk(
+               /*has_lower=*/false, max_neighbours(LevelId{0}, M))) +
+           1;
+  }
+
   uint32_t target_neighbours() const {
     return target_neighbours(m_level, m_num_neighbours);
   }

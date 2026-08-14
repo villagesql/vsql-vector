@@ -44,7 +44,8 @@ GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size) {
   const size_t overflow_buf_size =
       OverflowEntry::storage_size(overflow_capacity);
   return GraphContext(neighbour_buf_size, overflow_buf_size, vector_buf_size,
-                      /*max_update_slots=*/mmax0);
+                      /*max_update_slots=*/mmax0,
+                      LevelStore::max_update_chunks(M));
 }
 
 } // namespace
