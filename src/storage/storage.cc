@@ -522,15 +522,68 @@ bool ColumnStore::update(MtrCtx::Ref mctx, Column::Ref col_ref,
     return false;
   }
 
-  // Step 1: Decode column reference to get page and slot
+  // Step 1: Check the caller supplied arguments. All the conditions below are
+  // caller bugs: assert in debug builds, and in release builds raise an error
+  // instead of writing anything. This must be done outside the write loop:
+  // page writes under an mtr cannot be undone, so failing part way through the
+  // loop would leave the record half updated.
+  assert(col_data.data != nullptr);
+  assert(chunk_size > 0);
+  assert(col_data.length == m_root.get_column_size());
+  if (col_data.data == nullptr || chunk_size == 0 ||
+      col_data.length != m_root.get_column_size()) {
+    char info[96];
+    snprintf(info, sizeof(info),
+             "update: bad arguments: data=%p, chunk_size=%u, length=%u, "
+             "column_size=%u",
+             static_cast<const void *>(col_data.data), chunk_size,
+             col_data.length, m_root.get_column_size());
+    fill_error(info, error_msg, error_msg_len, true);
+    return true;
+  }
+
+  // Step 2: Validate all the chunk indexes, for the same reason: they must be
+  // in strictly increasing order and within the record, and both conditions
+  // have to be known before the first write. Both are caller bugs too.
+  for (size_t i = 0; i < chunk_ids.size(); ++i) {
+    uint16_t chunk_index = chunk_ids[i];
+
+    assert(i == 0 || chunk_index > chunk_ids[i - 1]);
+    if (i > 0 && chunk_index <= chunk_ids[i - 1]) {
+      char info[96];
+      snprintf(info, sizeof(info),
+               "update: chunk indexes not in strictly increasing order: "
+               "%u follows %u",
+               chunk_index, chunk_ids[i - 1]);
+      fill_error(info, error_msg, error_msg_len, true);
+      return true;
+    }
+
+    // The column data length is already known to match the record width, so
+    // this only guards against an out of range chunk index.
+    uint64_t offset = static_cast<uint64_t>(chunk_index) * chunk_size;
+    assert(offset + chunk_size <= col_data.length);
+    if (offset + chunk_size > col_data.length) {
+      char info[96];
+      snprintf(info, sizeof(info),
+               "update: chunk %u out of bounds: end=%llu, length=%u",
+               chunk_index,
+               static_cast<unsigned long long>(offset + chunk_size),
+               col_data.length);
+      fill_error(info, error_msg, error_msg_len, true);
+      return true;
+    }
+  }
+
+  // Step 3: Decode column reference to get page and slot
   Page::Ref data_page_ref;
   uint16_t slot_index;
   DataPage::decode_column_ref(col_ref, data_page_ref, slot_index);
 
-  // Step 2: Use the provided mtr context
+  // Step 4: Use the provided mtr context
   auto mtr = static_cast<MtrCtx::Ref>(mctx);
 
-  // Step 3: Load data page with X latch
+  // Step 5: Load data page with X latch
   Page data_page;
   if (data_page.load(m_space_ref, data_page_ref, Page::Latch::EXCLUSIVE, mtr) !=
       Error::SUCCESS) {
@@ -539,10 +592,11 @@ bool ColumnStore::update(MtrCtx::Ref mctx, Column::Ref col_ref,
     return true;
   }
 
-  // Step 4: Refuse to write into a free slot
-  bool delete_marked = false;
+  // Step 6: Refuse to write into a free slot. The delete mark is deliberately
+  // ignored: this API is non-transactional and leaves record visibility to the
+  // caller, so a delete marked record is still updated in place.
   bool is_free = true;
-  std::tie(delete_marked, is_free) =
+  std::tie(std::ignore, is_free) =
       m_data.get_record_status(data_page, slot_index);
   if (is_free) {
     char info[64];
@@ -551,32 +605,28 @@ bool ColumnStore::update(MtrCtx::Ref mctx, Column::Ref col_ref,
     return true;
   }
 
-  // Step 5: Write each requested chunk in turn. Callers must pass
-  // chunk_ids in strictly increasing order; has_prev_index/prev_index
-  // enforce that invariant.
-  Page::Offset rec_offset = m_data.get_record_offset(slot_index);
-  bool has_prev_index = false;
-  uint16_t prev_index = 0;
-  for (uint16_t chunk_index : chunk_ids) {
-    if (has_prev_index && chunk_index <= prev_index) {
-      fill_error("update: chunk indexes not in strictly increasing order",
-                 error_msg, error_msg_len, true);
-      return true;
-    }
-    has_prev_index = true;
-    prev_index = chunk_index;
-
-    uint64_t offset = static_cast<uint64_t>(chunk_index) * chunk_size;
-    if (offset + chunk_size > col_data.length ||
-        offset + chunk_size > m_root.get_column_size()) {
-      fill_error("update: chunk out of bounds", error_msg, error_msg_len, true);
-      return true;
+  // Step 7: Write the requested chunks. Everything is validated by now, so
+  // this loop cannot fail: either all the chunks are written or none of them
+  // is, and the caller never sees a partially updated record. The indexes are
+  // in strictly increasing order, so a run of consecutive indexes covers one
+  // contiguous byte range and is written with a single call, keeping the
+  // number of redo log records down.
+  Page::Offset col_offset =
+      m_data.get_record_offset(slot_index) + DataPage::TRX_REF_SIZE;
+  for (size_t i = 0; i < chunk_ids.size();) {
+    // Extend the run as long as the next index follows the current one.
+    size_t end = i + 1;
+    while (end < chunk_ids.size() && chunk_ids[end] == chunk_ids[end - 1] + 1) {
+      ++end;
     }
 
-    Page::Offset write_offset =
-        rec_offset + DataPage::TRX_REF_SIZE + static_cast<Page::Offset>(offset);
-    data_page.write_string(write_offset, col_data.data + offset, chunk_size,
-                           mtr);
+    // Step 2 has established that the run lies within the column size, so the
+    // cast to the narrower page offset cannot truncate.
+    uint32_t offset = static_cast<uint32_t>(chunk_ids[i]) * chunk_size;
+    size_t length = (end - i) * chunk_size;
+    data_page.write_string(col_offset + static_cast<Page::Offset>(offset),
+                           col_data.data + offset, length, mtr);
+    i = end;
   }
 
   return false;
