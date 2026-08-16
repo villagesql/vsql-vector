@@ -254,7 +254,9 @@ bool LevelStore::insert(MtrCtx::Ref mtr, const NeighbourEntry &entry,
   Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
                         static_cast<uint32_t>(len)};
   Column::Ref col_ref;
-  if (m_store.insert(mtr, trx_ref, col_data, col_ref, err, err_len))
+  // Graph stores keep no rowid trailer (m_rowid_max == 0); pass an empty prefix.
+  if (m_store.insert(mtr, trx_ref, col_data, Column::Data{nullptr, 0}, col_ref,
+                     err, err_len))
     return true;
 
   out = NID{static_cast<uint64_t>(col_ref)};
@@ -283,7 +285,9 @@ bool LevelStore::insert(MtrCtx::Ref mtr, const OverflowEntry &entry,
   Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
                         static_cast<uint32_t>(len)};
   Column::Ref col_ref;
-  if (m_overflow.insert(mtr, trx_ref, col_data, col_ref, err, err_len))
+  // Graph stores keep no rowid trailer (m_rowid_max == 0); pass an empty prefix.
+  if (m_overflow.insert(mtr, trx_ref, col_data, Column::Data{nullptr, 0},
+                        col_ref, err, err_len))
     return true;
 
   out = NID{static_cast<uint64_t>(col_ref)};

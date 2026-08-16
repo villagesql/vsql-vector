@@ -259,7 +259,8 @@ void test_insert_into_level1_store_hits_segment_bug() {
 
   vsql::preview_storage::MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
-  failed = mcs.m_stores[1].insert(mtr, /*trx_ref=*/1, col_data, col_ref, err,
+  failed = mcs.m_stores[1].insert(mtr, /*trx_ref=*/1, col_data,
+                                  Column::Data{nullptr, 0}, col_ref, err,
                                   sizeof(err));
   mtr_ctx.commit();
 
@@ -317,11 +318,64 @@ void test_insert_after_reload_uses_primary_segment() {
   Column::Ref col_ref2 = Column::EMPTY_REF;
   vsql::preview_storage::MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
-  failed = reopened.m_stores[0].insert(mtr, /*trx_ref=*/1, col_data2, col_ref2,
-                                       err, sizeof(err));
+  failed = reopened.m_stores[0].insert(mtr, /*trx_ref=*/1, col_data2,
+                                       Column::Data{nullptr, 0}, col_ref2, err,
+                                       sizeof(err));
   mtr_ctx.commit();
   assert(!failed && "insert after reload should succeed (primary segment "
                     "restored by load())");
+}
+
+// A store created with rowid_max > 0 must round-trip the rowid_prefix: the bytes
+// handed to insert() come back from fetch() unchanged, while col_data stays the
+// plain column value (the trailer is invisible to the caller).
+void test_rowid_prefix_round_trips() {
+  install_fake_abi();
+  svector::MultiColumnStore mcs;
+  char err[512] = {};
+
+  constexpr uint16_t kColLen = 16;
+  svector::Storage_spec spec{kColLen, "T"};
+  spec.rowid_max = 8;
+  std::vector<svector::Storage_spec> specs{spec};
+
+  bool failed = mcs.create(/*space_ref=*/1, /*trx_ref=*/1, specs,
+                           /*num_segments=*/1, err, sizeof(err));
+  assert(!failed && "create with a rowid trailer should succeed");
+
+  std::vector<unsigned char> value(kColLen, 0x7);
+  const unsigned char rowid[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+  Column::Data col_data{value.data(), kColLen};
+  Column::Data rowid_prefix{rowid, sizeof(rowid)};
+  Column::Ref col_ref = Column::EMPTY_REF;
+
+  {
+    vsql::preview_storage::MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    failed = mcs.m_stores[0].insert(mtr, /*trx_ref=*/1, col_data, rowid_prefix,
+                                    col_ref, err, sizeof(err));
+    mtr_ctx.commit();
+    assert(!failed && "insert with a rowid_prefix should succeed");
+  }
+
+  Column::Data got_col{};
+  Column::Data got_rowid{};
+  Segment::TrxRef got_trx = 0;
+  bool deleted = false;
+  {
+    vsql::preview_storage::MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    failed = mcs.m_stores[0].fetch(mtr, col_ref, /*for_update=*/false, got_col,
+                                   got_rowid, got_trx, deleted, err,
+                                   sizeof(err));
+    // col_data is the plain column value (trailer invisible); rowid matches.
+    assert(!failed && "fetch should succeed");
+    assert(got_col.length == kColLen && "col_data length is the column value");
+    assert(got_rowid.length == sizeof(rowid) && "rowid length round-trips");
+    assert(std::memcmp(got_rowid.data, rowid, sizeof(rowid)) == 0 &&
+           "rowid bytes round-trip");
+    mtr_ctx.commit();
+  }
 }
 
 }  // namespace
@@ -329,6 +383,7 @@ void test_insert_after_reload_uses_primary_segment() {
 int main() {
   test_insert_into_level1_store_hits_segment_bug();
   test_insert_after_reload_uses_primary_segment();
+  test_rowid_prefix_round_trips();
   std::printf("All storage tests passed.\n");
   return 0;
 }

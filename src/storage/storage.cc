@@ -25,6 +25,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <tuple>
@@ -91,6 +92,9 @@ bool MultiColumnStore::create(Space::Ref space_ref, Segment::TrxRef trx_ref,
   }
 
   auto num_root_pages = static_cast<uint8_t>(num_storages);
+  // rowid_max must be set before init() so the data page is sized to include
+  // the rowid trailer.
+  primary.m_rowid_max = storages[0].rowid_max;
   primary.init(space_ref, root_page_ref, storages[0].col_len, num_segments,
                num_root_pages, storages[0].metadata);
   // The primary store owns the segment page and uses segment 0.
@@ -100,6 +104,7 @@ bool MultiColumnStore::create(Space::Ref space_ref, Segment::TrxRef trx_ref,
   // Additional stores do not have root pages yet. Their root pages will be
   // allocated and assigned on first use.
   for (size_t i = 1; i < storages.size(); ++i) {
+    m_stores[i].m_rowid_max = storages[i].rowid_max;
     m_stores[i].init(space_ref, Page::INVALID_REF, storages[i].col_len,
                      /*num_segments=*/0, /*num_root_pages=*/1,
                      storages[i].metadata);
@@ -261,6 +266,7 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
   // Single resize to avoid triggering the assert(false) move constructor.
   assert(m_stores.empty());
   m_stores.resize(num_root_pages);
+  m_stores[0].m_rowid_max = specs[0].rowid_max;
   m_stores[0].init(space_ref, root_page_ref, info0.col_len, info0.num_segs,
                    num_root_pages, info0.metadata);
   // The primary store owns the segment page and uses segment 0 -- same as
@@ -274,6 +280,7 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
 
   for (uint8_t i = 1; i < num_root_pages; ++i) {
     Page::Ref ref = other_refs[i - 1];
+    m_stores[i].m_rowid_max = specs[i].rowid_max;
     if (ref == Page::INVALID_REF) {
       m_stores[i].init(space_ref, Page::INVALID_REF, specs[i].col_len,
                        /*num_segments=*/0, /*num_root_pages=*/1,
@@ -352,20 +359,33 @@ void ColumnStore::init(Space::Ref space_ref, Page::Ref root_page_ref,
   m_space_ref = space_ref;
   m_root_page_ref = root_page_ref;
   m_metadata = metadata;
+  // RootPage's column_size stays the caller-visible column length (col_len).
+  // The DataPage record, however, must also hold the rowid trailer when this
+  // store keeps one, so size it with the trailer included. m_rowid_max must be
+  // set before init() for stores that use a rowid region (ColumnStorage sets it
+  // on the SVECTOR store; HNSW leaves it 0).
   m_root.init(space_ref, col_len, num_segments, num_root_pages,
               static_cast<uint8_t>(metadata.size()));
-  m_data.init(space_ref, col_len);
+  m_data.init(space_ref, static_cast<uint16_t>(col_len + rowid_region()));
 }
 
 bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
-                         Column::Data col_data, Column::Ref &col_ref,
-                         char *error_msg, uint32_t error_msg_len) {
+                         Column::Data col_data, Column::Data rowid_prefix,
+                         Column::Ref &col_ref, char *error_msg,
+                         uint32_t error_msg_len) {
   // Track concurrency: increment on entry, decrement on exit
   ConcurrencyGuard concurrency_guard(m_insert_concurrency_counter);
 
   // Validate input: column data must be valid
   if (col_data.data == nullptr) {
     fill_error("insert: NULL column data", error_msg, error_msg_len, true);
+    return true;
+  }
+  if (m_rowid_max > 0 && rowid_prefix.length > m_rowid_max) {
+    char info[80];
+    snprintf(info, sizeof(info), "insert: rowid_prefix too long: len=%u, max=%u",
+             rowid_prefix.length, m_rowid_max);
+    fill_error(info, error_msg, error_msg_len, true);
     return true;
   }
   if (col_data.length != m_root.get_column_size()) {
@@ -528,9 +548,29 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
     }
   }
 
-  // Step 7: Insert into data page (hint will be updated)
+  // Step 7: Insert into data page (hint will be updated). DataPage stores an
+  // opaque payload of get_column_size() + rowid_region() bytes; when this store
+  // keeps a rowid trailer, assemble that payload here as
+  // [col_data][rowid_len:1][rowid:m_rowid_max] so DataPage stays unaware of the
+  // trailer. When m_rowid_max == 0 the payload is just col_data (no copy).
   assert(data_page.is_loaded());
-  m_data.insert(data_page, mtr, trx_ref, col_data, col_ref);
+  if (m_rowid_max == 0) {
+    m_data.insert(data_page, mtr, trx_ref, col_data, col_ref);
+  } else {
+    const uint16_t payload_len =
+        static_cast<uint16_t>(col_data.length + rowid_region());
+    m_record_buf.resize(payload_len);
+    unsigned char *p = m_record_buf.data();
+    memcpy(p, col_data.data, col_data.length);
+    p += col_data.length;
+    // Trailer: [len:1][rowid:m_rowid_max], zero-padded past the actual rowid.
+    *p++ = static_cast<unsigned char>(rowid_prefix.length);
+    if (rowid_prefix.length > 0)
+      memcpy(p, rowid_prefix.data, rowid_prefix.length);
+    memset(p + rowid_prefix.length, 0, m_rowid_max - rowid_prefix.length);
+    m_data.insert(data_page, mtr, trx_ref,
+                  Column::Data{m_record_buf.data(), payload_len}, col_ref);
+  }
 
   return false;
 }
@@ -574,14 +614,23 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
   Page::Offset rec_offset = m_data.get_record_offset(slot_index);
   trx_ref = data_page.read_integer_8(rec_offset);
 
-  // Step 6: Set column data pointer to the column data in the page
+  // Step 6: Set column data pointer to the column data in the page.
   Page::Offset col_data_offset = rec_offset + DataPage::TRX_REF_SIZE;
   col_data.data = data_page.get_data() + col_data_offset;
   col_data.length = m_root.get_column_size();
 
-  // Step 7: We don't store rowid_prefix for SVECTOR
-  rowid_prefix.data = nullptr;
-  rowid_prefix.length = 0;
+  // Step 7: When this store keeps a rowid trailer, the bytes immediately after
+  // the column data are [rowid_len:1][rowid:m_rowid_max]; point rowid_prefix at
+  // the stored rowid (in-page, no copy). Otherwise there is no rowid to return.
+  if (m_rowid_max > 0) {
+    Page::Offset rowid_off = col_data_offset + col_data.length;
+    uint8_t rowid_len = data_page.get_data()[rowid_off];
+    rowid_prefix.data = data_page.get_data() + rowid_off + 1;
+    rowid_prefix.length = rowid_len;
+  } else {
+    rowid_prefix.data = nullptr;
+    rowid_prefix.length = 0;
+  }
 
   return false;
 }
@@ -814,9 +863,16 @@ bool ColumnStorage::create(Ctx *storage, Space::Ref space,
   uint16_t store_len = static_cast<uint16_t>(col_len - sizeof(Column::Ref));
   constexpr uint8_t NUM_SEGMENTS = 1;
 
+  // The SVECTOR base column keeps a per-record rowid trailer so an index scan
+  // can resolve a stored col_ref back to its owning row (REF_LOOKUP). The
+  // spec's rowid_max propagates to the store's m_rowid_max, and create() sizes
+  // the data page to include the trailer.
+  Storage_spec spec{store_len, "SVECTOR"};
+  spec.rowid_max = ColumnStore::DEFAULT_ROWID_MAX;
+
   auto *col_store = storage->user();
-  bool err = col_store->create(space, trx_ref, {{store_len, "SVECTOR"}},
-                               NUM_SEGMENTS, error_msg, error_msg_len);
+  bool err = col_store->create(space, trx_ref, {spec}, NUM_SEGMENTS, error_msg,
+                               error_msg_len);
   if (!err) storage->set_ref(col_store->m_ref);
   return err;
 }
@@ -828,19 +884,23 @@ bool ColumnStorage::drop(Ctx *storage, Segment::TrxRef trx_ref, char *error_msg,
 
 bool ColumnStorage::load(Ctx *storage, Column::StorageRef storage_ref,
                          char *error_msg, uint32_t error_msg_len) {
-  return storage->user()->load(storage_ref, {{0, ""}}, error_msg,
-                               error_msg_len);
+  // The single SVECTOR store carries a rowid trailer; declare it so load() sizes
+  // the record identically to create() (rowid_max is not persisted in the root
+  // page, so the caller re-declares it here).
+  Storage_spec spec{0, ""};
+  spec.rowid_max = ColumnStore::DEFAULT_ROWID_MAX;
+  return storage->user()->load(storage_ref, {spec}, error_msg, error_msg_len);
 }
 
 bool ColumnStorage::insert(Ctx *storage, MtrCtx::Ref mctx,
                            Segment::TrxRef trx_ref, Column::Data col_data,
                            Column::Data rowid_prefix, Column::Ref *col_ref,
                            char *error_msg, uint32_t error_msg_len) {
-  // Ignore rowid prefix. Currently we don't support fetching the record back
-  // from column reference.
-  (void)rowid_prefix;
-  return storage->user()->m_stores[0].insert(mctx, trx_ref, col_data, *col_ref,
-                                             error_msg, error_msg_len);
+  // Persist rowid_prefix in the record's rowid trailer so an index scan can
+  // resolve a stored col_ref back to its owning row (REF_LOOKUP).
+  return storage->user()->m_stores[0].insert(mctx, trx_ref, col_data,
+                                             rowid_prefix, *col_ref, error_msg,
+                                             error_msg_len);
 }
 
 bool ColumnStorage::select(Ctx *storage, MtrCtx::Ref mctx, Column::Ref col_ref,

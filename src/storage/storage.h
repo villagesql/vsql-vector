@@ -49,6 +49,8 @@ using vsql::preview_storage::Space;
 struct Storage_spec {
   uint16_t col_len;
   std::string metadata;
+  // Per-record rowid trailer capacity (0 = none; see ColumnStore::m_rowid_max).
+  uint8_t rowid_max = 0;
 };
 
 struct ColumnStore {
@@ -71,7 +73,28 @@ struct ColumnStore {
   Page::Ref m_primary_root_page_ref{Page::INVALID_REF};
   uint8_t m_segment_index{0};
 
+  // Maximum rowid_prefix bytes stored per record. 0 (the default) means this
+  // store keeps NO rowid region and behaves exactly as before: the on-page
+  // record is [trx_ref][col_data]. When > 0 the record gains a fixed trailer
+  // [rowid_len:1][rowid:m_rowid_max] AFTER the column data, so col_data's
+  // on-page offset and update()'s chunk math are unchanged. Only the SVECTOR
+  // base-column store (via ColumnStorage) sets this; HNSW graph level stores
+  // leave it 0, keeping their records byte-identical.
+  static constexpr uint8_t DEFAULT_ROWID_MAX = 32;
+  uint8_t m_rowid_max = 0;
+
+  // Byte size of the rowid trailer ([len:1][rowid:m_rowid_max]), or 0 when
+  // m_rowid_max == 0.
+  uint16_t rowid_region() const {
+    return m_rowid_max == 0 ? 0 : static_cast<uint16_t>(1 + m_rowid_max);
+  }
+
   std::string m_metadata;
+
+  // Scratch used by insert() to assemble the on-page payload
+  // ([col_data][rowid trailer]) when m_rowid_max > 0, so DataPage receives one
+  // opaque blob and stays unaware of the trailer. Unused when m_rowid_max == 0.
+  std::vector<unsigned char> m_record_buf;
 
   ColumnStore() = default;
 
@@ -93,8 +116,11 @@ struct ColumnStore {
   static void fill_error(const char *info, char *msg, uint32_t len, bool local);
 
   // Storage operations. All return false on success, true on error.
+  // rowid_prefix is stored in the record's rowid trailer when m_rowid_max > 0;
+  // it is ignored (may be empty) when m_rowid_max == 0.
   bool insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref, Column::Data col_data,
-              Column::Ref &col_ref, char *error_msg, uint32_t error_msg_len);
+              Column::Data rowid_prefix, Column::Ref &col_ref, char *error_msg,
+              uint32_t error_msg_len);
 
   // for_update selects the latch mode on the data page: EXCLUSIVE when true
   // (caller intends to modify the record), SHARED otherwise.
