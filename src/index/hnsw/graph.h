@@ -247,6 +247,21 @@ private:
     return static_cast<uint32_t>(m_ctx.m_error.size());
   }
 
+  // Resolves node's VID to a full persisted SVECTOR value the metric helper
+  // consumes. A VID's value is the server-owned Column::Ref into the SVECTOR
+  // column storage; get_key_data() returns the stored float payload, which this
+  // reassembles into [8-byte prefix][floats] form in `scratch` (the column
+  // store strips the prefix at rest; the VDF expects it). out points into
+  // scratch. Pass a distinct scratch buffer per concurrently-live result.
+  bool fetch_vector(const Node &node, ScratchBytes &scratch,
+                    IndexScanKey::KeyPartData &out);
+
+  // Dispatches the two persisted-byte vectors through the index's bound
+  // distance helper (profile helper fn_id 1) and unpacks the REAL result.
+  // Backs both distance() overloads.
+  bool distance_bytes(const IndexScanKey::KeyPartData &a,
+                      const IndexScanKey::KeyPartData &b, DistanceType &out);
+
 #ifndef NDEBUG
   // Debug-only sanity check shared by create_node()/drop_node(): verifies
   // node's NID actually resolves (via IndexStore::locate) to level's store,

@@ -23,8 +23,15 @@
 
 #include "graph.h"
 
+#include <array>
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <random>
+#include <span>
+#include <vector>
+
+#include <villagesql/abi/types.h>  // vef_vdf_result_t, VEF_RESULT_*
 
 namespace svector::hnsw {
 
@@ -63,16 +70,89 @@ IndexGraph::IndexGraph(IndexStore &store, Index &index, Segment::TrxRef trx_ref,
     : m_store(store), m_index(index), m_trx_ref(trx_ref),
       m_ctx(make_graph_context(store, vector_buf_size, err)) {}
 
-bool IndexGraph::distance(const Node & /*a*/, const Node & /*b*/,
-                          DistanceType &out) {
-  out = 0.0;
+namespace {
+
+// fn_id the distance helper is registered under for every HNSW profile
+// (vector.cc: .with_helper(1, ...)); the single key column is at key_pos 0.
+constexpr uint32_t kDistanceHelperFnId = 1;
+constexpr uint32_t kKeyPos = 0;
+
+} // namespace
+
+bool IndexGraph::fetch_vector(const Node &node, ScratchBytes &scratch,
+                              IndexScanKey::KeyPartData &out) {
+  if (!node.vid.is_valid()) {
+    snprintf(err(), err_len(), "HNSW: fetch_vector: node has no VID");
+    return true;
+  }
+
+  // A VID's value is a plain Column::Ref (VIDs never carry the NID incoming
+  // flag), so it maps directly to a KeyPartRef.
+  const IndexScanKey::KeyPartRef ref =
+      static_cast<IndexScanKey::KeyPartRef>(node.vid.value);
+  IndexScanKey::KeyPartData raw;
+  if (m_index.get_key_data(ref, &raw)) {
+    // get_key_data writes to the SDK's thread-local error buffer; surface a
+    // stable message into this call's err span.
+    snprintf(err(), err_len(),
+             "HNSW: fetch_vector: failed to resolve VID to vector data: %s",
+             m_index.get_error());
+    return true;
+  }
+
+  // The SVECTOR column store persists only the float payload (it strips the
+  // 8-byte storage_ref prefix, storage.cc). The distance VDF, however, consumes
+  // a full persisted SVECTOR value -- [8-byte prefix][floats] -- and skips the
+  // prefix (vector.cc). Reconstruct that layout into caller scratch so the
+  // resolved node vector is a valid VDF operand, matching the query key (whose
+  // prefix is likewise zero-filled at FROM_STRING time). Also copies the data
+  // out of the server's per-thread resolve buffer, so two fetch_vector() calls
+  // into distinct scratch buffers can be held live at once.
+  constexpr size_t kPrefix = sizeof(vef_storage_ref_t);
+  const size_t total = kPrefix + raw.length;
+  assert(total <= scratch.size());
+  std::memset(scratch.data(), 0, kPrefix);
+  std::memcpy(scratch.data() + kPrefix, raw.data, raw.length);
+  out.data = reinterpret_cast<const unsigned char *>(scratch.data());
+  out.length = static_cast<uint32_t>(total);
   return false;
 }
 
-bool IndexGraph::distance(const NodeData & /*a*/, const Node & /*b*/,
-                          DistanceType &out) {
-  out = 0.0;
+bool IndexGraph::distance_bytes(const IndexScanKey::KeyPartData &a,
+                                const IndexScanKey::KeyPartData &b,
+                                DistanceType &out) {
+  // The server's profile-helper dispatcher writes the REAL distance back as a
+  // bare double (call_profile_binding: `*static_cast<double*>(result) =
+  // vdf_result.real_value`), NOT a vef_vdf_result_t. So the result out-param is
+  // a double*. Per-call VDF errors are surfaced only in the server log, not
+  // through this channel.
+  double result = 0.0;
+  m_index.helper<double>(kKeyPos, kDistanceHelperFnId, &result, a, b);
+  out = static_cast<DistanceType>(result);
   return false;
+}
+
+bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
+  // Both node vectors must be live at once. fetch_vector() writes each into a
+  // distinct scratch buffer (buf_1, buf_2), so neither the server's per-thread
+  // resolve buffer nor the other fetch clobbers it.
+  IndexScanKey::KeyPartData a_bytes;
+  IndexScanKey::KeyPartData b_bytes;
+  if (fetch_vector(a, m_ctx.m_vector_buf_1, a_bytes) ||
+      fetch_vector(b, m_ctx.m_vector_buf_2, b_bytes))
+    return true;
+  return distance_bytes(a_bytes, b_bytes, out);
+}
+
+bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
+  // a is a not-yet-inserted query/insert element whose bytes the caller already
+  // holds (NodeData wraps the raw key column, already in [prefix][floats] form).
+  // Only b needs resolving -- this is the hot path for search descent and
+  // insertion.
+  IndexScanKey::KeyPartData b_bytes;
+  if (fetch_vector(b, m_ctx.m_vector_buf_1, b_bytes))
+    return true;
+  return distance_bytes(a.data, b_bytes, out);
 }
 
 bool IndexGraph::neighbours(const Node &node, LevelId level,
@@ -151,14 +231,31 @@ bool IndexGraph::set_entry_point(const std::vector<Node> &nodes,
   return failed;
 }
 
+// Reads the 8-byte big-endian column reference InnoDB stores in the extended
+// vector field's prefix (mach_write_to_8, mirrored by mach_read_from_8).
+static IndexScanKey::KeyPartRef read_col_ref_be(const unsigned char *p) {
+  uint64_t v = 0;
+  for (int i = 0; i < 8; ++i)
+    v = (v << 8) | static_cast<uint64_t>(p[i]);
+  return static_cast<IndexScanKey::KeyPartRef>(v);
+}
+
 bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
                              const NodeData &data,
                              std::vector<Node> &neighbours, Node &out) {
-  // Resolved up front, before opening the mtr below, so a failure here
-  // never touches storage.
-  IndexScanKey::KeyPartRef owner_ref;
-  if (m_index.get_key_ref(data.data, &owner_ref))
+  // The extension's node reference (VID) is the SVECTOR column store's stable
+  // col_ref for this vector. That ref cannot be derived from the vector bytes
+  // (it is an opaque storage address produced only at column insert), so we
+  // read it from the extended vector field's 8-byte prefix, which InnoDB has
+  // already populated by the time the custom index is maintained (the clustered
+  // index inserts first and writes the ref into the shared row buffer this
+  // field aliases). data.data is laid out [8-byte col_ref][vector floats].
+  if (data.data.length < sizeof(vef_storage_ref_t)) {
+    snprintf(err(), err_len(),
+             "HNSW: create_node: vector field too short to hold a column ref");
     return true;
+  }
+  const IndexScanKey::KeyPartRef owner_ref = read_col_ref_be(data.data.data);
 
   MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
