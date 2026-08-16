@@ -64,8 +64,27 @@ struct Options {
                     Options *out, char *error_msg, uint32_t error_msg_len);
 };
 
-// Per-scan cursor (empty until traversal is implemented).
-class Cursor {};
+// Per-scan cursor. A KNN scan is fully materialized at begin() time (HNSW
+// search is not an incremental tree walk), so the cursor holds the ordered
+// result set and a position index; position()/fetch() then hand nodes out one
+// at a time. Because no page latches are held between fetches, save()/restore()
+// are near-trivial.
+class Cursor {
+public:
+  // Distance-ordered nearest nodes, nearest first (index 0), from search_knn().
+  std::vector<Node> results;
+
+  // Index of the current row. SIZE_MAX means "before first" (begin() state);
+  // the first position(Next) moves it to 0.
+  size_t pos = SIZE_MAX;
+
+  // Set once pos has advanced past the last result.
+  bool exhausted = false;
+
+  bool at_valid_row() const {
+    return !exhausted && pos != SIZE_MAX && pos < results.size();
+  }
+};
 
 using svector::ColumnStore;
 using svector::MultiColumnStore;

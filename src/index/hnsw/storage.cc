@@ -23,6 +23,10 @@
 
 #include "storage.h"
 
+#include "graph.h"
+#include "graph_ops.h"
+
+#include <algorithm>
 #include <cassert>
 #include <cerrno>
 #include <cmath>
@@ -535,7 +539,10 @@ LevelStore *IndexStore::ensure_levels(LevelStore::LevelId target, char *err,
   assert(m_levels[m_entry_level.value].has_value());
 
   for (uint8_t l = m_entry_level.value + 1; l <= target.value; ++l) {
-    assert(!m_levels[l].has_value());
+    // Idempotent: a level may already have been materialized (e.g. by the
+    // lock_level() create-on-demand stopgap before create_node() runs its own
+    // ensure_levels()). Skip anything already present rather than re-creating.
+    if (m_levels[l].has_value()) continue;
 
     RootId primary{LevelStore::LevelId{l}, RootId::Type::Primary};
     RootId overflow{LevelStore::LevelId{l}, RootId::Type::Overflow};
@@ -744,12 +751,84 @@ bool load(StorageCtx *ctx, const Index &index, Index::StorageRef storage_ref,
   return ctx->user()->load(storage_ref, *opts, err, err_len);
 }
 
-bool insert(StorageCtx * /*ctx*/, const Index & /*index*/,
-            Segment::TrxRef /*trx_ref*/,
-            IndexScanKey::KeyPartData * /*key_columns*/,
+bool insert(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
+            IndexScanKey::KeyPartData *key_columns,
             IndexScanKey::KeyPartData * /*pkey_columns*/,
-            IndexScanKey::KeyPartRef * /*key_ref*/, char * /*err*/,
-            uint32_t /*err_len*/) {
+            IndexScanKey::KeyPartRef *key_ref, char *err, uint32_t err_len) {
+  IndexStore *store = ctx->user();
+
+  // Single key column. For an externally-stored SVECTOR, the index entry carries
+  // only the 8-byte column reference (the float payload lives in the SVECTOR
+  // column store), so key_columns[0] is just the col_ref, NOT the vector bytes.
+  // create_node() needs that ref (as the VID); the insert-time distance search
+  // needs the actual floats. The column store already holds the vector (written
+  // during the clustered insert, which precedes this custom-index insert), so
+  // resolve it and assemble a full persisted SVECTOR value --
+  // [8-byte col_ref][floats] -- as the node data: create_node() reads the ref
+  // from the prefix, distance() skips the prefix and reads the floats.
+  assert(index.get_num_key_cols() == 1);
+
+  // Size scratch to the widest key column (full persisted length incl prefix).
+  const size_t vector_buf_size = index.get_max_col_len(/*key_pos=*/0);
+
+  // The col_ref is the 8-byte big-endian prefix InnoDB stored in the index
+  // entry's extended vector field.
+  if (key_columns[0].length < sizeof(vef_storage_ref_t)) {
+    snprintf(err, err_len, "HNSW: insert: key column too short for a col ref");
+    return true;
+  }
+  IndexScanKey::KeyPartRef col_ref = 0;
+  for (size_t i = 0; i < sizeof(vef_storage_ref_t); ++i)
+    col_ref = (col_ref << 8) | key_columns[0].data[i];
+
+  // Resolve the vector floats from the column store.
+  IndexScanKey::KeyPartData floats;
+  if (index.get_key_data(col_ref, &floats)) {
+    snprintf(err, err_len,
+             "HNSW: insert: failed to resolve vector for col ref: %s",
+             index.get_error());
+    return true;
+  }
+
+  // Assemble [8-byte col_ref (big-endian)][floats] in a local buffer.
+  std::vector<unsigned char> node_bytes(sizeof(vef_storage_ref_t) +
+                                        floats.length);
+  for (size_t i = 0; i < sizeof(vef_storage_ref_t); ++i)
+    node_bytes[i] = static_cast<unsigned char>(
+        (col_ref >> ((sizeof(vef_storage_ref_t) - 1 - i) * 8)) & 0xFF);
+  std::memcpy(node_bytes.data() + sizeof(vef_storage_ref_t), floats.data,
+              floats.length);
+  IndexGraph::NodeData node_data{
+      IndexScanKey::KeyPartData{node_bytes.data(),
+                                static_cast<uint32_t>(node_bytes.size())}};
+
+  // IndexGraph holds an Index& (it uses it for the get_key_ref/get_key_data and
+  // helper callbacks). The wrapper is a thin non-owning view over the
+  // vef_index_ctx_t and is not mutated, matching how create_node() already
+  // consumes it.
+  Index &mutable_index = const_cast<Index &>(index);
+
+  IndexGraph graph(*store, mutable_index, trx_ref, vector_buf_size,
+                   std::span<char>(err, err_len));
+  GraphOperations<IndexGraph> ops(graph);
+
+  // GraphOperations::insert() writes the vector to the base table's SVECTOR
+  // column store (via get_key_ref, producing the VID), draws the insert level,
+  // links neighbours, and updates the entry point. err/err_len are populated by
+  // the graph layer on failure.
+  //
+  // TODO(villagesql-indexing): GraphOperations::insert() does not yet surface
+  // the created level-0 Node, so key_ref cannot be set to the new entry's NID
+  // here. Under VEF_INDEX_STORAGE_REF_LOOKUP the server persists key_ref to
+  // relocate the entry for mark_delete/purge; those callbacks are not
+  // implemented yet either, so leaving key_ref unset is consistent for now.
+  // When insert() gains an out-Node, set:
+  //   *key_ref = static_cast<IndexScanKey::KeyPartRef>(created.nid.value);
+  if (ops.insert(node_data))
+    return true;
+
+  if (key_ref != nullptr)
+    *key_ref = IndexScanKey::EMPTY_REF;
   return false;
 }
 
@@ -770,34 +849,140 @@ bool purge(StorageCtx * /*ctx*/, const Index & /*index*/,
   return false;
 }
 
-bool begin(StorageCtx * /*ctx*/, const Index & /*index*/, MtrCtx::Ref /*mctx*/,
-           const IndexScanDesc & /*scan_desc*/, Index::Cursor *cursor,
-           bool *eof, char * /*err*/, uint32_t /*err_len*/) {
-  *cursor = new Cursor{};
-  *eof = true;
+bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
+           const IndexScanDesc &scan_desc, Index::Cursor *cursor, bool *eof,
+           char *err, uint32_t err_len) {
+  IndexStore *store = ctx->user();
+
+  auto *cur = new Cursor{};
+  *cursor = cur;
+  *eof = false;
+
+  // This index only advertises KNN, so the optimizer should only drive a KNN
+  // scan. Defend against a non-KNN or key-less scan by returning an
+  // immediately-eof empty result rather than asserting in release.
+  if (!scan_desc.is_knn() || scan_desc.num_keys() == 0) {
+    *eof = true;
+    return false;
+  }
+  IndexScanKey query_key = scan_desc[0];
+  if (!query_key.is_knn() || query_key.num_columns() == 0 ||
+      !query_key.is_bounded()) {
+    *eof = true;
+    return false;
+  }
+
+  // Single key column == the query SVECTOR bytes.
+  IndexGraph::NodeData query{query_key[0]};
+
+  // limit() is the k from ORDER BY ... LIMIT k. ef_search trades recall for
+  // latency; nothing sources it as a session var yet, so derive a default from
+  // k (pgvector/MariaDB default ~40), clamp to at least k and to the build-time
+  // ef_construction as an upper sanity bound.
+  const uint32_t k = scan_desc.limit();
+  constexpr uint32_t kDefaultEfSearch = 40;
+  uint32_t ef_search = std::max(k, kDefaultEfSearch);
+  ef_search = std::min(ef_search, store->ef_construction());
+
+  const size_t vector_buf_size = index.get_max_col_len(/*key_pos=*/0);
+  Index &mutable_index = const_cast<Index &>(index);
+
+  // A read-only search needs no transaction; IndexGraph only reads pages here.
+  IndexGraph graph(*store, mutable_index, Segment::TrxRef{}, vector_buf_size,
+                   std::span<char>(err, err_len));
+  GraphOperations<IndexGraph> ops(graph);
+
+  if (ops.search_knn(query, k, ef_search, cur->results))
+    return true;  // cur stays allocated; end() frees it.
+
+  // Position ON the first row: the scan ABI (custom_index_knn_scan_next) fetches
+  // the current row first, then calls position(NEXT) to advance. So begin() must
+  // leave the cursor on row 0, not before-first.
+  cur->pos = 0;
+  cur->exhausted = cur->results.empty();
+  *eof = cur->results.empty();
   return false;
 }
 
-bool position(Index::Cursor /*cursor*/, Index::CursorOp /*op*/, bool *eof,
+bool position(Index::Cursor cursor, Index::CursorOp op, bool *eof,
               char * /*err*/, uint32_t /*err_len*/) {
-  *eof = true;
+  auto *cur = static_cast<Cursor *>(cursor);
+
+  if (cur->results.empty()) {
+    cur->exhausted = true;
+    *eof = true;
+    return false;
+  }
+
+  switch (op) {
+  case Index::CursorOp::Next:
+    if (cur->pos == SIZE_MAX) {
+      cur->pos = 0;
+    } else if (cur->pos + 1 < cur->results.size()) {
+      ++cur->pos;
+    } else {
+      cur->exhausted = true;
+      *eof = true;
+      return false;
+    }
+    break;
+
+  case Index::CursorOp::Prev:
+    if (cur->pos == SIZE_MAX || cur->pos == 0) {
+      cur->exhausted = true;
+      *eof = true;
+      return false;
+    }
+    --cur->pos;
+    break;
+  }
+
+  cur->exhausted = false;
+  *eof = false;
   return false;
 }
 
-bool fetch(Index::Cursor /*cursor*/, IndexScanKey::KeyPartRef * /*key_ref*/,
-           IndexScanKey::KeyPartData * /*key_columns*/,
-           IndexScanKey::KeyPartData * /*pkey_columns*/, char * /*err*/,
-           uint32_t /*err_len*/) {
+bool fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
+           IndexScanKey::KeyPartData *key_columns,
+           IndexScanKey::KeyPartData *pkey_columns, char *err,
+           uint32_t err_len) {
+  auto *cur = static_cast<Cursor *>(cursor);
+
+  if (!cur->at_valid_row()) {
+    snprintf(err, err_len, "HNSW: fetch called with no current row");
+    return true;
+  }
+
+  const Node &node = cur->results[cur->pos];
+
+  // key_ref is the node's VID -- the stable SVECTOR column-store reference. The
+  // server's REF_LOOKUP read path (handler::custom_index_ref_to_row) resolves
+  // it to the owning base-table row (col_ref -> rowid_prefix -> clustered row).
+  // That single reference is all the server consumes; the KNN scan iterator does
+  // NOT read key_columns/pkey_columns after fetch, so we do not populate them.
+  // (We must not touch the Index here to emit the vector: the SDK constructs the
+  // Index wrapper as a per-call temporary in ScanBeginWrapper, so a pointer to
+  // it captured in begin() would dangle by fetch() time.)
+  if (key_ref != nullptr)
+    *key_ref = static_cast<IndexScanKey::KeyPartRef>(node.vid.value);
+
+  (void)key_columns;
+  (void)pkey_columns;
   return false;
 }
 
 bool save(Index::Cursor /*cursor*/, char * /*err*/, uint32_t /*err_len*/) {
+  // Nothing latched between fetches: the materialized results + pos survive the
+  // mini-transaction commit, so there is no position state to persist.
   return false;
 }
 
-bool restore(Index::Cursor /*cursor*/, MtrCtx::Ref /*mctx*/, bool *eof,
+bool restore(Index::Cursor cursor, MtrCtx::Ref /*mctx*/, bool *eof,
              char * /*err*/, uint32_t /*err_len*/) {
-  *eof = true;
+  auto *cur = static_cast<Cursor *>(cursor);
+  // Results are in-memory and unaffected by the mtr cycle; the saved logical
+  // position is still valid unless we had already run past the end.
+  *eof = cur->exhausted || !cur->at_valid_row();
   return false;
 }
 

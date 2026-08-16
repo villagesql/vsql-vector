@@ -496,9 +496,89 @@ bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
   return false;
 }
 
-bool IndexGraph::link_neighbours(const Node & /*node*/, LevelId /*level*/,
+bool IndexGraph::link_neighbours(const Node &node, LevelId level,
                                  std::vector<Node> &out) {
   out.clear();
+
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+
+  // node's forward edges were just written by create_node(); read them back to
+  // learn which neighbours need a reciprocal (back) edge to node.
+  std::vector<Node> fwd(store->max_neighbours());
+  {
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    NeighbourEntry entry;
+    entry.neighbours = fwd;
+    size_t num_valid = 0;
+    bool failed =
+        store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
+                     err(), err_len(), NodeField::Neighbours);
+    mtr_ctx.commit();
+    if (failed)
+      return true;
+    fwd.resize(num_valid);
+  }
+
+  const uint32_t max_n = store->max_neighbours();
+  for (const Node &nb : fwd) {
+    // Fetch nb's neighbour list slot-aligned (for_update): every slot,
+    // INVALID included, is read in place so slot indices line up for the
+    // single-slot update() below.
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    auto on_error = [&] {
+      mtr_ctx.commit();
+      return true;
+    };
+
+    std::vector<Node> nb_slots(max_n);
+    NeighbourEntry nb_entry;
+    nb_entry.neighbours = nb_slots;
+    size_t nb_valid = 0;
+    if (store->fetch(mtr, nb.nid, /*for_update=*/true, nb_entry, nb_valid, err(),
+                     err_len(), NodeField::Neighbours, IncomingFilter::All))
+      return on_error();
+
+    // Find the first free (INVALID) slot. MINIMAL scope: if nb's neighbour
+    // list is full, skip it -- no reciprocal edge is added.
+    // TODO(villagesql-indexing): on a full list, withhold the edge and append
+    // nb to `out` so GraphOperations::shrink_neighbours() reselects nb's full
+    // neighbour set (Algorithm 1, lines 14-15). Overflow-chain handling is
+    // likewise deferred.
+    uint16_t free_slot = 0;
+    bool found = false;
+    for (uint16_t slot = 0; slot < max_n; ++slot) {
+      if (!nb_entry.neighbours[slot].nid.is_valid()) {
+        free_slot = slot;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      // nb is full; minimal scope skips it (see TODO above).
+      mtr_ctx.commit();
+      continue;
+    }
+
+    // Write the reciprocal edge (nb -> node) into the free slot as a plain
+    // neighbour (no incoming flag): LayerOperations::search traverses via
+    // IndexGraph::neighbours(), whose default IncomingFilter::ExcludeIncoming
+    // would hide an incoming-flagged edge, so a search-traversable back-edge
+    // must be stored unflagged -- symmetric with create_node()'s forward edges.
+    std::array<Node, 1> one{node};
+    NeighbourEntry upd;
+    upd.neighbours = std::span<Node>(one);
+    m_ctx.m_update_slots[0] = SlotIndex{free_slot};
+    if (store->update(mtr, nb.nid, upd, NodeField::Neighbours,
+                      m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
+                      m_ctx.m_chunk_ids, err(), err_len()))
+      return on_error();
+
+    mtr_ctx.commit();
+  }
+
   return false;
 }
 
@@ -541,6 +621,20 @@ void IndexGraph::unlock_graph(LockMode mode) {
 
 void IndexGraph::lock_level(LevelId level, LockMode mode) {
   auto *store = m_store.get_level(level);
+  // TEMPORARY(villagesql-indexing): create-on-demand stopgap for the
+  // level-lock-before-create ordering bug. GraphOperations::insert() constructs
+  // LockLevels(start = max(entry_level, insert_level)) before create_node()/
+  // ensure_levels() materializes a new top level, so this locks a level whose
+  // store does not exist yet (see unittest/graph_ops_test.cc repro). The proper
+  // fix is to ensure_levels(insert_level) in GraphOperations::insert() before
+  // constructing LockLevels, within its S->X upgrade dance -- Deb's concurrency
+  // model to own. Until then, materialize the level here. This is only ever
+  // reached on the new-top-level path, where insert() has already upgraded the
+  // graph lock to X (the mode ensure_levels() requires); the greedy descent
+  // never locks a non-existent level.
+  if (store == nullptr) {
+    store = m_store.ensure_levels(level, err(), err_len());
+  }
   assert(store != nullptr);
   if (mode == LockMode::Shared)
     store->mutex().lock_shared();

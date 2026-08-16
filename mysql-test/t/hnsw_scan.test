@@ -1,0 +1,51 @@
+# Executing KNN test: CREATE an HNSW index, INSERT rows, then run a KNN query
+# and check the rows come back ordered by distance. Unlike hnsw_optimizer.test
+# (EXPLAIN only, plan-level), this drives the real insert + scan callbacks:
+#   INSERT -> Custom_index::insert -> intf.insert -> create_node ->
+#             GraphOperations::insert -> IndexGraph::distance (col_ref_to_data_fn)
+#   SELECT -> custom KNN scan -> search_knn -> scan_fetch
+#
+# villagesql_custom_index_proceed bypasses the parse-time "not yet implemented"
+# guard for USING EXTENDED indexes (debug builds only).
+--source include/have_debug.inc
+--source include/have_hypergraph.inc
+
+SET PERSIST vsql_allow_preview_extensions = ON;
+SET SESSION debug='+d,villagesql_custom_index_proceed';
+INSTALL EXTENSION vsql_vector;
+
+CREATE TABLE t (
+  id INT PRIMARY KEY,
+  v SVECTOR(4) NOT NULL,
+  INDEX idx (v) USING EXTENDED(hnsw)
+);
+
+--echo # Insert a few rows spread out in 4-D space.
+INSERT INTO t VALUES (1, SVECTOR::FROM_STRING('[1,0,0,0]'));
+INSERT INTO t VALUES (2, SVECTOR::FROM_STRING('[0,1,0,0]'));
+INSERT INTO t VALUES (3, SVECTOR::FROM_STRING('[0,0,1,0]'));
+INSERT INTO t VALUES (4, SVECTOR::FROM_STRING('[0,0,0,1]'));
+INSERT INTO t VALUES (5, SVECTOR::FROM_STRING('[0.9,0.1,0,0]'));
+
+--echo # KNN query: 2 nearest to [1,0,0,0] -- id 1 (exact, distance 0) then id 5
+--echo # (distance ~0.1). This prefix is unambiguous, so its order is stable.
+SELECT id
+FROM t
+ORDER BY L2_DISTANCE(v, SVECTOR::FROM_STRING('[1,0,0,0]'))
+LIMIT 2;
+
+--echo # The 3rd nearest is one of the orthogonal unit vectors (ids 2, 3, 4),
+--echo # which are all equidistant (L2 = sqrt(2)) from the query. An approximate
+--echo # index may surface any of them -- and the specific one is not stable
+--echo # across builds -- so assert membership + distance rather than a fixed id.
+SELECT id IN (2, 3, 4) AS third_is_orthogonal
+FROM t
+ORDER BY L2_DISTANCE(v, SVECTOR::FROM_STRING('[1,0,0,0]'))
+LIMIT 1 OFFSET 2;
+
+DROP TABLE t;
+UNINSTALL EXTENSION vsql_vector;
+
+SET SESSION debug='-d,villagesql_custom_index_proceed';
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

@@ -128,8 +128,21 @@ struct MockGraph {
   public:
     enum class DescendPolicy { Keep, Release };
 
-    LockLevels(MockGraph &, LockMode mode, LevelId start, DescendPolicy policy)
+    LockLevels(MockGraph &graph, LockMode mode, LevelId start,
+               DescendPolicy policy)
         : m_mode(mode), m_policy(policy) {
+      // Mirror the real IndexGraph::lock_level(): a level store must exist to
+      // be locked. GraphOperations::insert() constructs LockLevels(start =
+      // max(entry_level, insert_level)) before create_node()/ensure_levels()
+      // materializes a new top level, so `start` may exceed the created levels.
+      // The real code applies a create-on-demand stopgap in lock_level()
+      // (ensure_levels() before locking); model that here by raising
+      // created_max_level, so this mock reflects the fixed behavior rather than
+      // aborting. See MockGraph::created_max_level and the TEMPORARY note in
+      // src/index/hnsw/graph.cc lock_level().
+      if (start.value > graph.created_max_level) {
+        graph.created_max_level = start.value;
+      }
       m_stack.push(start);
     }
     ~LockLevels() = default;
@@ -166,6 +179,14 @@ struct MockGraph {
   // ---- Per-level graph state: presence and adjacency, keyed by level value.
   std::map<uint8_t, std::set<int>> present;
   std::map<uint8_t, std::unordered_map<int, std::vector<int>>> adjacency;
+
+  // ---- Highest level whose store has been CREATED. Level 0 always exists;
+  // higher levels come into existence only when create_node() materializes
+  // them (the real system's ensure_levels()). LockLevels asserts it never
+  // locks above this. This is what surfaces the "lock a level before it is
+  // created" ordering bug that the real IndexGraph hits but a permissive mock
+  // hides.
+  uint8_t created_max_level = 0;
 
   // ---- Stand-in for external storage: create_node() persists each id's
   // data here, independent of any in-memory Node the caller happens to be
@@ -311,6 +332,12 @@ struct MockGraph {
     // inserted, and its id comes from data; otherwise it's the same element
     // one level down, so its id is derived from parent.
     int id = parent ? parent->id : data.id;
+    // The real create_node() calls ensure_levels() on its topmost (parentless)
+    // call, materializing every level up to `level`. Mirror that so LockLevels'
+    // created-level check reflects reality.
+    if (!parent && level.value > created_max_level) {
+      created_max_level = level.value;
+    }
     present[level.value].insert(id);
     node_data[id] = data.data;
     out = Node{level, id};
