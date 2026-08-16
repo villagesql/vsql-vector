@@ -93,6 +93,9 @@ bool MultiColumnStore::create(Space::Ref space_ref, Segment::TrxRef trx_ref,
   auto num_root_pages = static_cast<uint8_t>(num_storages);
   primary.init(space_ref, root_page_ref, storages[0].col_len, num_segments,
                num_root_pages, storages[0].metadata);
+  // The primary store owns the segment page and uses segment 0.
+  primary.m_primary_root_page_ref = root_page_ref;
+  primary.m_segment_index = 0;
 
   // Additional stores do not have root pages yet. Their root pages will be
   // allocated and assigned on first use.
@@ -189,6 +192,11 @@ bool MultiColumnStore::init_root_page(uint8_t seg_idx, uint8_t root_idx,
   mtr_ctx.commit();
 
   target.m_root_page_ref = new_ref;
+  // Record where this store's segment lives so insert() can allocate data pages
+  // from the correct segment on the primary root page (segments exist only
+  // there, not on this store's own root page).
+  target.m_primary_root_page_ref = primary.m_root_page_ref;
+  target.m_segment_index = seg_idx;
   return false;
 }
 
@@ -255,6 +263,12 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
   m_stores.resize(num_root_pages);
   m_stores[0].init(space_ref, root_page_ref, info0.col_len, info0.num_segs,
                    num_root_pages, info0.metadata);
+  // The primary store owns the segment page and uses segment 0 -- same as
+  // create(). insert() consults these to source its segment header, so they
+  // must be restored on reload or the first insert after reopen reads a
+  // segment from an invalid page (m_primary_root_page_ref stays INVALID_REF).
+  m_stores[0].m_primary_root_page_ref = root_page_ref;
+  m_stores[0].m_segment_index = 0;
 
   assert(num_root_pages == specs.size());
 
@@ -285,6 +299,13 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
 
     m_stores[i].init(space_ref, ref, info.col_len, info.num_segs,
                      info.num_other_root_pages + 1, info.metadata);
+    // A secondary store's segment lives on the primary root page; record that
+    // here. Its segment index is not persisted in the root page (it is owned by
+    // the layer that laid out the segments, e.g. the HNSW IndexStore's
+    // level->segment mapping), so the owner restores m_segment_index when it
+    // re-drives init_root_page() on reload. Until then this store must not be
+    // inserted into.
+    m_stores[i].m_primary_root_page_ref = root_page_ref;
   }
 
   encode_ref(space_ref, root_page_ref);
@@ -436,7 +457,25 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
     m_root.page_select(root_page, m_space_ref, data_page_ref, cur_free_slots);
 
     if (data_page_ref == Page::INVALID_REF) {
-      Segment::Ref seg_head = Segment::get_header(root_page, 0);
+      // Segments live only on the segment-owning ("primary") root page. This
+      // store allocates data pages from its assigned segment there. For the
+      // primary store the segment page is its own root (already X-latched as
+      // root_page); any other store loads the primary root to reach its
+      // segment header.
+      Segment::Ref seg_head;
+      Page primary_root_holder;
+      Page *seg_root = &root_page;
+      if (m_primary_root_page_ref != m_root_page_ref) {
+        if (primary_root_holder.load(m_space_ref, m_primary_root_page_ref,
+                                     Page::Latch::EXCLUSIVE,
+                                     mtr) != Error::SUCCESS) {
+          fill_error("insert: failed to load primary root page for segment",
+                     error_msg, error_msg_len, false);
+          return true;
+        }
+        seg_root = &primary_root_holder;
+      }
+      seg_head = Segment::get_header(*seg_root, m_segment_index);
       if (data_page.load_new(seg_head, mtr) != Error::SUCCESS) {
         fill_error("insert: failed to allocate new data page", error_msg,
                    error_msg_len, false);

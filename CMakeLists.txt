@@ -97,3 +97,19 @@ add_executable(graph_ops_test
 )
 
 add_test(NAME graph_ops_test COMMAND graph_ops_test)
+
+# Storage-layer test. Unlike the header-only graph/layer tests, it drives the
+# real column-storage sources against an in-memory fake storage backend, so it
+# compiles those sources and needs the SDK include dir (storage_api.h).
+add_executable(storage_test
+    unittest/storage_test.cc
+    src/storage/storage.cc
+    src/storage/root_page.cc
+    src/storage/data_page.cc
+)
+
+target_include_directories(storage_test PRIVATE
+    ${VillageSQLExtensionFramework_INCLUDE_DIR}
+)
+
+add_test(NAME storage_test COMMAND storage_test)
