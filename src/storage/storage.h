@@ -27,6 +27,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -88,9 +89,23 @@ struct ColumnStore {
   bool insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref, Column::Data col_data,
               Column::Ref &col_ref, char *error_msg, uint32_t error_msg_len);
 
-  bool fetch(MtrCtx::Ref mctx, Column::Ref col_ref, Column::Data &col_data,
-             Column::Data &rowid_prefix, Segment::TrxRef &trx_ref,
-             bool &delete_marked, char *error_msg, uint32_t error_msg_len);
+  // for_update selects the latch mode on the data page: EXCLUSIVE when true
+  // (caller intends to modify the record), SHARED otherwise.
+  bool fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
+             Column::Data &col_data, Column::Data &rowid_prefix,
+             Segment::TrxRef &trx_ref, bool &delete_marked, char *error_msg,
+             uint32_t error_msg_len);
+
+  // Overwrites one or more fixed-size chunks of the record's column data,
+  // leaving the rest of the record (including trx_ref) untouched.
+  // Non-transactional: does not read, check, or write the record's trx_ref.
+  // col_data holds the full-length column data; for each index in
+  // chunk_indexes, the chunk_size bytes at offset (index * chunk_size) are
+  // copied from col_data into the same offset in the record. chunk_indexes
+  // must be given in strictly increasing order; violating this is an error.
+  bool update(MtrCtx::Ref mctx, Column::Ref col_ref,
+              const Column::Data col_data, std::span<const uint16_t> chunk_ids,
+              uint16_t chunk_size, char *error_msg, uint32_t error_msg_len);
 
   bool mark_delete(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
                    Column::Ref col_ref, bool delete_mark, char *error_msg,
@@ -98,6 +113,14 @@ struct ColumnStore {
 
   bool purge(MtrCtx::Ref mctx, Segment::TrxRef trx_ref, Column::Ref col_ref,
              char *error_msg, uint32_t error_msg_len);
+
+  // Overwrites this store's metadata in the root page in place. metadata
+  // must be the same length as the metadata this store was created/loaded
+  // with -- every other field in the root page layout is offset relative to
+  // that length, so it cannot change without reformatting the page. Updates
+  // m_metadata on success.
+  bool update_metadata(MtrCtx::Ref mctx, std::string_view metadata,
+                       char *error_msg, uint32_t error_msg_len);
 };
 
 struct MultiColumnStore {

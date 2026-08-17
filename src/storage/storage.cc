@@ -462,7 +462,7 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
   return false;
 }
 
-bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref,
+bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
                         Column::Data &col_data, Column::Data &rowid_prefix,
                         Segment::TrxRef &trx_ref, bool &delete_marked,
                         char *error_msg, uint32_t error_msg_len) {
@@ -474,9 +474,11 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref,
   // Step 2: Use the provided mtr context
   auto mtr = static_cast<MtrCtx::Ref>(mctx);
 
-  // Step 3: Load data page with S latch
+  // Step 3: Load data page with S latch, or X if the caller intends to
+  // update the record.
   Page data_page;
-  if (data_page.load(m_space_ref, data_page_ref, Page::Latch::SHARED, mtr) !=
+  auto latch = for_update ? Page::Latch::EXCLUSIVE : Page::Latch::SHARED;
+  if (data_page.load(m_space_ref, data_page_ref, latch, mtr) !=
       Error::SUCCESS) {
     fill_error("fetch: failed to load data page", error_msg, error_msg_len,
                false);
@@ -507,6 +509,125 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref,
   // Step 7: We don't store rowid_prefix for SVECTOR
   rowid_prefix.data = nullptr;
   rowid_prefix.length = 0;
+
+  return false;
+}
+
+bool ColumnStore::update(MtrCtx::Ref mctx, Column::Ref col_ref,
+                         const Column::Data col_data,
+                         std::span<const uint16_t> chunk_ids,
+                         uint16_t chunk_size, char *error_msg,
+                         uint32_t error_msg_len) {
+  if (chunk_ids.empty()) {
+    return false;
+  }
+
+  // Step 1: Check the caller supplied arguments. All the conditions below are
+  // caller bugs: assert in debug builds, and in release builds raise an error
+  // instead of writing anything. This must be done outside the write loop:
+  // page writes under an mtr cannot be undone, so failing part way through the
+  // loop would leave the record half updated.
+  assert(col_data.data != nullptr);
+  assert(chunk_size > 0);
+  assert(col_data.length == m_root.get_column_size());
+  if (col_data.data == nullptr || chunk_size == 0 ||
+      col_data.length != m_root.get_column_size()) {
+    char info[96];
+    snprintf(info, sizeof(info),
+             "update: bad arguments: data=%p, chunk_size=%u, length=%u, "
+             "column_size=%u",
+             static_cast<const void *>(col_data.data), chunk_size,
+             col_data.length, m_root.get_column_size());
+    fill_error(info, error_msg, error_msg_len, true);
+    return true;
+  }
+
+  // Step 2: Validate all the chunk indexes, for the same reason: they must be
+  // in strictly increasing order and within the record, and both conditions
+  // have to be known before the first write. Both are caller bugs too.
+  for (size_t i = 0; i < chunk_ids.size(); ++i) {
+    uint16_t chunk_index = chunk_ids[i];
+
+    assert(i == 0 || chunk_index > chunk_ids[i - 1]);
+    if (i > 0 && chunk_index <= chunk_ids[i - 1]) {
+      char info[96];
+      snprintf(info, sizeof(info),
+               "update: chunk indexes not in strictly increasing order: "
+               "%u follows %u",
+               chunk_index, chunk_ids[i - 1]);
+      fill_error(info, error_msg, error_msg_len, true);
+      return true;
+    }
+
+    // The column data length is already known to match the record width, so
+    // this only guards against an out of range chunk index.
+    uint64_t offset = static_cast<uint64_t>(chunk_index) * chunk_size;
+    assert(offset + chunk_size <= col_data.length);
+    if (offset + chunk_size > col_data.length) {
+      char info[96];
+      snprintf(info, sizeof(info),
+               "update: chunk %u out of bounds: end=%llu, length=%u",
+               chunk_index,
+               static_cast<unsigned long long>(offset + chunk_size),
+               col_data.length);
+      fill_error(info, error_msg, error_msg_len, true);
+      return true;
+    }
+  }
+
+  // Step 3: Decode column reference to get page and slot
+  Page::Ref data_page_ref;
+  uint16_t slot_index;
+  DataPage::decode_column_ref(col_ref, data_page_ref, slot_index);
+
+  // Step 4: Use the provided mtr context
+  auto mtr = static_cast<MtrCtx::Ref>(mctx);
+
+  // Step 5: Load data page with X latch
+  Page data_page;
+  if (data_page.load(m_space_ref, data_page_ref, Page::Latch::EXCLUSIVE, mtr) !=
+      Error::SUCCESS) {
+    fill_error("update: failed to load data page", error_msg, error_msg_len,
+               false);
+    return true;
+  }
+
+  // Step 6: Refuse to write into a free slot. The delete mark is deliberately
+  // ignored: this API is non-transactional and leaves record visibility to the
+  // caller, so a delete marked record is still updated in place.
+  bool is_free = true;
+  std::tie(std::ignore, is_free) =
+      m_data.get_record_status(data_page, slot_index);
+  if (is_free) {
+    char info[64];
+    snprintf(info, sizeof(info), "update: slot %u is free", slot_index);
+    fill_error(info, error_msg, error_msg_len, true);
+    return true;
+  }
+
+  // Step 7: Write the requested chunks. Everything is validated by now, so
+  // this loop cannot fail: either all the chunks are written or none of them
+  // is, and the caller never sees a partially updated record. The indexes are
+  // in strictly increasing order, so a run of consecutive indexes covers one
+  // contiguous byte range and is written with a single call, keeping the
+  // number of redo log records down.
+  Page::Offset col_offset =
+      m_data.get_record_offset(slot_index) + DataPage::TRX_REF_SIZE;
+  for (size_t i = 0; i < chunk_ids.size();) {
+    // Extend the run as long as the next index follows the current one.
+    size_t end = i + 1;
+    while (end < chunk_ids.size() && chunk_ids[end] == chunk_ids[end - 1] + 1) {
+      ++end;
+    }
+
+    // Step 2 has established that the run lies within the column size, so the
+    // cast to the narrower page offset cannot truncate.
+    uint32_t offset = static_cast<uint32_t>(chunk_ids[i]) * chunk_size;
+    size_t length = (end - i) * chunk_size;
+    data_page.write_string(col_offset + static_cast<Page::Offset>(offset),
+                           col_data.data + offset, length, mtr);
+    i = end;
+  }
 
   return false;
 }
@@ -627,6 +748,31 @@ bool ColumnStore::purge(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
   return false;
 }
 
+bool ColumnStore::update_metadata(MtrCtx::Ref mctx, std::string_view metadata,
+                                  char *error_msg, uint32_t error_msg_len) {
+  auto mtr = static_cast<MtrCtx::Ref>(mctx);
+
+  Page root_page;
+  if (root_page.load(m_space_ref, m_root_page_ref, Page::Latch::EXCLUSIVE,
+                     mtr) != Error::SUCCESS) {
+    fill_error("update_metadata: failed to load root page", error_msg,
+               error_msg_len, false);
+    return true;
+  }
+
+  if (m_root.update_header(root_page, mtr, metadata)) {
+    char info[96];
+    snprintf(info, sizeof(info),
+             "update_metadata: size mismatch: got=%zu, expected=%u",
+             metadata.size(), m_root.get_metadata_len());
+    fill_error(info, error_msg, error_msg_len, true);
+    return true;
+  }
+
+  m_metadata = metadata;
+  return false;
+}
+
 // ColumnStorage implementation: top-level entry points called via ABI wrappers
 // in storage_builder.h. Each method retrieves the user context via
 // storage->user() and delegates to its methods.
@@ -679,8 +825,8 @@ bool ColumnStorage::select(Ctx *storage, MtrCtx::Ref mctx, Column::Ref col_ref,
                            Segment::TrxRef *trx_ref, bool *delete_marked,
                            char *error_msg, uint32_t error_msg_len) {
   return storage->user()->m_stores[0].fetch(
-      mctx, col_ref, *col_data, *rowid_prefix, *trx_ref, *delete_marked,
-      error_msg, error_msg_len);
+      mctx, col_ref, /*for_update=*/false, *col_data, *rowid_prefix, *trx_ref,
+      *delete_marked, error_msg, error_msg_len);
 }
 
 bool ColumnStorage::mark_delete(Ctx *storage, MtrCtx::Ref mctx,
