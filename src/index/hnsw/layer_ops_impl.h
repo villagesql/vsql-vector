@@ -32,6 +32,8 @@
 #ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_IMPL_H
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_IMPL_H
 
+#include <cassert>
+
 #include "layer_ops.h"
 
 namespace svector::hnsw {
@@ -46,11 +48,11 @@ LayerOperations<Graph, Policy>::LayerOperations(Graph &graph, const Node &query)
     : m_graph(graph), m_query(query) {}
 
 template <typename Graph, template <typename> class Policy>
-bool LayerOperations<Graph, Policy>::search_layer(std::vector<Node> &candidates,
-                                                  uint32_t ef) {
+bool LayerOperations<Graph, Policy>::search(
+    const std::vector<Node> &entry_points, uint32_t ef) {
   reset();
 
-  if (seed(candidates)) {
+  if (seed_impl(entry_points)) {
     return true;
   }
 
@@ -71,8 +73,44 @@ bool LayerOperations<Graph, Policy>::search_layer(std::vector<Node> &candidates,
     }
   }
 
-  consume_result(candidates);
+  m_state = State::Consume;
   return false;
+}
+
+template <typename Graph, template <typename> class Policy>
+bool LayerOperations<Graph, Policy>::seed(const std::vector<Node> &candidates) {
+  reset();
+
+  if (seed_impl(candidates)) {
+    return true;
+  }
+
+  m_state = State::Consume;
+  return false;
+}
+
+template <typename Graph, template <typename> class Policy>
+void LayerOperations<Graph, Policy>::consume_all(std::vector<Node> &out) {
+  assert(m_state == State::Consume);
+  m_state = State::Init;
+  consume_result(out);
+}
+
+template <typename Graph, template <typename> class Policy>
+void LayerOperations<Graph, Policy>::consume_simple(uint32_t M,
+                                                    std::vector<Node> &out) {
+  assert(m_state == State::Consume);
+  m_state = State::Init;
+
+  // Algorithm 3, SELECT-NEIGHBORS-SIMPLE: return the M elements of the
+  // preceding search()/seed() result nearest to the query node. That
+  // result is already ordered by increasing distance once extracted, so
+  // this is just a truncation, with no distance computation or sort of
+  // its own.
+  consume_result(out);
+  if (out.size() > M) {
+    out.resize(M);
+  }
 }
 
 template <typename Graph, template <typename> class Policy>
@@ -92,6 +130,8 @@ void LayerOperations<Graph, Policy>::consume_result(std::vector<Node> &out) {
 
 template <typename Graph, template <typename> class Policy>
 void LayerOperations<Graph, Policy>::reset() {
+  m_state = State::Init;
+
   m_visited.clear();
   m_candidates.clear();
   m_results.clear();
@@ -113,44 +153,50 @@ void LayerOperations<Graph, Policy>::reset(const Node &query) {
 }
 
 template <typename Graph, template <typename> class Policy>
-bool LayerOperations<Graph, Policy>::select_neighbours_simple(
-    const std::vector<Node> &candidates, uint32_t M, std::vector<Node> &out) {
-  reset();
+bool LayerOperations<Graph, Policy>::consume_heuristic(
+    uint32_t M, ExtendCandidates extend_candidates,
+    KeepPrunedConnections keep_pruned_connections, std::vector<Node> &out,
+    std::vector<Node> *candidate_pool) {
+  assert(m_state == State::Consume);
+  m_state = State::Init;
 
-  // Algorithm 3, SELECT-NEIGHBORS-SIMPLE: return the M elements of
-  // candidates nearest to the query node.
-  m_expand_buf.reserve(candidates.size());
-  for (const Node &node : candidates) {
-    m_expand_buf.emplace_back(node);
+  // Algorithm 4, line 2: W <- C. C is exactly the preceding search()/
+  // seed() result, with distances already known from that call -- unlike
+  // a fresh candidate list, no evaluate_distances() call is needed here.
+  m_expand_buf.clear();
+  m_expand_buf.reserve(m_results.size());
+  while (!m_results.empty()) {
+    m_expand_buf.push_back(m_results.top());
+    m_results.pop();
   }
 
-  if (evaluate_distances(m_expand_buf)) {
+  // Some callers (e.g. INSERT's "ep <- W" step, Algorithm 1 line 17) need
+  // the full pre-heuristic candidate pool alongside the narrowed result,
+  // since the two serve different purposes -- W keeps being used as the
+  // entry point for the next layer down, distinct from the neighbours
+  // actually linked at this layer. Filled from m_expand_buf before the
+  // optional extension below potentially grows it, so this always reflects
+  // W itself, not the extended set.
+  if (candidate_pool) {
+    candidate_pool->clear();
+    candidate_pool->reserve(m_expand_buf.size());
+    for (auto it = m_expand_buf.rbegin(); it != m_expand_buf.rend(); ++it) {
+      candidate_pool->push_back(it->node);
+    }
+  }
+
+  // Algorithm 4, lines 3-8: optionally extend W with each candidate's
+  // neighbours.
+  if (extend_candidates == ExtendCandidates::Yes && extend_with_neighbours()) {
     return true;
   }
 
-  const size_t count = std::min<size_t>(M, m_expand_buf.size());
-  std::partial_sort(m_expand_buf.begin(), m_expand_buf.begin() + count,
-                    m_expand_buf.end());
-
-  out.clear();
-  out.reserve(count);
-  for (size_t i = 0; i < count; ++i) {
-    out.push_back(std::move(m_expand_buf[i].node));
-  }
-  return false;
-}
-
-template <typename Graph, template <typename> class Policy>
-bool LayerOperations<Graph, Policy>::select_neighbours_heuristic(
-    const std::vector<Node> &candidates, uint32_t M,
-    ExtendCandidates extend_candidates,
-    KeepPrunedConnections keep_pruned_connections, std::vector<Node> &out) {
-  reset();
-
-  // Algorithm 4, lines 2-8: W <- C, optionally extended with neighbours.
-  if (gather_candidates(candidates, extend_candidates)) {
-    return true;
-  }
+  // m_candidates still holds the preceding search()/seed() call's own
+  // traversal frontier (search()/seed() only clear it on their next call,
+  // not on ours -- see consume_result()'s doc comment); it's unrelated to
+  // the heuristic's W-processing queue built here, so it must be cleared
+  // before being repurposed as that queue.
+  m_candidates.clear();
   for (const Candidate &candidate : m_expand_buf) {
     m_candidates.push(candidate);
   }
@@ -200,30 +246,27 @@ bool LayerOperations<Graph, Policy>::select_neighbours_heuristic(
 }
 
 template <typename Graph, template <typename> class Policy>
-bool LayerOperations<Graph, Policy>::gather_candidates(
-    const std::vector<Node> &candidates, ExtendCandidates extend_candidates) {
-  // Algorithm 4, line 2: W <- C.
-  for (const Node &node : candidates) {
-    if (m_visited.insert(node.key()).second) {
-      m_expand_buf.emplace_back(node);
-    }
-  }
-
+bool LayerOperations<Graph, Policy>::extend_with_neighbours() {
   // Algorithm 4, lines 3-7: extend W with each candidate's neighbours.
-  if (extend_candidates == ExtendCandidates::Yes) {
-    for (const Node &node : candidates) {
-      if (m_graph.neighbours(node, m_neighbour_buf)) {
-        return true;
-      }
-      for (const Node &neighbour : m_neighbour_buf) {
-        if (m_visited.insert(neighbour.key()).second) {
-          m_expand_buf.emplace_back(neighbour);
-        }
+  // Only the candidates already in m_expand_buf when this is called (W
+  // itself) are walked for their neighbours, not the ones appended below,
+  // so the count is snapshotted first.
+  const size_t original_count = m_expand_buf.size();
+  for (size_t i = 0; i < original_count; ++i) {
+    if (m_graph.neighbours(m_expand_buf[i].node, m_neighbour_buf)) {
+      return true;
+    }
+    for (const Node &neighbour : m_neighbour_buf) {
+      if (m_visited.insert(neighbour.key()).second) {
+        m_expand_buf.emplace_back(neighbour);
       }
     }
   }
 
-  return evaluate_distances(m_expand_buf);
+  // The original candidates' distances are already known (from the
+  // preceding search()/seed() call); only the newly-appended ones need
+  // evaluating.
+  return evaluate_distances(m_expand_buf, original_count);
 }
 
 template <typename Graph, template <typename> class Policy>
@@ -247,10 +290,11 @@ bool LayerOperations<Graph, Policy>::is_dominated(
 
 template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::evaluate_distances(
-    std::vector<Candidate> &candidates) {
+    std::vector<Candidate> &candidates, size_t begin) {
   // Distance computations are independent and could be parallelized
   // if Graph::distance() is thread-safe.
-  for (Candidate &candidate : candidates) {
+  for (size_t i = begin; i < candidates.size(); ++i) {
+    Candidate &candidate = candidates[i];
     bool failed = std::visit(
         [&](const auto &query) {
           return m_graph.distance(query, candidate.node, candidate.distance);
@@ -264,8 +308,15 @@ bool LayerOperations<Graph, Policy>::evaluate_distances(
 }
 
 template <typename Graph, template <typename> class Policy>
-bool LayerOperations<Graph, Policy>::seed(
+bool LayerOperations<Graph, Policy>::seed_impl(
     const std::vector<Node> &entry_points) {
+  // The callers must have already reset() the state.
+  assert(m_state == State::Init);
+  assert(m_visited.empty());
+  assert(m_candidates.empty());
+  assert(m_results.empty());
+  assert(m_expand_buf.empty());
+
   // Algorithm 2, lines 1-3: v = C = W = ep.
   for (const Node &node : entry_points) {
     if (m_visited.insert(node.key()).second) {

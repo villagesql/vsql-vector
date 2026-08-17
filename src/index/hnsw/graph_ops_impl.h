@@ -89,9 +89,10 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
   // the single nearest element found at each layer.
   while (level > insert_level) {
     // Search current layer to zoom into nearest candidates.
-    if (layer.search_layer(candidates, GREEDY_DESCENT_EF)) {
+    if (layer.search(candidates, GREEDY_DESCENT_EF)) {
       return true;
     }
+    layer.consume_all(candidates);
     // Prepare for the next layer by replacing the current candidates
     // with their next-level counterparts.
     assert(level.has_lower_level());
@@ -112,9 +113,11 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
   // Lines 8-16: from min(L, l) down to 0, gather efConstruction candidates
   // and connect q to its selected neighbours at each layer.
   for (;;) {
-    // Line 17 (folded in early): search_layer() replaces candidates with W,
-    // which then also serves as ep for the next (lower) layer's search.
-    if (layer.search_layer(candidates, m_graph.ef_construction())) {
+    // Line 17 (folded in early): search() populates W, which then also
+    // serves as ep for the next (lower) layer's search -- consume_heuristic()
+    // below hands it back via candidate_pool, straight into candidates,
+    // without re-evaluating any of its distances.
+    if (layer.search(candidates, m_graph.ef_construction())) {
       return true;
     }
     std::vector<Node> neighbours;
@@ -122,9 +125,9 @@ bool GraphOperations<Graph>::insert(const NodeData &new_node_data) {
     //   - extend_candidates = false
     //   - keep_pruned_connections = true
     // TODO(villagesql-indexing): Consider making these options configurable.
-    if (layer.select_neighbours_heuristic(
-            candidates, m_graph.M(), ExtendCandidates::No,
-            KeepPrunedConnections::Yes, neighbours)) {
+    if (layer.consume_heuristic(m_graph.M(), ExtendCandidates::No,
+                                KeepPrunedConnections::Yes, neighbours,
+                                &candidates)) {
       return true;
     }
     // create_node() also creates the outgoing links to neighbours.
@@ -297,13 +300,13 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
         }
         std::vector<Node> candidates(unlinked);
         layer.reset(orphan);
-        if (layer.search_layer(candidates, m_graph.ef_construction())) {
+        if (layer.search(candidates, m_graph.ef_construction())) {
           return true;
         }
         std::vector<Node> new_neighbours;
-        if (layer.select_neighbours_heuristic(
-                candidates, m_graph.M(), ExtendCandidates::No,
-                KeepPrunedConnections::Yes, new_neighbours)) {
+        if (layer.consume_heuristic(m_graph.M(), ExtendCandidates::No,
+                                    KeepPrunedConnections::Yes,
+                                    new_neighbours)) {
           return true;
         }
         if (m_graph.replace_neighbours(orphan, new_neighbours)) {
@@ -425,9 +428,10 @@ bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
   // the single nearest element found at each layer.
   for (auto level = entry_level; level.has_lower_level();
        level = levels.descend()) {
-    if (upper_layer.search_layer(candidates, GREEDY_DESCENT_EF)) {
+    if (upper_layer.search(candidates, GREEDY_DESCENT_EF)) {
       return true;
     }
+    upper_layer.consume_all(candidates);
     // Prepare for the next layer by replacing the current candidates
     // with their next-level counterparts.
     assert(level.has_lower_level());
@@ -440,16 +444,14 @@ bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
   // layer whose result is returned, so it's the only one filtered for
   // visibility.
   BottomLayerOps bottom_layer(m_graph, query_node_data);
-  if (bottom_layer.search_layer(candidates, ef_search)) {
+  if (bottom_layer.search(candidates, ef_search)) {
     return true;
   }
 
-  // Line 8: return K nearest elements from candidates. search_layer()
-  // leaves candidates ordered by increasing distance, so the K nearest are
-  // simply its first K elements.
-  if (candidates.size() > k) {
-    candidates.resize(k);
-  }
+  // Line 8: return K nearest elements from candidates. consume_simple()
+  // truncates the (already ascending-by-distance) search result to the K
+  // nearest directly.
+  bottom_layer.consume_simple(k, candidates);
   nearest_nodes = std::move(candidates);
   return false;
 }
@@ -487,10 +489,16 @@ bool GraphOperations<Graph>::shrink_neighbours(
     connections.push_back(linked_node);
 
     layer.reset(neighbour);
+    // No preceding graph traversal is needed here -- connections is
+    // already the exact candidate set to select Mmax(level) neighbours
+    // from -- so seed() (Step 1 without the expansion loop) stands in for
+    // search().
+    if (layer.seed(connections)) {
+      return true;
+    }
     std::vector<Node> shrunk;
-    if (layer.select_neighbours_heuristic(connections, m_graph.Mmax(level),
-                                          ExtendCandidates::No,
-                                          KeepPrunedConnections::No, shrunk)) {
+    if (layer.consume_heuristic(m_graph.Mmax(level), ExtendCandidates::No,
+                                KeepPrunedConnections::No, shrunk)) {
       return true;
     }
     if (m_graph.replace_neighbours(neighbour, shrunk)) {

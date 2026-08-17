@@ -94,45 +94,65 @@ public:
   // NodeData not yet present in the graph (e.g. the vector being inserted
   // or searched for) or an existing Node already stored in the graph. The
   // object may be reused to perform multiple searches for the same query
-  // by calling search_layer() repeatedly.
+  // by calling search()/seed() repeatedly.
   LayerOperations(Graph &graph, const NodeData &query);
   LayerOperations(Graph &graph, const Node &query);
 
-  // Executes the search from the entry points in candidates (Algorithm 2,
-  // SEARCH-LAYER), discarding any state left over from a previous call
-  // first. At most ef visible candidates are retained during the search;
-  // invisible candidates are still traversed but never retained, so they
-  // don't count against ef or appear in the result. Returns true if a
-  // graph operation fails, in which case candidates is left unchanged. On
-  // success, candidates is replaced with the search result, ordered by
-  // increasing distance from the query node (nearest first).
-  bool search_layer(std::vector<Node> &candidates, uint32_t ef);
+  // LayerOperations follows a two-step protocol. Step 1 -- search() or
+  // seed() -- gathers a result set and puts the object in the Consume
+  // state; step 2 -- exactly one of consume_all(), consume_simple() or
+  // consume_heuristic() -- extracts it and puts the object back in the
+  // Init state.
 
-  // Returns the M elements of candidates nearest to the query node,
-  // ordered by increasing distance (Algorithm 3,
-  // SELECT-NEIGHBORS-SIMPLE). Discards any state left over from a
-  // previous call first. Returns true if a graph operation fails.
-  bool select_neighbours_simple(const std::vector<Node> &candidates, uint32_t M,
-                                std::vector<Node> &out);
+  // Step 1: executes the search from the entry points (Algorithm 2,
+  // SEARCH-LAYER). At most ef visible candidates are retained during the
+  // search; invisible candidates are still traversed but never retained,
+  // so they don't count against ef or appear in the result. Returns true
+  // if a graph operation fails.
+  bool search(const std::vector<Node> &entry_points, uint32_t ef);
 
-  // Returns up to M elements of candidates selected by the heuristic
-  // (Algorithm 4, SELECT-NEIGHBORS-HEURISTIC): elements are taken
-  // nearest-first from candidates (optionally extended with their
-  // neighbours), and admitted only if they are closer to the query node
-  // than to every element already selected -- this favours diversity over
-  // picking the M nearest overall. If keep_pruned_connections is set,
-  // remaining slots are backfilled from the elements that were rejected
-  // by that check. Discards any state left over from a previous call
-  // first. Returns true if a graph operation fails, in which case out is
-  // left unchanged.
-  bool
-  select_neighbours_heuristic(const std::vector<Node> &candidates, uint32_t M,
-                              ExtendCandidates extend_candidates,
-                              KeepPrunedConnections keep_pruned_connections,
-                              std::vector<Node> &out);
+  // Step 1, traversal-free variant: evaluates the distance from the query
+  // to each element of candidates directly (Algorithm 2, lines 1-3,
+  // without the expansion loop), for callers that already know the exact
+  // set to select from and don't need search()'s neighbourhood traversal
+  // (e.g. shrink_neighbours() re-selecting among a node's existing
+  // neighbours plus one new one). Returns true if a graph operation
+  // fails.
+  bool seed(const std::vector<Node> &candidates);
+
+  // Step 2, variant A: extracts every node found by the preceding
+  // search()/seed() call, ordered by increasing distance from the query
+  // node (nearest first).
+  void consume_all(std::vector<Node> &out);
+
+  // Step 2, variant B: extracts the M elements of the preceding
+  // search()/seed() call's result nearest to the query node, ordered by
+  // increasing distance (Algorithm 3, SELECT-NEIGHBORS-SIMPLE).
+  void consume_simple(uint32_t M, std::vector<Node> &out);
+
+  // Step 2, variant C: selects up to M elements of the preceding
+  // search()/seed() call's result via the heuristic (Algorithm 4,
+  // SELECT-NEIGHBORS-HEURISTIC): elements are taken nearest-first
+  // (optionally extended with their neighbours), and admitted only if
+  // they are closer to the query node than to every element already
+  // selected -- this favours diversity over picking the M nearest
+  // overall. If keep_pruned_connections is set, remaining slots are
+  // backfilled from the elements that were rejected by that check.
+  // Returns true if a graph operation fails, in which case out is left
+  // unchanged. If candidate_pool is non-null, it's filled with the full
+  // preceding search()/seed() result (i.e. what consume_all() would have
+  // produced), regardless of extend_candidates -- for callers that, like
+  // Algorithm 1's "ep <- W" step, need that alongside the narrowed
+  // result and would otherwise have to re-seed() it at the cost of
+  // recomputing its distances.
+  bool consume_heuristic(uint32_t M, ExtendCandidates extend_candidates,
+                         KeepPrunedConnections keep_pruned_connections,
+                         std::vector<Node> &out,
+                         std::vector<Node> *candidate_pool = nullptr);
 
   // Resets the search state, allowing the object to be reused for another
-  // search with the current query node kept.
+  // search with the current query node kept. Puts the object back in the
+  // Init state.
   void reset();
 
   // Resets the search state and rebinds the object to a new query node.
@@ -140,6 +160,12 @@ public:
   void reset(const Node &query);
 
 private:
+  // Init: no result is pending consumption, either because no search()/
+  // seed() call has been made yet or because the last one's result was
+  // already consumed. Consume: search()/seed() has populated a result
+  // pending exactly one consume_*() call.
+  enum class State { Init, Consume };
+
   using Distance = typename Graph::DistanceType;
 
   struct Candidate {
@@ -174,28 +200,31 @@ private:
   // Moves the search result into out, consuming it in the process.
   // The output vector is replaced with the search result, ordered by
   // increasing distance from the query node (nearest first). Leaves
-  // m_candidates and m_visited as-is; the next public call is
+  // m_candidates and m_visited as-is; the next search()/seed() call is
   // responsible for discarding them via reset().
   void consume_result(std::vector<Node> &out);
 
-  // Fills in the distance for each candidate. Returns true if a graph
-  // operation fails.
-  bool evaluate_distances(std::vector<Candidate> &candidates);
+  // Fills in the distance for each candidate from index begin onward.
+  // Elements before begin are assumed to already carry a valid distance
+  // (e.g. copied over from a prior search()/seed() result) and are left
+  // untouched. Returns true if a graph operation fails.
+  bool evaluate_distances(std::vector<Candidate> &candidates, size_t begin = 0);
 
   // Seeds m_visited, m_candidates and m_results from the entry points
   // (Algorithm 2, lines 1-3). Returns true if a graph operation fails.
-  bool seed(const std::vector<Node> &entry_points);
+  // The public search() and seed() both wrap this, after their own reset().
+  bool seed_impl(const std::vector<Node> &entry_points);
 
   // Expands node's neighbourhood into m_candidates and m_results
   // (Algorithm 2, lines 9-17). Returns true if a graph operation fails.
   bool expand(const Node &node, uint32_t ef);
 
-  // Fills m_expand_buf with the deduplicated candidates, extended with
-  // their neighbours if extend_candidates is set, and evaluates each
-  // element's distance to the query node (Algorithm 4, lines 2-8).
-  // Returns true if a graph operation fails.
-  bool gather_candidates(const std::vector<Node> &candidates,
-                         ExtendCandidates extend_candidates);
+  // Extends m_expand_buf, holding W, with each of its candidates'
+  // neighbours (Algorithm 4, lines 3-7), evaluating distances only for the
+  // newly-added ones -- W's own are already known from the preceding
+  // search()/seed() call. Only called for ExtendCandidates::Yes. Returns
+  // true if a graph operation fails.
+  bool extend_with_neighbours();
 
   // Returns true if a graph operation fails. On success, sets dominated
   // to whether e is closer to some element of result than to the query
@@ -206,6 +235,7 @@ private:
 
   Graph &m_graph;
   std::variant<Node, NodeData> m_query;
+  State m_state = State::Init;
 
   std::unordered_set<typename Node::KeyType> m_visited;
   MinQueue m_candidates;
@@ -214,7 +244,7 @@ private:
   // Scratch buffers reused across calls, so that repeated operations
   // don't reallocate their backing storage. Cleared by reset(); methods
   // that repurpose them for a second role within a single call (e.g.
-  // select_neighbours_heuristic()) clear them again as needed.
+  // consume_heuristic()) clear them again as needed.
   std::vector<Node> m_neighbour_buf;
   std::vector<Candidate> m_expand_buf;
 };
