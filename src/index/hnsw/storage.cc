@@ -198,13 +198,21 @@ bool Options::parse(const vef_index_param_t *params, uint32_t count,
   return out->validate(error_msg, error_msg_len);
 }
 
-// TODO(villagesql-indexing): To be implemented based on Index Node
-// storage format.
-uint16_t IndexStore::entry_len(LevelStore::LevelId /* level */) const {
-  return 32;
+uint16_t IndexStore::entry_len(LevelStore::LevelId level) const {
+  auto max_neighbours = LevelStore::max_neighbours(level, m_num_neighbours);
+  return static_cast<uint16_t>(
+      NeighbourEntry::storage_size(max_neighbours, level.has_lower_level()));
 }
-uint16_t IndexStore::overflow_len(LevelStore::LevelId /* level */) const {
-  return 32;
+
+uint16_t IndexStore::overflow_len(LevelStore::LevelId level) const {
+  auto capacity = LevelStore::overflow_capacity(level, m_num_neighbours);
+  return static_cast<uint16_t>(OverflowEntry::storage_size(capacity));
+}
+
+LevelStore *IndexStore::level(LevelStore::LevelId lvl) {
+  if (lvl.value >= S_MAX_LEVEL)
+    return nullptr;
+  return m_levels[lvl.value].has_value() ? &*m_levels[lvl.value] : nullptr;
 }
 
 uint8_t IndexStore::segment_index(const RootId &root) const {
