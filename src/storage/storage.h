@@ -164,6 +164,12 @@ struct MultiColumnStore {
             const std::vector<Storage_spec> &specs, char *error_msg,
             uint32_t error_msg_len);
 
+  // Look up which entry in m_stores a column reference belongs to, by
+  // loading its data page and matching the page's root page ref against
+  // each store's m_root_page_ref.
+  bool get_root_index(MtrCtx::Ref mctx, Column::Ref col_ref, uint8_t &root_idx,
+                      char *error_msg, uint32_t error_msg_len);
+
   // Format an error message into msg/len.
   // Writes "SVECTOR: <info>" when local is true, or
   // "SVECTOR: <info>: <last_error()>" when local is false.
