@@ -39,6 +39,11 @@ namespace svector::hnsw {
 using svector::RootPage;
 using vsql::preview_storage::Error;
 
+// Backing store for the vsql_vector.ef_search system variable (declared in
+// storage.h, bound to the sysvar descriptor in vector.cc). Default matches
+// DEFAULT_EF_SEARCH; the server enforces MIN/MAX on SET.
+long long g_ef_search = DEFAULT_EF_SEARCH;
+
 static_assert(IndexStore::KEY_REF_SIZE == 8, "KeyPartRef must be 8 bytes");
 
 static void write_u64_be(std::string &buf, uint64_t v) {
@@ -876,12 +881,12 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
   IndexGraph::NodeData query{query_key[0]};
 
   // limit() is the k from ORDER BY ... LIMIT k. ef_search trades recall for
-  // latency; nothing sources it as a session var yet, so derive a default from
-  // k (pgvector/MariaDB default ~40), clamp to at least k and to the build-time
-  // ef_construction as an upper sanity bound.
+  // latency. It comes from the global system variable vsql_vector.ef_search
+  // (g_ef_search; session vars are not yet available to extensions). Clamp to at
+  // least k -- a search can't return k results with a narrower beam -- and to
+  // the build-time ef_construction as an upper sanity bound.
   const uint32_t k = scan_desc.limit();
-  constexpr uint32_t kDefaultEfSearch = 40;
-  uint32_t ef_search = std::max(k, kDefaultEfSearch);
+  uint32_t ef_search = std::max<uint32_t>(k, static_cast<uint32_t>(g_ef_search));
   ef_search = std::min(ef_search, store->ef_construction());
 
   const size_t vector_buf_size = index.get_max_col_len(/*key_pos=*/0);
