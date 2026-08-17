@@ -84,7 +84,8 @@ bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
   // which every stored vector fits in by construction.
   out.data.data = reinterpret_cast<const unsigned char *>(buf.data());
   out.data.length = static_cast<uint32_t>(buf.size());
-  return m_index.get_key_data(static_cast<IndexScanKey::KeyPartRef>(vid.value),
+  return m_index.get_key_data(VECTOR_KEY_POS,
+                              static_cast<IndexScanKey::KeyPartRef>(vid.value),
                               &out.data);
 }
 
@@ -294,7 +295,7 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
   // Resolved up front, before opening the mtr below, so a failure here
   // never touches storage.
   IndexScanKey::KeyPartRef owner_ref;
-  if (m_index.get_key_ref(data.data, &owner_ref))
+  if (m_index.get_key_ref(VECTOR_KEY_POS, data.data, &owner_ref))
     return true;
 
   // ~MtrCtx() commits, and commit() is idempotent, so an early return below
