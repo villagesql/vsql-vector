@@ -83,6 +83,8 @@ struct ColumnStore {
 
   bool initialized() const { return (m_root_page_ref != Page::INVALID_REF); }
 
+  // See MultiColumnStore::fill_error, including the (nullptr, 0) convention
+  // for a caller that has nothing to report.
   static void fill_error(const char *info, char *msg, uint32_t len, bool local);
 
   // Storage operations. All return false on success, true on error.
@@ -173,6 +175,11 @@ struct MultiColumnStore {
   // Format an error message into msg/len.
   // Writes "SVECTOR: <info>" when local is true, or
   // "SVECTOR: <info>: <last_error()>" when local is false.
+  //
+  // (msg, len) may be (nullptr, 0), which discards the message. Every
+  // storage operation taking an error buffer accepts that pair, for callers
+  // whose failure is not reportable -- a debug-only check, say, whose caller
+  // asserts instead. Anything else must be a writable buffer of len bytes.
   static void fill_error(const char *info, char *msg, uint32_t len, bool local);
 };
 

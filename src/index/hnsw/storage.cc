@@ -346,7 +346,7 @@ bool LevelStore::update(MtrCtx::Ref mtr, NID id, const NeighbourEntry &entry,
 }
 
 bool LevelStore::update(MtrCtx::Ref mtr, NID id, const OverflowEntry &entry,
-                        OverflowUpdateField mask, const ScratchSlots &slots,
+                        OverflowField mask, const ScratchSlots &slots,
                         ScratchBytes &buffer, ScratchChunkIds &chunk_ids,
                         char *err, uint32_t err_len) {
   const uint32_t capacity = overflow_capacity();
@@ -363,7 +363,7 @@ bool LevelStore::update(MtrCtx::Ref mtr, NID id, const OverflowEntry &entry,
     chunk_ids[num_chunks++] = idx;
   };
 
-  if (has(mask, OverflowUpdateField::Incoming)) {
+  if (has(mask, OverflowField::Incoming)) {
     const size_t n = entry.incoming.size();
     assert(n <= slots.size());
     for (size_t i = 0; i < n; ++i) {
@@ -373,7 +373,7 @@ bool LevelStore::update(MtrCtx::Ref mtr, NID id, const OverflowEntry &entry,
     }
   }
 
-  if (has(mask, OverflowUpdateField::Overflow))
+  if (has(mask, OverflowField::Overflow))
     write_chunk(overflow_idx, entry.overflow.value);
 
   Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
@@ -452,7 +452,7 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
 
 bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
                        OverflowEntry &entry, size_t &num_valid, char *err,
-                       uint32_t err_len, OverflowUpdateField mask,
+                       uint32_t err_len, OverflowField mask,
                        const ScratchChunkIds *slots) {
   Column::Data col_data;
   Column::Data rowid_prefix;
@@ -469,7 +469,7 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
     return read_id48_be(p);
   };
 
-  if (has(mask, OverflowUpdateField::Incoming)) {
+  if (has(mask, OverflowField::Incoming)) {
     // Same for_update/read-only distinction as the NeighbourEntry overload
     // above: preserve slot alignment for a later update(), or compact away
     // INVALID entries for a read-only lookup.
@@ -502,7 +502,7 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
     num_valid = valid_count;
   }
 
-  if (has(mask, OverflowUpdateField::Overflow))
+  if (has(mask, OverflowField::Overflow))
     entry.overflow = NID{read_chunk(overflow_chunk())};
 
   return false;
@@ -523,6 +523,69 @@ LevelStore *IndexStore::locate(NID nid, StoreKind &kind, char *err,
 
   kind = (root_idx & 1) ? StoreKind::Overflow : StoreKind::Neighbour;
   return get_level(LevelStore::LevelId{static_cast<uint8_t>(root_idx >> 1)});
+}
+
+LevelStore *IndexStore::ensure_levels(LevelStore::LevelId target, char *err,
+                                      uint32_t err_len) {
+  assert(target <= max_level());
+  assert(m_levels[m_entry_level.value].has_value());
+
+  // Levels above m_entry_level may already exist, wholly or in part: an
+  // insert that created them and then failed leaves them behind, since
+  // levels are never dropped. Every step below is therefore skipped when its
+  // work is already done rather than asserted against. Re-running
+  // init_root_page() for a half that exists would allocate a second root
+  // page and overwrite the stored ref, orphaning the first page along with
+  // any records already written into it.
+  for (uint8_t l = m_entry_level.value + 1; l <= target.value; ++l) {
+    RootId primary{LevelStore::LevelId{l}, RootId::Type::Primary};
+    RootId overflow{LevelStore::LevelId{l}, RootId::Type::Overflow};
+
+    // The two halves are created by separate calls, so a failure (or a crash
+    // and restart) can leave a level with only its primary store: each half
+    // is checked on its own, not inferred from the other.
+    if (!m_multi_store.m_stores[root_index(primary)].initialized() &&
+        m_multi_store.init_root_page(segment_index(primary),
+                                     root_index(primary), err, err_len))
+      return nullptr;
+    if (!m_multi_store.m_stores[root_index(overflow)].initialized() &&
+        m_multi_store.init_root_page(segment_index(overflow),
+                                     root_index(overflow), err, err_len))
+      return nullptr;
+
+    if (!m_levels[l].has_value())
+      m_levels[l].emplace(
+          LevelStore::LevelId{l}, m_multi_store.m_stores[root_index(primary)],
+          m_multi_store.m_stores[root_index(overflow)], m_num_neighbours);
+  }
+  return get_level(target);
+}
+
+bool IndexStore::set_entry_point(MtrCtx::Ref mtr, const Node &node,
+                                 LevelStore::LevelId level, char *err,
+                                 uint32_t err_len) {
+  ColumnStore &primary = m_multi_store.m_stores[0];
+
+  StorageMeta meta;
+  if (meta.decode(primary.m_metadata)) {
+    snprintf(err, err_len,
+             "HNSW: set_entry_point: failed to decode level-0 metadata");
+    return true;
+  }
+  meta.entry_level = level;
+  meta.entry_points.assign(
+      1, node.nid.is_valid()
+             ? static_cast<IndexScanKey::KeyPartRef>(node.nid.value)
+             : IndexScanKey::EMPTY_REF);
+
+  std::string encoded;
+  meta.encode(&encoded);
+  if (primary.update_metadata(mtr, encoded, err, err_len))
+    return true;
+
+  m_entry_point = node;
+  m_entry_level = level;
+  return false;
 }
 
 uint8_t IndexStore::segment_index(const RootId &root) const {
@@ -546,7 +609,10 @@ void IndexStore::build_storage_specs(std::vector<Storage_spec> &specs) {
     // All other stores use entry_level{0} and no entry points.
     std::vector<IndexScanKey::KeyPartRef> entry_pts;
     if (l == 0)
-      entry_pts.push_back(m_entry_point);
+      entry_pts.push_back(
+          m_entry_point.nid.is_valid()
+              ? static_cast<IndexScanKey::KeyPartRef>(m_entry_point.nid.value)
+              : IndexScanKey::EMPTY_REF);
     auto el = (l == 0) ? m_entry_level : LevelStore::LevelId{0};
     StorageMeta{("HNSW-L" + std::to_string(l)), level, el, entry_pts}.encode(
         &meta);
@@ -613,9 +679,12 @@ bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
   assert(level0_meta.entry_points.size() <= 1);
   assert(level0_meta.level == LevelStore::LevelId{0});
   m_entry_level = level0_meta.entry_level;
-  m_entry_point = level0_meta.entry_points.empty()
-                      ? IndexScanKey::EMPTY_REF
-                      : level0_meta.entry_points[0];
+  IndexScanKey::KeyPartRef entry_ref = level0_meta.entry_points.empty()
+                                           ? IndexScanKey::EMPTY_REF
+                                           : level0_meta.entry_points[0];
+  NID entry_nid = (entry_ref != IndexScanKey::EMPTY_REF)
+                      ? NID{static_cast<uint64_t>(entry_ref)}
+                      : NID{};
 
   // Reconstruct each level whose stores have been created.
   auto num_root_pages = static_cast<uint8_t>(m_multi_store.m_stores.size());
@@ -635,6 +704,26 @@ bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
     m_levels[lvl].emplace(LevelStore::LevelId{lvl}, m_multi_store.m_stores[si],
                           m_multi_store.m_stores[si + 1], m_num_neighbours);
   }
+
+  // Only the entry point's NID is persisted; resolve its VID once here so
+  // entry_point() is a plain field read with no page access thereafter.
+  m_entry_point = Node{};
+  if (entry_nid.is_valid()) {
+    LevelStore *store = get_level(m_entry_level);
+    assert(store != nullptr);
+
+    NeighbourEntry entry;
+    size_t num_valid = 0;
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    bool failed = store->fetch(mtr, entry_nid, /*for_update=*/false, entry,
+                               num_valid, err, err_len, NodeField::Owner);
+    mtr_ctx.commit();
+    if (failed)
+      return true;
+    m_entry_point = Node{entry_nid, entry.owner};
+  }
+
   m_initialized = true;
   return false;
 }

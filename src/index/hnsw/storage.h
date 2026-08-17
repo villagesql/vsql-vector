@@ -126,6 +126,8 @@ public:
            1;
   }
 
+  LevelId level() const { return m_level; }
+
   uint32_t target_neighbours() const {
     return target_neighbours(m_level, m_num_neighbours);
   }
@@ -169,7 +171,7 @@ public:
   // Same as above, for m_overflow's record layout: slots[i] pairs with
   // entry.incoming[i] when mask includes Incoming.
   bool update(MtrCtx::Ref mtr, NID id, const OverflowEntry &entry,
-              OverflowUpdateField mask, const ScratchSlots &slots,
+              OverflowField mask, const ScratchSlots &slots,
               ScratchBytes &buffer, ScratchChunkIds &chunk_ids, char *err,
               uint32_t err_len);
 
@@ -206,7 +208,7 @@ public:
   // for_update conventions).
   bool fetch(MtrCtx::Ref mtr, NID id, bool for_update, OverflowEntry &entry,
              size_t &num_valid, char *err, uint32_t err_len,
-             OverflowUpdateField mask = OverflowFieldAll,
+             OverflowField mask = OverflowFieldAll,
              const ScratchChunkIds *slots = nullptr);
 
 private:
@@ -330,16 +332,6 @@ public:
 
   Index::StorageRef storage_ref() const { return m_multi_store.m_ref; }
 
-  bool is_initialized() const {
-    std::shared_lock lock(m_mutex);
-    return m_initialized;
-  }
-
-  bool is_empty() const {
-    std::shared_lock lock(m_mutex);
-    return m_entry_point == IndexScanKey::EMPTY_REF;
-  }
-
   // Configured number of neighbours M.
   uint32_t num_neighbours() const { return m_num_neighbours; }
 
@@ -359,6 +351,25 @@ public:
   // Whole-graph lock, protecting graph-wide metadata (entry point/level).
   std::shared_mutex &mutex() { return m_mutex; }
 
+  // Current entry point node, or an invalid node (nid unset) if the graph
+  // has no entry point yet (Algorithm 1, lines 2-3), in which case
+  // entry_level() is unspecified. Kept fully resolved (nid and vid) in
+  // memory -- refreshed on load() and by set_entry_point() below -- so this
+  // is a plain field read with no page access. Caller must hold mutex() --
+  // entry point/level are graph-wide metadata that mutex() protects.
+  const Node &entry_point() const { return m_entry_point; }
+
+  // Level of the current entry point. Caller must hold mutex().
+  LevelStore::LevelId entry_level() const { return m_entry_level; }
+
+  // Registers node as the graph's new entry point at level (Algorithm 1,
+  // line 19), persisting the change to the level-0 primary store's root
+  // page metadata. node is an invalid node (nid unset) to clear the entry
+  // point (the graph became empty). Caller must hold mutex() in exclusive
+  // mode.
+  bool set_entry_point(MtrCtx::Ref mtr, const Node &node,
+                       LevelStore::LevelId level, char *err, uint32_t err_len);
+
   // Store for level, or nullptr if that level has not been created yet.
   LevelStore *get_level(LevelStore::LevelId level) {
     return level.value < S_MAX_LEVEL && m_levels[level.value].has_value()
@@ -368,8 +379,32 @@ public:
 
   // Store owning nid's record, or nullptr if it cannot be resolved. On
   // success, kind is set to which of that level's two stores (Neighbour or
-  // Overflow) the record lives in.
+  // Overflow) the record lives in. A caller that will not report the failure
+  // may pass (nullptr, 0) for err/err_len (see MultiColumnStore::fill_error).
   LevelStore *locate(NID nid, StoreKind &kind, char *err, uint32_t err_len);
+
+  // Materializes every level's storage from m_entry_level (exclusive) up to
+  // and including target, allocating and formatting each new level's
+  // primary and overflow root pages. Levels 0..m_entry_level are always
+  // already created -- an invariant maintained by every past call to this
+  // function paired with the set_entry_point() that follows it -- so this
+  // only needs to walk from m_entry_level+1. target must not exceed
+  // max_level(). Calling this with a target at or below m_entry_level is a
+  // no-op that just returns get_level(target).
+  //
+  // Caller must already hold mutex(): this walks, and may mutate, graph-wide
+  // level storage and does not lock mutex() itself. Exclusive mode is
+  // required whenever target exceeds m_entry_level, since that is the case
+  // that mutates; shared mode suffices for the no-op case, which only reads
+  // m_levels and cannot run concurrently with a mutating call anyway.
+  //
+  // Returns the store for target, or nullptr on error (err/err_len set).
+  // Any levels created before the failing one remain created -- levels are
+  // never dropped, so levels above m_entry_level are a valid state, and this
+  // function is idempotent: a later call skips whatever already exists,
+  // including a level left with only one of its two root pages.
+  LevelStore *ensure_levels(LevelStore::LevelId target, char *err,
+                            uint32_t err_len);
 
 private:
   // Two segments: Primary for level-0, Secondary for the rest of the levels.
@@ -413,9 +448,9 @@ private:
   // Normalization factor for level generation ML.
   double m_level_norm_factor = 0;
 
-  // Current highest level and key to enter the graph.
+  // Current highest level and node to enter the graph.
   LevelStore::LevelId m_entry_level{0};
-  IndexScanKey::KeyPartRef m_entry_point = IndexScanKey::EMPTY_REF;
+  Node m_entry_point{};
 
   std::array<std::optional<LevelStore>, S_MAX_LEVEL> m_levels;
   MultiColumnStore m_multi_store;

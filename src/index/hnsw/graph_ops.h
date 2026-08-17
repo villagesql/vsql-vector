@@ -49,6 +49,12 @@ namespace svector::hnsw {
 //   // Registers 'nodes' as the graph's new entry points at 'level'.
 //   bool set_entry_point(const std::vector<Node>& nodes, LevelId level);
 //
+//   // Materializes every level up to and including 'level', so that the
+//   // level can be locked and its nodes created. A no-op for levels that
+//   // already exist. Called before any level is locked, since locking a
+//   // level that does not exist yet is not possible.
+//   bool ensure_levels(LevelId level);
+//
 //   // Configured construction parameters (Algorithm 1's M, efConstruction).
 //   uint32_t M() const;
 //   uint32_t ef_construction() const;

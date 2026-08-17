@@ -191,6 +191,14 @@ public:
   // line 19).
   bool set_entry_point(const std::vector<Node> &nodes, LevelId level);
 
+  // Materializes every level up to and including level. Called by
+  // GraphOperations::insert() before it takes any level lock, since a level
+  // that does not exist yet cannot be locked. A no-op once the levels
+  // exist, so only the insert that raises the graph's height pays for it.
+  // The caller must hold the graph lock in X mode whenever levels are
+  // actually created (see IndexStore::ensure_levels).
+  bool ensure_levels(LevelId level);
+
   bool create_node(const std::optional<Node> &parent, LevelId level,
                    const NodeData &data, std::vector<Node> &neighbours,
                    Node &out);
@@ -200,8 +208,13 @@ public:
   bool drop_node(const std::optional<Node> &parent, LevelId level,
                  const Node &node);
 
-  // level is node's own level.
-  bool get_next_level(const Node &node, LevelId level, Node &out);
+  // level is node's own level; level must have a lower level (i.e.
+  // level.has_lower_level()) -- callers always already know they're
+  // descending, never called at level 0. Follows node's LowerLevel NID to the
+  // same vector's counterpart node one level down; out's vid is node's own,
+  // since a node's vid is invariant across every level it appears at (set
+  // identically by every create_node() call for that vector).
+  bool get_next_level_node(const Node &node, LevelId level, Node &out);
 
   // Adds the reciprocal edges from node's neighbours back to node. If doing
   // so would push a neighbour's degree past Mmax for node's level, the edge
@@ -245,6 +258,43 @@ private:
   uint32_t err_len() const {
     return static_cast<uint32_t>(m_ctx.m_error.size());
   }
+
+#ifndef NDEBUG
+  // Debug-only sanity check shared by create_node()/drop_node(): verifies
+  // node's NID actually resolves (via IndexStore::locate) to level's store,
+  // catching a caller passing the wrong parent/level pairing that would
+  // otherwise silently touch the wrong level's storage.
+  bool debug_check_level(const Node &node, LevelId level) const;
+#endif // NDEBUG
+
+  // One link in a node's overflow chain: the overflow entry to drop (nid),
+  // and the record whose Overflow field currently points to it (prev, of
+  // kind prev_kind) -- either the owning node's own NeighbourEntry
+  // (StoreKind::Neighbour) or an earlier OverflowEntry
+  // (StoreKind::Overflow) in the same chain. prev_kind travels with prev so
+  // drop_overflow_node() knows which record layout -- and which
+  // LevelStore::update() overload -- to use when clearing its Overflow
+  // field.
+  struct OverflowLink {
+    NID nid;
+    NID prev;
+    StoreKind prev_kind;
+  };
+
+  // Drops every overflow entry chained off node at level (via its
+  // Overflow field and each subsequent OverflowEntry::overflow), leaving
+  // node itself untouched aside from clearing its Overflow field. Called
+  // at the start of drop_node() so a node's incoming overflow chain never
+  // outlives it.
+  bool drop_overflow_nodes(LevelId level, const Node &node);
+
+  // Physically removes the single overflow entry link.nid identifies and
+  // clears the Overflow field of the record link.prev/link.prev_kind
+  // names. link.nid is always that record's current (and, by
+  // construction of drop_overflow_nodes()'s tail-to-head unwind, last
+  // remaining) chain successor, so clearing to NID{} rather than splicing
+  // in a further successor is always correct.
+  bool drop_overflow_node(LevelId level, const OverflowLink &link);
 
   IndexStore &m_store;
   Index &m_index;

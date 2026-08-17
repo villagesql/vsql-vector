@@ -173,24 +173,23 @@ struct OverflowEntry {
 };
 
 // Selects which fields of an OverflowEntry a partial update writes.
-enum class OverflowUpdateField : uint32_t {
+enum class OverflowField : uint32_t {
   Incoming = 1 << 0,
   Overflow = 1 << 1,
 };
 
-constexpr OverflowUpdateField operator|(OverflowUpdateField a,
-                                        OverflowUpdateField b) {
-  return static_cast<OverflowUpdateField>(static_cast<uint32_t>(a) |
-                                          static_cast<uint32_t>(b));
+constexpr OverflowField operator|(OverflowField a, OverflowField b) {
+  return static_cast<OverflowField>(static_cast<uint32_t>(a) |
+                                    static_cast<uint32_t>(b));
 }
 
-constexpr bool has(OverflowUpdateField mask, OverflowUpdateField field) {
+constexpr bool has(OverflowField mask, OverflowField field) {
   return (static_cast<uint32_t>(mask) & static_cast<uint32_t>(field)) != 0;
 }
 
 // Every OverflowEntry field -- the default fetch mask for a full read.
-constexpr OverflowUpdateField OverflowFieldAll =
-    OverflowUpdateField::Incoming | OverflowUpdateField::Overflow;
+constexpr OverflowField OverflowFieldAll =
+    OverflowField::Incoming | OverflowField::Overflow;
 
 } // namespace svector::hnsw
 
