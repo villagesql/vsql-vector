@@ -23,7 +23,6 @@
 
 #include "storage.h"
 
-#include <array>
 #include <cassert>
 #include <cerrno>
 #include <cmath>
@@ -47,6 +46,22 @@ static uint64_t read_u64_be(const uint8_t *p) {
   uint64_t v = 0;
   for (int i = 0; i < 8; ++i)
     v = (v << 8) | static_cast<uint64_t>(p[i]);
+  return v;
+}
+
+// Writes v's low 6 bytes big-endian at p and advances p past them -- the
+// on-disk width of NID/VID (Id<Tag>::STORAGE_SIZE).
+static inline void write_id48_be(std::byte *&p, uint64_t v) {
+  for (int i = 5; i >= 0; --i)
+    *p++ = static_cast<std::byte>((v >> (i * 8)) & 0xff);
+}
+
+// Reads a 6-byte big-endian id from p and advances p past it -- inverse of
+// write_id48_be.
+static inline uint64_t read_id48_be(const std::byte *&p) {
+  uint64_t v = 0;
+  for (int i = 0; i < 6; ++i)
+    v = (v << 8) | static_cast<uint64_t>(*p++);
   return v;
 }
 
@@ -207,6 +222,290 @@ uint16_t IndexStore::entry_len(LevelStore::LevelId level) const {
 uint16_t IndexStore::overflow_len(LevelStore::LevelId level) const {
   auto capacity = LevelStore::overflow_capacity(level, m_num_neighbours);
   return static_cast<uint16_t>(OverflowEntry::storage_size(capacity));
+}
+
+bool LevelStore::insert(MtrCtx::Ref mtr, const NeighbourEntry &entry,
+                        Segment::TrxRef trx_ref, ScratchBytes &buffer, NID &out,
+                        char *err, uint32_t err_len) {
+  const bool has_lower = m_level.has_lower_level();
+  const uint32_t max_n = max_neighbours();
+  assert(entry.neighbours.size() <= max_n);
+
+  const size_t len = NeighbourEntry::storage_size(max_n, has_lower);
+  assert(buffer.size() >= len);
+
+  std::byte *p = buffer.data();
+  write_id48_be(p, entry.owner.value);
+  if (has_lower)
+    write_id48_be(p, entry.lower_level.value);
+
+  for (uint32_t i = 0; i < max_n; ++i) {
+    if (i < entry.neighbours.size()) {
+      write_id48_be(p, entry.neighbours[i].nid.value);
+      write_id48_be(p, entry.neighbours[i].vid.value);
+    } else {
+      write_id48_be(p, NID::INVALID);
+      write_id48_be(p, VID::INVALID);
+    }
+  }
+  write_id48_be(p, entry.overflow.value);
+  assert(static_cast<size_t>(p - buffer.data()) == len);
+
+  Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
+                        static_cast<uint32_t>(len)};
+  Column::Ref col_ref;
+  if (m_store.insert(mtr, trx_ref, col_data, col_ref, err, err_len))
+    return true;
+
+  out = NID{static_cast<uint64_t>(col_ref)};
+  return false;
+}
+
+bool LevelStore::insert(MtrCtx::Ref mtr, const OverflowEntry &entry,
+                        Segment::TrxRef trx_ref, ScratchBytes &buffer, NID &out,
+                        char *err, uint32_t err_len) {
+  const uint32_t capacity = overflow_capacity();
+  assert(entry.incoming.size() <= capacity);
+
+  const size_t len = OverflowEntry::storage_size(capacity);
+  assert(buffer.size() >= len);
+
+  std::byte *p = buffer.data();
+  for (uint32_t i = 0; i < capacity; ++i) {
+    if (i < entry.incoming.size())
+      write_id48_be(p, entry.incoming[i].value);
+    else
+      write_id48_be(p, NID::INVALID);
+  }
+  write_id48_be(p, entry.overflow.value);
+  assert(static_cast<size_t>(p - buffer.data()) == len);
+
+  Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
+                        static_cast<uint32_t>(len)};
+  Column::Ref col_ref;
+  if (m_overflow.insert(mtr, trx_ref, col_data, col_ref, err, err_len))
+    return true;
+
+  out = NID{static_cast<uint64_t>(col_ref)};
+  return false;
+}
+
+bool LevelStore::remove(MtrCtx::Ref mtr, StoreKind kind, NID nid,
+                        Segment::TrxRef trx_ref, char *err, uint32_t err_len) {
+  ColumnStore &store = (kind == StoreKind::Neighbour) ? m_store : m_overflow;
+  return store.purge(mtr, trx_ref, static_cast<Column::Ref>(nid.value), err,
+                     err_len);
+}
+
+bool LevelStore::update(MtrCtx::Ref mtr, NID id, const NeighbourEntry &entry,
+                        NodeField mask, const ScratchSlots &slots,
+                        ScratchBytes &buffer, ScratchChunkIds &chunk_ids,
+                        char *err, uint32_t err_len) {
+  const bool has_lower = m_level.has_lower_level();
+  const uint32_t max_n = max_neighbours();
+  assert(!has(mask, NodeField::LowerLevel) || has_lower);
+
+  const uint16_t overflow_idx = neighbour_overflow_chunk();
+  const size_t len = (static_cast<size_t>(overflow_idx) + 1) * CHUNK_SIZE;
+  assert(buffer.size() >= len);
+
+  size_t num_chunks = 0;
+  auto write_chunk = [&](uint16_t idx, uint64_t value) {
+    std::byte *p = buffer.data() + static_cast<size_t>(idx) * CHUNK_SIZE;
+    write_id48_be(p, value);
+    assert(num_chunks < chunk_ids.size());
+    chunk_ids[num_chunks++] = idx;
+  };
+
+  if (has(mask, NodeField::Owner))
+    write_chunk(owner_chunk(), entry.owner.value);
+
+  if (has(mask, NodeField::LowerLevel))
+    write_chunk(lower_level_chunk(), entry.lower_level.value);
+
+  if (has(mask, NodeField::Neighbours)) {
+    const size_t n = entry.neighbours.size();
+    assert(n <= slots.size());
+    for (size_t i = 0; i < n; ++i) {
+      assert(slots[i].is_valid() && slots[i].value < max_n);
+      assert(i == 0 || slots[i].value > slots[i - 1].value);
+      write_chunk(neighbour_nid_chunk(slots[i].value),
+                  entry.neighbours[i].nid.value);
+      write_chunk(neighbour_vid_chunk(slots[i].value),
+                  entry.neighbours[i].vid.value);
+    }
+  }
+
+  if (has(mask, NodeField::Overflow))
+    write_chunk(overflow_idx, entry.overflow.value);
+
+  Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
+                        static_cast<uint32_t>(len)};
+  return m_store.update(mtr, static_cast<Column::Ref>(id.value), col_data,
+                        chunk_ids.span(num_chunks), CHUNK_SIZE, err, err_len);
+}
+
+bool LevelStore::update(MtrCtx::Ref mtr, NID id, const OverflowEntry &entry,
+                        OverflowUpdateField mask, const ScratchSlots &slots,
+                        ScratchBytes &buffer, ScratchChunkIds &chunk_ids,
+                        char *err, uint32_t err_len) {
+  const uint32_t capacity = overflow_capacity();
+
+  const uint16_t overflow_idx = overflow_chunk();
+  const size_t len = (static_cast<size_t>(overflow_idx) + 1) * CHUNK_SIZE;
+  assert(buffer.size() >= len);
+
+  size_t num_chunks = 0;
+  auto write_chunk = [&](uint16_t idx, uint64_t value) {
+    std::byte *p = buffer.data() + static_cast<size_t>(idx) * CHUNK_SIZE;
+    write_id48_be(p, value);
+    assert(num_chunks < chunk_ids.size());
+    chunk_ids[num_chunks++] = idx;
+  };
+
+  if (has(mask, OverflowUpdateField::Incoming)) {
+    const size_t n = entry.incoming.size();
+    assert(n <= slots.size());
+    for (size_t i = 0; i < n; ++i) {
+      assert(slots[i].is_valid() && slots[i].value < capacity);
+      assert(i == 0 || slots[i].value > slots[i - 1].value);
+      write_chunk(incoming_chunk(slots[i].value), entry.incoming[i].value);
+    }
+  }
+
+  if (has(mask, OverflowUpdateField::Overflow))
+    write_chunk(overflow_idx, entry.overflow.value);
+
+  Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
+                        static_cast<uint32_t>(len)};
+  return m_overflow.update(mtr, static_cast<Column::Ref>(id.value), col_data,
+                           chunk_ids.span(num_chunks), CHUNK_SIZE, err,
+                           err_len);
+}
+
+bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
+                       NeighbourEntry &entry, size_t &num_valid, char *err,
+                       uint32_t err_len, NodeField mask,
+                       const ScratchChunkIds *slots) {
+  Column::Data col_data;
+  Column::Data rowid_prefix;
+  Segment::TrxRef trx_ref;
+  bool delete_marked = false;
+  if (m_store.fetch(mtr, static_cast<Column::Ref>(id.value), for_update,
+                    col_data, rowid_prefix, trx_ref, delete_marked, err,
+                    err_len))
+    return true;
+
+  const auto *base = reinterpret_cast<const std::byte *>(col_data.data);
+  auto read_chunk = [&](uint16_t idx) -> uint64_t {
+    const std::byte *p = base + static_cast<size_t>(idx) * CHUNK_SIZE;
+    return read_id48_be(p);
+  };
+
+  if (has(mask, NodeField::Owner))
+    entry.owner = VID{read_chunk(owner_chunk())};
+
+  if (has(mask, NodeField::LowerLevel) && m_level.has_lower_level())
+    entry.lower_level = NID{read_chunk(lower_level_chunk())};
+
+  if (has(mask, NodeField::Neighbours)) {
+    // for_update: a later update() will write back by slot, so every
+    // requested slot -- INVALID ones included -- is written in place to
+    // keep entry.neighbours aligned with slots. Read-only: no such
+    // alignment is needed, so INVALID slots are dropped and the valid ones
+    // are compacted to the front.
+    size_t write_idx = 0;
+    size_t valid_count = 0;
+    auto handle_slot = [&](uint16_t slot) {
+      const uint64_t nid_val = read_chunk(neighbour_nid_chunk(slot));
+      const bool valid = NID{nid_val}.is_valid();
+      if (valid) {
+        ++valid_count;
+      } else if (!for_update) {
+        return;
+      }
+      entry.neighbours[write_idx++] =
+          Node{NID{nid_val}, VID{read_chunk(neighbour_vid_chunk(slot))}};
+    };
+
+    if (slots != nullptr) {
+      assert(slots->size() <= entry.neighbours.size());
+      for (size_t i = 0; i < slots->size(); ++i)
+        handle_slot((*slots)[i]);
+    } else {
+      const uint32_t max_n = max_neighbours();
+      assert(max_n <= entry.neighbours.size());
+      for (uint32_t slot = 0; slot < max_n; ++slot)
+        handle_slot(static_cast<uint16_t>(slot));
+    }
+
+    if (!for_update)
+      entry.neighbours = entry.neighbours.first(write_idx);
+    num_valid = valid_count;
+  }
+
+  if (has(mask, NodeField::Overflow))
+    entry.overflow = NID{read_chunk(neighbour_overflow_chunk())};
+
+  return false;
+}
+
+bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
+                       OverflowEntry &entry, size_t &num_valid, char *err,
+                       uint32_t err_len, OverflowUpdateField mask,
+                       const ScratchChunkIds *slots) {
+  Column::Data col_data;
+  Column::Data rowid_prefix;
+  Segment::TrxRef trx_ref;
+  bool delete_marked = false;
+  if (m_overflow.fetch(mtr, static_cast<Column::Ref>(id.value), for_update,
+                       col_data, rowid_prefix, trx_ref, delete_marked, err,
+                       err_len))
+    return true;
+
+  const auto *base = reinterpret_cast<const std::byte *>(col_data.data);
+  auto read_chunk = [&](uint16_t idx) -> uint64_t {
+    const std::byte *p = base + static_cast<size_t>(idx) * CHUNK_SIZE;
+    return read_id48_be(p);
+  };
+
+  if (has(mask, OverflowUpdateField::Incoming)) {
+    // Same for_update/read-only distinction as the NeighbourEntry overload
+    // above: preserve slot alignment for a later update(), or compact away
+    // INVALID entries for a read-only lookup.
+    size_t write_idx = 0;
+    size_t valid_count = 0;
+    auto handle_slot = [&](uint16_t slot) {
+      const uint64_t nid_val = read_chunk(incoming_chunk(slot));
+      const bool valid = NID{nid_val}.is_valid();
+      if (valid) {
+        ++valid_count;
+      } else if (!for_update) {
+        return;
+      }
+      entry.incoming[write_idx++] = NID{nid_val};
+    };
+
+    if (slots != nullptr) {
+      assert(slots->size() <= entry.incoming.size());
+      for (size_t i = 0; i < slots->size(); ++i)
+        handle_slot((*slots)[i]);
+    } else {
+      const uint32_t capacity = overflow_capacity();
+      assert(capacity <= entry.incoming.size());
+      for (uint32_t slot = 0; slot < capacity; ++slot)
+        handle_slot(static_cast<uint16_t>(slot));
+    }
+
+    if (!for_update)
+      entry.incoming = entry.incoming.first(write_idx);
+    num_valid = valid_count;
+  }
+
+  if (has(mask, OverflowUpdateField::Overflow))
+    entry.overflow = NID{read_chunk(overflow_chunk())};
+
+  return false;
 }
 
 LevelStore *IndexStore::level(LevelStore::LevelId lvl) {

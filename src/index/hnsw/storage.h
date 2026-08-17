@@ -109,9 +109,21 @@ public:
   // (chain link). Capped at MAX_OVERFLOW_LEN, but never larger than M itself
   // since it would be pointless to size an overflow link above the degree
   // it's compensating for.
-  static constexpr uint32_t MAX_OVERFLOW_LEN = 8;
   static constexpr uint32_t overflow_capacity(LevelId /*level*/, uint32_t M) {
     return std::min(MAX_OVERFLOW_LEN, M);
+  }
+
+  // Upper bound, over every level, on the number of chunk ids a single
+  // update() can emit: the owner, the nid/vid pair for each neighbour slot,
+  // the lower level link and the trailing overflow link. Level 0 dominates,
+  // since it carries twice the degree and has no lower level field. Sizes the
+  // caller's chunk id scratch buffer, so it is derived from the chunk layout
+  // below rather than restated at the call site. Also covers the overflow
+  // record, whose update() emits at most overflow_capacity() + 1 ids.
+  static constexpr size_t max_update_chunks(uint32_t M) {
+    return static_cast<size_t>(neighbour_overflow_chunk(
+               /*has_lower=*/false, max_neighbours(LevelId{0}, M))) +
+           1;
   }
 
   uint32_t target_neighbours() const {
@@ -124,11 +136,135 @@ public:
     return overflow_capacity(m_level, m_num_neighbours);
   }
 
-  // TODO(villagesql-indexing): Implement Insert
-  // TODO(villagesql-indexing): Implement Search
-  // TODO(villagesql-indexing): Implement Purge
+  // Formats entry into buffer per this level's on-disk record layout and
+  // inserts it as a new record in m_store. On success, out is set to the
+  // NID of the newly inserted entry.
+  bool insert(MtrCtx::Ref mtr, const NeighbourEntry &entry,
+              Segment::TrxRef trx_ref, ScratchBytes &buffer, NID &out,
+              char *err, uint32_t err_len);
+
+  // Formats entry into buffer per this level's on-disk overflow-record
+  // layout and inserts it as a new record in m_overflow. On success, out is
+  // set to the NID of the newly inserted entry.
+  bool insert(MtrCtx::Ref mtr, const OverflowEntry &entry,
+              Segment::TrxRef trx_ref, ScratchBytes &buffer, NID &out,
+              char *err, uint32_t err_len);
+
+  // Physically removes the record identified by nid from m_store or
+  // m_overflow, per kind.
+  bool remove(MtrCtx::Ref mtr, StoreKind kind, NID nid, Segment::TrxRef trx_ref,
+              char *err, uint32_t err_len);
+
+  // Rewrites the fields of id's record set in mask from entry, leaving the
+  // rest of the record untouched (see ColumnStore::update). When mask
+  // includes Neighbours, slots[i] is the on-disk slot index that
+  // entry.neighbours[i] is written to -- slots must be strictly increasing
+  // and only its first entry.neighbours.size() entries are read; slots is
+  // unused otherwise. buffer is scratch space for the encoded neighbour
+  // bytes.
+  bool update(MtrCtx::Ref mtr, NID id, const NeighbourEntry &entry,
+              NodeField mask, const ScratchSlots &slots, ScratchBytes &buffer,
+              ScratchChunkIds &chunk_ids, char *err, uint32_t err_len);
+
+  // Same as above, for m_overflow's record layout: slots[i] pairs with
+  // entry.incoming[i] when mask includes Incoming.
+  bool update(MtrCtx::Ref mtr, NID id, const OverflowEntry &entry,
+              OverflowUpdateField mask, const ScratchSlots &slots,
+              ScratchBytes &buffer, ScratchChunkIds &chunk_ids, char *err,
+              uint32_t err_len);
+
+  // Fetches id's record from m_store (always a full-record read -- see
+  // ColumnStore::fetch) and unmarshals into entry only the fields selected
+  // by mask; fields outside mask leave entry untouched. for_update selects
+  // the page latch mode (SHARED vs EXCLUSIVE) exactly as in
+  // ColumnStore::fetch.
+  //
+  // When mask includes Neighbours: if slots is null, every slot up to
+  // max_neighbours() is decoded; otherwise entry.neighbours[i] is decoded
+  // from on-disk slot (*slots)[i] for each i (unlike update(), slots need
+  // not be in any particular order for a fetch). num_valid is set to how
+  // many of the decoded neighbours are valid (non-INVALID); fields outside
+  // mask leave it untouched.
+  //
+  // for_update distinguishes a read meant to feed a later slot-aligned
+  // update() from a read-only lookup: when true, every requested slot is
+  // written to entry.neighbours in place (including INVALID ones), so
+  // positions still line up with slots for that later update() call, and
+  // entry.neighbours must be sized to hold every requested slot. When
+  // false, INVALID slots are skipped and the valid ones are compacted to
+  // the front of entry.neighbours, which is then shrunk to
+  // entry.neighbours.first(num_valid) -- there's no later update() to stay
+  // aligned with, so entry.neighbours only needs to be sized for the
+  // number of slots requested, not exactly num_valid.
+  bool fetch(MtrCtx::Ref mtr, NID id, bool for_update, NeighbourEntry &entry,
+             size_t &num_valid, char *err, uint32_t err_len,
+             NodeField mask = FieldAll, const ScratchChunkIds *slots = nullptr);
+
+  // Same as above, for m_overflow's record layout: slots[i] identifies the
+  // on-disk incoming-slot decoded into entry.incoming[i] when mask includes
+  // Incoming (with the same null-means-everything, num_valid, and
+  // for_update conventions).
+  bool fetch(MtrCtx::Ref mtr, NID id, bool for_update, OverflowEntry &entry,
+             size_t &num_valid, char *err, uint32_t err_len,
+             OverflowUpdateField mask = OverflowFieldAll,
+             const ScratchChunkIds *slots = nullptr);
 
 private:
+  static constexpr uint32_t MAX_OVERFLOW_LEN = 8;
+
+  // Chunk-index layout for this level's two record types, in
+  // ColumnStore::update()'s chunk_size units. Partial update and (future)
+  // partial read must agree on these positions, so they're exposed here
+  // rather than computed at each call site.
+  //
+  // NID and VID share the same on-disk width, so that width serves as the
+  // chunk size for both the primary (NeighbourEntry) and overflow
+  // (OverflowEntry) records.
+  static constexpr uint16_t CHUNK_SIZE =
+      static_cast<uint16_t>(NID::STORAGE_SIZE);
+  static_assert(NID::STORAGE_SIZE == VID::STORAGE_SIZE);
+
+  // -- NeighbourEntry (m_store) layout --
+  static constexpr uint16_t owner_chunk() { return 0; }
+  static constexpr uint16_t lower_level_chunk() { return owner_chunk() + 1; }
+  static constexpr uint16_t neighbours_base_chunk(bool has_lower) {
+    return lower_level_chunk() + (has_lower ? 1 : 0);
+  }
+  static constexpr uint16_t neighbour_nid_chunk(bool has_lower, uint16_t slot) {
+    return neighbours_base_chunk(has_lower) + slot * 2;
+  }
+  static constexpr uint16_t neighbour_vid_chunk(bool has_lower, uint16_t slot) {
+    return neighbour_nid_chunk(has_lower, slot) + 1;
+  }
+  static constexpr uint16_t neighbour_overflow_chunk(bool has_lower,
+                                                     uint32_t max_n) {
+    return neighbours_base_chunk(has_lower) + static_cast<uint16_t>(max_n) * 2;
+  }
+
+  uint16_t neighbours_base_chunk() const {
+    return neighbours_base_chunk(m_level.has_lower_level());
+  }
+  uint16_t neighbour_nid_chunk(uint16_t slot) const {
+    return neighbour_nid_chunk(m_level.has_lower_level(), slot);
+  }
+  uint16_t neighbour_vid_chunk(uint16_t slot) const {
+    return neighbour_vid_chunk(m_level.has_lower_level(), slot);
+  }
+  uint16_t neighbour_overflow_chunk() const {
+    return neighbour_overflow_chunk(m_level.has_lower_level(),
+                                    max_neighbours());
+  }
+
+  // -- OverflowEntry (m_overflow) layout --
+  static constexpr uint16_t incoming_chunk(uint16_t slot) { return slot; }
+  static constexpr uint16_t overflow_chunk(uint32_t capacity) {
+    return static_cast<uint16_t>(capacity);
+  }
+
+  uint16_t overflow_chunk() const {
+    return overflow_chunk(overflow_capacity());
+  }
+
   mutable std::shared_mutex m_mutex;
   LevelId m_level;
   ColumnStore &m_store;
