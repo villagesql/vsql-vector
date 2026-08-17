@@ -76,8 +76,18 @@ void DataPage::init(Space::Ref space_ref, uint16_t col_len) {
     estimated_max_recs = static_cast<uint16_t>(space_for_records / m_rec_size);
   }
 
+  // Cap at the maximum slot index encode_column_ref()/decode_column_ref()
+  // can represent, recomputing the bitmap size to match the capped count.
+  if (estimated_max_recs > MAX_SLOT_INDEX + 1) {
+    estimated_max_recs = MAX_SLOT_INDEX + 1;
+    m_free_bitmap_size = static_cast<Page::Offset>(
+        bits_to_bytes_ceil(estimated_max_recs * BITS_PER_RECORD));
+  }
+
   m_max_num_recs = estimated_max_recs;
   m_first_rec_offset = FREE_BITMAP_OFF + m_free_bitmap_size;
+
+  assert(m_max_num_recs <= MAX_SLOT_INDEX + 1);
 
 #ifndef NDEBUG
   // Validate final layout fits in page
@@ -122,16 +132,20 @@ void DataPage::format(Page &data_page, MtrCtx::Ref mtr, uint8_t format_version,
 
 Column::Ref DataPage::encode_column_ref(Page::Ref page_ref,
                                         uint16_t slot_index) {
-  // Encoding: Lower 32 bits = page ref, Upper 16 bits = slot index
+  // Encoding: Lower 32 bits = page ref, next 14 bits (32-45) = slot index.
+  // Bits 46-63 are always zero (see MAX_SLOT_INDEX).
+  assert(slot_index <= MAX_SLOT_INDEX);
   return static_cast<uint64_t>(page_ref) |
          (static_cast<uint64_t>(slot_index) << 32);
 }
 
 void DataPage::decode_column_ref(Column::Ref col_ref, Page::Ref &page_ref,
                                  uint16_t &slot_index) {
-  // Decoding: Extract page ref from lower 32 bits, slot from upper 16 bits
+  // Decoding: Extract page ref from lower 32 bits, slot from bits 32-45.
+  // Any bits above 45 are ignored rather than asserted on, since a caller
+  // may have embedded its own data there (see MAX_SLOT_INDEX).
   page_ref = static_cast<Page::Ref>(col_ref & 0xFFFFFFFF);
-  slot_index = static_cast<uint16_t>((col_ref >> 32) & 0xFFFF);
+  slot_index = static_cast<uint16_t>((col_ref >> 32) & MAX_SLOT_INDEX);
 }
 
 void DataPage::set_free_slot_number(Page &data_page, uint16_t slot_number,
