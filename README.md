@@ -171,8 +171,7 @@ perl mysql-test-run.pl --suite=/path/to/vsql-vector/test
 
 ```bash
 cd /path/to/villagesql/build/mysql-test
-VSQL_VECTOR_VEB=/path/to/vsql-vector/build/vsql_vector.veb \
-  perl mysql-test-run.pl --suite=/path/to/vsql-vector/test
+perl mysql-test-run.pl --suite=/path/to/vsql-vector/test --veb-source-dir=/path/to/vsql-vector/build
 ```
 
 ## Diagnostic Tools
