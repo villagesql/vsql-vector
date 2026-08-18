@@ -80,6 +80,7 @@ add_executable(svector_page_dump
     src/storage/tools/page_reader.cc
     src/storage/tools/root_page_parser.cc
     src/storage/tools/data_page_parser.cc
+    src/storage/tools/hnsw_layout.cc
 )
 
 target_include_directories(svector_page_dump PRIVATE

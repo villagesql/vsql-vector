@@ -26,6 +26,7 @@
 #include <iomanip>
 #include <iostream>
 
+#include "hnsw_layout.h"
 #include "page_reader.h"
 
 namespace svector {
@@ -107,6 +108,10 @@ bool RootPageParser::parse(const std::vector<uint8_t> &page_data,
   info.page_type = read_uint8(page_data, rp.page_type_off());
   info.storage_metadata =
       read_string(page_data, rp.storage_metadata_off(), metadata_len);
+  info.storage_metadata_raw.assign(
+      reinterpret_cast<const char *>(page_data.data() +
+                                     rp.storage_metadata_off()),
+      metadata_len);
   info.num_root_pages = num_other_root_pages + 1;
   info.other_root_page_refs.clear();
   for (uint8_t i = 0; i < num_other_root_pages; ++i) {
@@ -147,8 +152,26 @@ bool RootPageParser::parse(const std::vector<uint8_t> &page_data,
   return true;
 }
 
-void RootPageParser::display(const RootPageInfo &info, bool verbose) {
-  std::cout << info.storage_metadata << " Root Page\n";
+void RootPageParser::display(const RootPageInfo &info, bool verbose,
+                             bool is_index_root) {
+  HnswIndexMetadata index_meta;
+  bool has_index_meta = false;
+  if (is_index_root) {
+    std::string decode_error;
+    has_index_meta = parse_hnsw_index_metadata(info.storage_metadata_raw,
+                                               index_meta, decode_error);
+    if (!has_index_meta) {
+      std::cerr << "Warning: --index given but root page metadata did not "
+                   "decode as HNSW StorageMeta: "
+                << decode_error << "\n\n";
+    }
+  }
+
+  if (has_index_meta) {
+    std::cout << index_meta.name << " Root Page (HNSW Index)\n";
+  } else {
+    std::cout << info.storage_metadata << " Root Page\n";
+  }
   std::cout << "=================\n\n";
 
   std::cout << "Version:           " << static_cast<int>(info.version) << "\n";
@@ -175,11 +198,53 @@ void RootPageParser::display(const RootPageInfo &info, bool verbose) {
 
   std::cout << "Column Size:       " << info.column_size << " bytes";
 
-  // Calculate vector dimensions (assuming float32)
-  if (info.column_size % 4 == 0) {
+  if (has_index_meta) {
+    const bool has_lower_level = index_meta.level > 0;
+    if (index_meta.is_overflow()) {
+      uint32_t capacity = hnsw_overflow_capacity(info.column_size);
+      std::cout << " (HNSW OverflowEntry, capacity " << capacity << ")";
+    } else {
+      uint32_t max_neighbours =
+          hnsw_max_neighbours(info.column_size, has_lower_level);
+      std::cout << " (HNSW NeighbourEntry, max " << max_neighbours
+                << " neighbours" << (has_lower_level ? ", has lower level" : "")
+                << ")";
+    }
+  } else if (info.column_size % 4 == 0) {
+    // Calculate vector dimensions (assuming float32)
     std::cout << " (" << (info.column_size / 4) << "-dim float vector)";
   }
   std::cout << "\n\n";
+
+  if (has_index_meta) {
+    std::cout << "HNSW Index Metadata:\n";
+    std::cout << "  Store:           " << index_meta.name << " ("
+              << (index_meta.is_overflow() ? "Overflow" : "Primary") << ")\n";
+    std::cout << "  Level:           " << static_cast<int>(index_meta.level)
+              << "\n";
+    // Only the level-0 primary store carries the graph-wide entry level and
+    // entry point (see StorageMeta's comment and build_storage_specs()).
+    if (!index_meta.is_overflow() && index_meta.level == 0) {
+      std::cout << "  Entry Level:     "
+                << static_cast<int>(index_meta.entry_level) << "\n";
+      std::cout << "  Entry Points:    ";
+      if (index_meta.entry_points.empty()) {
+        std::cout << "(none)";
+      } else {
+        for (size_t i = 0; i < index_meta.entry_points.size(); ++i) {
+          if (i > 0)
+            std::cout << ", ";
+          if (index_meta.entry_points[i] == 0) {
+            std::cout << "(empty)";
+          } else {
+            std::cout << format_hnsw_ref(index_meta.entry_points[i]);
+          }
+        }
+      }
+      std::cout << "\n";
+    }
+    std::cout << "\n";
+  }
 
   std::cout << "Data Pages:\n";
   std::cout << "  Total:           " << info.total_data_pages << "\n";

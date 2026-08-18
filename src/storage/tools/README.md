@@ -45,6 +45,10 @@ svector_page_dump <ibd_file> <root_page_num> [options]
 - `-r, --records`: Display record data (shows first 10 records per page)
 - `-d, --data-page N`: Display a specific data page by page number
 - `-a, --all-pages`: Traverse and display all data pages linked from root
+- `-i, --index`: Treat the root page as an HNSW index root page -- decode its
+  metadata as index metadata (level, entry level/points) and decode data
+  page records as HNSW NeighbourEntry/OverflowEntry instead of a plain
+  SVECTOR vector
 - `-h, --help`: Show help message
 
 ## Examples
@@ -104,6 +108,25 @@ Traverses all data pages linked from the root and displays:
 - Each page's metadata and statistics
 - Overall storage structure
 
+### 6. Show an HNSW Index Root Page
+
+```bash
+./svector_page_dump table.ibd 4 -i -d 5 -r
+```
+
+Each HNSW level's primary and overflow store has its own root page (see
+`src/index/hnsw/storage.h`), so `<root_page_num>` names one such store.
+With `-i`, root page output shows:
+- The store's name, level, and (for the level-0 primary store) the graph's
+  entry level and entry point
+- The record layout (NeighbourEntry or OverflowEntry, with max neighbours or
+  overflow capacity) implied by column size, instead of a float vector
+  dimension count
+
+and data page records decode as NeighbourEntry (owner, lower-level link,
+neighbours, overflow chain) or OverflowEntry (incoming links, overflow
+chain) fields instead of vector floats.
+
 ## Finding Root Page Number
 
 The root page number is stored in the table's metadata. You can find it by:
@@ -134,6 +157,9 @@ The tool consists of:
 - `page_reader.{h,cc}`: Low-level page reading from `.ibd` files
 - `root_page_parser.{h,cc}`: Parse and display SVECTOR root pages
 - `data_page_parser.{h,cc}`: Parse and display SVECTOR data pages
+- `hnsw_layout.{h,cc}`: Reimplements the HNSW index's on-disk metadata and
+  record layouts (see `../../index/hnsw/storage.h` and `hnsw.h`) for `-i`
+  mode, independent of the HNSW index sources
 - `svector_page_dump.cc`: Main driver program
 
-All components use the format definitions from `../root_page.h` and `../data_page.h` to stay in sync with the server implementation.
+All components use the format definitions from `../root_page.h` and `../data_page.h` to stay in sync with the server implementation. `hnsw_layout.{h,cc}` must be kept in sync by hand with `../../index/hnsw/storage.h`/`hnsw.h` the same way, since it does not link against them.
