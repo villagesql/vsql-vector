@@ -469,10 +469,27 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
       // primary store the segment page is its own root (already X-latched as
       // root_page); any other store loads the primary root to reach its
       // segment header.
+      //
+      // LATCH ORDERING: this is currently the ONLY place that holds latches on
+      // two root pages at once. The order is: this store's own root page FIRST
+      // (root_page, latched above), THEN the owning/primary root page. Any future
+      // code that takes both must follow this same order to avoid deadlock.
+      //
+      // The owning root is taken EXCLUSIVE only because Segment::get_header()
+      // asserts an EXCLUSIVE latch (storage_api.h). We do not modify the owning
+      // root page here -- we just read its segment header to allocate from that
+      // segment -- so SHARED_EXCLUSIVE (which still serializes segment allocation)
+      // is the intended latch.
+      // TODO(villagesql-indexing): switch to Page::Latch::SHARED_EXCLUSIVE once
+      // the get_header() EXCLUSIVE assertion is relaxed in the storage API.
+      //
+      // The latch is released immediately after load_new(), since it is not
+      // needed for the remainder of the insert.
       Segment::Ref seg_head;
       Page primary_root_holder;
       Page *seg_root = &root_page;
-      if (m_primary_root_page_ref != m_root_page_ref) {
+      const bool own_owning_root = (m_primary_root_page_ref != m_root_page_ref);
+      if (own_owning_root) {
         if (primary_root_holder.load(m_space_ref, m_primary_root_page_ref,
                                      Page::Latch::EXCLUSIVE,
                                      mtr) != Error::SUCCESS) {
@@ -485,6 +502,15 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
       seg_head = Segment::get_header(*seg_root, m_segment_index);
       if (data_page.load_new(seg_head, mtr) != Error::SUCCESS) {
         fill_error("insert: failed to allocate new data page", error_msg,
+                   error_msg_len, false);
+        return true;
+      }
+
+      // The owning root latch is no longer needed once the page is allocated;
+      // release it immediately rather than holding it for the rest of the insert.
+      if (own_owning_root &&
+          primary_root_holder.release(mtr) != Error::SUCCESS) {
+        fill_error("insert: failed to release primary root page", error_msg,
                    error_msg_len, false);
         return true;
       }
