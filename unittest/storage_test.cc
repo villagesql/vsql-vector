@@ -58,7 +58,7 @@ using vsql::preview_storage::Space;
 // pointer stays valid for the life of the store).
 // -------------------------------------------------------------------------
 class FakeStorage {
- public:
+public:
   static constexpr uint32_t kPageSize = 16384;
 
   // std::map: element addresses are stable across insertions, so the
@@ -97,11 +97,10 @@ void be_write(unsigned char *p, uint64_t value, int bytes) {
 
 // ---- g_abi function implementations ----
 
-vef_storage_mtr_ref_t fake_mtr_start(void * /*buffer*/, uint32_t /*buffer_size*/,
-                                     uint32_t * /*required_size*/,
-                                     uint32_t * /*required_alignment*/,
-                                     char * /*error_msg*/,
-                                     uint32_t /*error_msg_len*/) {
+vef_storage_mtr_ref_t
+fake_mtr_start(void * /*buffer*/, uint32_t /*buffer_size*/,
+               uint32_t * /*required_size*/, uint32_t * /*required_alignment*/,
+               char * /*error_msg*/, uint32_t /*error_msg_len*/) {
   return &FakeStorage::instance().mtr_token;
 }
 
@@ -114,7 +113,8 @@ int fake_segment_create(vef_storage_space_ref_t /*space_ref*/,
   auto &fs = FakeStorage::instance();
   uint32_t root = fs.allocate();
   // Segment headers live at the start of the root page's DATA area; the byte
-  // at Page::HEADER_SIZE is the segment count (read by Page::read_num_segments).
+  // at Page::HEADER_SIZE is the segment count (read by
+  // Page::read_num_segments).
   fs.page(root)[vsql::preview_storage::Page::HEADER_SIZE] = num_segments;
   *root_page_num_p = root;
   return VEF_STORAGE_SUCCESS;
@@ -134,10 +134,11 @@ int fake_page_load(vef_storage_block_ref_t *block_p, uint64_t *position_p,
                    uint32_t /*error_msg_len*/) {
   auto &fs = FakeStorage::instance();
   auto it = fs.pages.find(page_num);
-  if (it == fs.pages.end()) return VEF_STORAGE_ERROR_PAGE_LOAD;
+  if (it == fs.pages.end())
+    return VEF_STORAGE_ERROR_PAGE_LOAD;
   unsigned char *data = it->second.data();
-  *block_p = data;             // block ref == page data pointer
-  *position_p = page_num;      // stored position (non-INVALID -> release works)
+  *block_p = data;        // block ref == page data pointer
+  *position_p = page_num; // stored position (non-INVALID -> release works)
   *data_p = data;
   *data_size_p = FakeStorage::kPageSize;
   return VEF_STORAGE_SUCCESS;
@@ -180,11 +181,20 @@ void fake_page_write_integer(vef_storage_block_ref_t block,
                              vef_storage_mtr_ref_t /*mtr_ref*/) {
   auto *p = static_cast<unsigned char *>(block) + offset;
   switch (bytes) {
-    case VEF_STORAGE_PAGE_INT_1BYTE: be_write(p, value, 1); break;
-    case VEF_STORAGE_PAGE_INT_2BYTES: be_write(p, value, 2); break;
-    case VEF_STORAGE_PAGE_INT_4BYTES: be_write(p, value, 4); break;
-    case VEF_STORAGE_PAGE_INT_8BYTES: be_write(p, value, 8); break;
-    default: assert(false);
+  case VEF_STORAGE_PAGE_INT_1BYTE:
+    be_write(p, value, 1);
+    break;
+  case VEF_STORAGE_PAGE_INT_2BYTES:
+    be_write(p, value, 2);
+    break;
+  case VEF_STORAGE_PAGE_INT_4BYTES:
+    be_write(p, value, 4);
+    break;
+  case VEF_STORAGE_PAGE_INT_8BYTES:
+    be_write(p, value, 8);
+    break;
+  default:
+    assert(false);
   }
 }
 
@@ -210,9 +220,7 @@ const vef_preview_storage_t kFakeAbi = {
     fake_page_write_string,
 };
 
-void install_fake_abi() {
-  vsql::preview_storage::detail::g_abi = &kFakeAbi;
-}
+void install_fake_abi() { vsql::preview_storage::detail::g_abi = &kFakeAbi; }
 
 // -------------------------------------------------------------------------
 
@@ -231,12 +239,12 @@ void test_insert_into_level1_store_hits_segment_bug() {
   install_fake_abi();
 
   char err[512] = {};
-  constexpr uint16_t kColLen = 16;  // arbitrary fixed column width
+  constexpr uint16_t kColLen = 16; // arbitrary fixed column width
 
   svector::MultiColumnStore mcs;
   std::vector<svector::Storage_spec> specs;
-  specs.push_back({kColLen, "L0"});  // primary   (segment 0)
-  specs.push_back({kColLen, "L1"});  // secondary (segment 1)
+  specs.push_back({kColLen, "L0"}); // primary   (segment 0)
+  specs.push_back({kColLen, "L1"}); // secondary (segment 1)
 
   // 2 segments: Primary + Secondary, exactly like IndexStore::create for
   // level-0 vs level>=1.
@@ -271,13 +279,14 @@ void test_insert_into_level1_store_hits_segment_bug() {
 
 // Regression test for the reload path of the segment fix. A store reopened via
 // MultiColumnStore::load() (the reopen-table path -- ALTER, restart, second
-// connection) must restore each store's m_primary_root_page_ref/m_segment_index,
-// exactly as create() does. Otherwise the PRIMARY store's
-// m_primary_root_page_ref stays INVALID_REF, insert() takes the "not the
-// primary" branch, and loads a segment header from an invalid page -> InnoDB
-// aborts (fil0fil.cc invalid page access). This is the single-store base-column
-// case (one spec, one segment), which is what the SVECTOR column uses; it never
-// touches a level>=1 store, so the original test above did not catch it.
+// connection) must restore each store's
+// m_primary_root_page_ref/m_segment_index, exactly as create() does. Otherwise
+// the PRIMARY store's m_primary_root_page_ref stays INVALID_REF, insert() takes
+// the "not the primary" branch, and loads a segment header from an invalid page
+// -> InnoDB aborts (fil0fil.cc invalid page access). This is the single-store
+// base-column case (one spec, one segment), which is what the SVECTOR column
+// uses; it never touches a level>=1 store, so the original test above did not
+// catch it.
 void test_insert_after_reload_uses_primary_segment() {
   install_fake_abi();
 
@@ -304,7 +313,7 @@ void test_insert_after_reload_uses_primary_segment() {
   // Reopen from the persisted ref (fake pages survive in the shared std::map),
   // as if the table were closed and reopened.
   svector::MultiColumnStore reopened;
-  std::vector<svector::Storage_spec> specs{{0, ""}};  // ColumnStorage::load form
+  std::vector<svector::Storage_spec> specs{{0, ""}}; // ColumnStorage::load form
   bool failed = reopened.load(storage_ref, specs, err, sizeof(err));
   assert(!failed && "load (reopen) should succeed");
 
@@ -324,7 +333,7 @@ void test_insert_after_reload_uses_primary_segment() {
                     "restored by load())");
 }
 
-}  // namespace
+} // namespace
 
 int main() {
   test_insert_into_level1_store_hits_segment_bug();

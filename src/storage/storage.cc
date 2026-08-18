@@ -472,14 +472,15 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
       //
       // LATCH ORDERING: this is currently the ONLY place that holds latches on
       // two root pages at once. The order is: this store's own root page FIRST
-      // (root_page, latched above), THEN the owning/primary root page. Any future
-      // code that takes both must follow this same order to avoid deadlock.
+      // (root_page, latched above), THEN the owning/primary root page. Any
+      // future code that takes both must follow this same order to avoid
+      // deadlock.
       //
       // The owning root is taken EXCLUSIVE only because Segment::get_header()
       // asserts an EXCLUSIVE latch (storage_api.h). We do not modify the owning
       // root page here -- we just read its segment header to allocate from that
-      // segment -- so SHARED_EXCLUSIVE (which still serializes segment allocation)
-      // is the intended latch.
+      // segment -- so SHARED_EXCLUSIVE (which still serializes segment
+      // allocation) is the intended latch.
       // TODO(villagesql-indexing): switch to Page::Latch::SHARED_EXCLUSIVE once
       // the get_header() EXCLUSIVE assertion is relaxed in the storage API.
       //
@@ -507,7 +508,8 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
       }
 
       // The owning root latch is no longer needed once the page is allocated;
-      // release it immediately rather than holding it for the rest of the insert.
+      // release it immediately rather than holding it for the rest of the
+      // insert.
       if (own_owning_root &&
           primary_root_holder.release(mtr) != Error::SUCCESS) {
         fill_error("insert: failed to release primary root page", error_msg,
