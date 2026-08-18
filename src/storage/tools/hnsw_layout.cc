@@ -126,6 +126,13 @@ uint32_t hnsw_overflow_capacity(uint16_t column_size) {
   return (column_size / HNSW_ID_SIZE) - 1;
 }
 
+uint16_t hnsw_neighbour_column_size(uint32_t max_neighbours,
+                                    bool has_lower_level) {
+  constexpr uint32_t NODE_SIZE = 2 * HNSW_ID_SIZE;
+  const uint32_t fixed = HNSW_ID_SIZE * (has_lower_level ? 3 : 2);
+  return static_cast<uint16_t>(fixed + max_neighbours * NODE_SIZE);
+}
+
 HnswColumnRef hnsw_decode_ref(uint64_t value) {
   HnswColumnRef ref;
   ref.page_ref = static_cast<uint32_t>(value & 0xFFFFFFFFull);

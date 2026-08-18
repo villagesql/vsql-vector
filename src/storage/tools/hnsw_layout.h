@@ -107,6 +107,14 @@ uint32_t hnsw_max_neighbours(uint16_t column_size, bool has_lower_level);
 // inverting OverflowEntry::storage_size().
 uint32_t hnsw_overflow_capacity(uint16_t column_size);
 
+// Inverse of hnsw_max_neighbours: the column_size (bytes) a NeighbourEntry
+// store column needs to hold max_neighbours neighbour slots, per
+// NeighbourEntry::storage_size(). Used to decode a level other than the one
+// named by the root page at hand, once max_neighbours for that level has
+// been derived from M (see hnsw_graph.h).
+uint16_t hnsw_neighbour_column_size(uint32_t max_neighbours,
+                                    bool has_lower_level);
+
 } // namespace tool
 } // namespace svector
 

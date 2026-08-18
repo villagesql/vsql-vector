@@ -43,6 +43,7 @@
 #include <string>
 
 #include "data_page_parser.h"
+#include "hnsw_graph.h"
 #include "hnsw_layout.h"
 #include "page_reader.h"
 #include "root_page_parser.h"
@@ -55,7 +56,9 @@ class SvectorPageDump {
    SvectorPageDump()
        : verbose_(false), show_records_(false), show_all_pages_(false),
          specific_data_page_(0), has_specific_data_page_(false),
-         record_start_(0), record_count_(10), is_index_(false) {}
+         record_start_(0), record_count_(10), is_index_(false),
+         show_graph_(false), graph_max_nodes_(50),
+         graph_style_(GraphStyle::Tree) {}
 
    int run(int argc, char *argv[]) {
      // Show help if called with no arguments
@@ -109,17 +112,31 @@ class SvectorPageDump {
      // NeighbourEntry/OverflowEntry (see hnsw_layout.h) when --index was
      // given and the root page's metadata decodes as HNSW StorageMeta, or as
      // a plain SVECTOR float vector otherwise.
+     HnswIndexMetadata index_meta;
+     bool have_index_meta = false;
      if (is_index_) {
        std::string decode_error;
-       HnswIndexMetadata index_meta;
        if (parse_hnsw_index_metadata(root_info.storage_metadata_raw, index_meta,
                                      decode_error)) {
+         have_index_meta = true;
          record_kind_ = index_meta.is_overflow() ? HnswRecordKind::Overflow
                                                  : HnswRecordKind::Neighbour;
          has_lower_level_ = index_meta.level > 0;
        }
        // If decoding failed, RootPageParser::display() already warned; fall
        // through and decode data pages as plain SVECTOR vectors.
+     }
+
+     // Show the HNSW graph if requested
+     if (show_graph_) {
+       std::cout << "\n" << std::string(80, '=') << "\n\n";
+       if (!have_index_meta) {
+         std::cerr << "Error: --graph requires -i/--index with root page "
+                      "metadata that decodes as HNSW StorageMeta\n";
+         return 1;
+       }
+       render_hnsw_graph(reader, index_meta, root_info.column_size,
+                         graph_max_nodes_, verbose_, graph_style_, std::cout);
      }
 
      // Show specific data page if requested
@@ -219,6 +236,29 @@ class SvectorPageDump {
         show_all_pages_ = true;
       } else if (arg == "-i" || arg == "--index") {
         is_index_ = true;
+      } else if (arg == "-g" || arg == "--graph") {
+        show_graph_ = true;
+      } else if (arg == "--max-nodes") {
+        if (i + 1 >= argc) {
+          std::cerr << "Error: " << arg << " requires a node count\n";
+          return false;
+        }
+        graph_max_nodes_ = std::stoul(argv[++i]);
+      } else if (arg == "--graph-style") {
+        if (i + 1 >= argc) {
+          std::cerr << "Error: " << arg << " requires a style (tree or list)\n";
+          return false;
+        }
+        std::string style = argv[++i];
+        if (style == "tree") {
+          graph_style_ = GraphStyle::Tree;
+        } else if (style == "list") {
+          graph_style_ = GraphStyle::List;
+        } else {
+          std::cerr << "Error: unknown --graph-style '" << style
+                    << "' (expected 'tree' or 'list')\n";
+          return false;
+        }
       } else if (arg == "-d" || arg == "--data-page") {
         if (i + 1 >= argc) {
           std::cerr << "Error: " << arg << " requires a page number\n";
@@ -280,6 +320,23 @@ class SvectorPageDump {
                  "NeighbourEntry/\n";
     std::cout << "                        OverflowEntry instead of a plain "
                  "SVECTOR vector\n";
+    std::cout << "  -g, --graph           Render the HNSW graph reachable "
+                 "from the root\n";
+    std::cout << "                        page's entry point as ASCII tree "
+                 "art, walking\n";
+    std::cout << "                        every level via NID links "
+                 "(requires -i and a\n";
+    std::cout << "                        level-0 primary store root page)\n";
+    std::cout << "  --max-nodes N         Cap on distinct nodes rendered by "
+                 "-g/--graph\n";
+    std::cout << "                        across all levels (default: 50)\n";
+    std::cout << "  --graph-style STYLE   'tree' (default): nested tree art. "
+                 "'list': one\n";
+    std::cout << "                        flat '<node>(<vid>) -> "
+                 "[<neighbour>(<vid>), ...]\n";
+    std::cout << "                        degree=<n>' line per node -- "
+                 "easier to read for\n";
+    std::cout << "                        levels with many edges per node\n";
     std::cout << "  -h, --help            Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << "  # Show root page only\n";
@@ -296,6 +353,14 @@ class SvectorPageDump {
     std::cout << "  " << prog_name << " table.ibd 4 -a -v\n\n";
     std::cout << "  # Show an HNSW index level's root page and its records\n";
     std::cout << "  " << prog_name << " table.ibd 4 -i -d 5 -r\n\n";
+    std::cout << "  # Render the HNSW graph from the level-0 root page\n";
+    std::cout << "  " << prog_name << " table.ibd 4 -i -g\n\n";
+    std::cout
+        << "  # Same, allowing up to 200 nodes instead of the default 50\n";
+    std::cout << "  " << prog_name << " table.ibd 4 -i -g --max-nodes 200\n\n";
+    std::cout << "  # Render as a flat adjacency list instead of tree art\n";
+    std::cout << "  " << prog_name
+              << " table.ibd 4 -i -g --graph-style list\n\n";
   }
 
   bool show_data_page(PageReader &reader, uint32_t page_num,
@@ -337,6 +402,15 @@ class SvectorPageDump {
   bool is_index_;
   HnswRecordKind record_kind_ = HnswRecordKind::None;
   bool has_lower_level_ = false;
+
+  // Set by -g/--graph and --max-nodes: render the HNSW graph reachable from
+  // the root page's entry point as ASCII tree art (see hnsw_graph.h),
+  // bounded to graph_max_nodes_ distinct nodes.
+  bool show_graph_;
+  uint32_t graph_max_nodes_;
+  // Set by --graph-style: Tree (default) draws nested tree art, List prints
+  // one flat adjacency line per node instead (see hnsw_graph.h).
+  GraphStyle graph_style_;
 };
 
 }  // namespace tool
