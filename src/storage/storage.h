@@ -64,6 +64,13 @@ struct ColumnStore {
   Space::Ref m_space_ref{0};
   Page::Ref m_root_page_ref{Page::INVALID_REF};
 
+  // Segments live only on the segment-owning ("primary") root page; every store
+  // in a MultiColumnStore allocates its data pages from a segment on that page,
+  // identified by m_segment_index. For the primary store itself these point at
+  // its own root / segment 0. Set at create()/init_root_page().
+  Page::Ref m_primary_root_page_ref{Page::INVALID_REF};
+  uint8_t m_segment_index{0};
+
   std::string m_metadata;
 
   ColumnStore() = default;
