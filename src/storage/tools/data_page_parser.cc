@@ -79,6 +79,14 @@ float DataPageParser::read_float(const std::vector<uint8_t> &data,
   return f;
 }
 
+uint64_t DataPageParser::read_id48(const std::vector<uint8_t> &data,
+                                   uint32_t offset) {
+  uint64_t v = 0;
+  for (uint32_t i = 0; i < HNSW_ID_SIZE; ++i)
+    v = (v << 8) | static_cast<uint64_t>(data[offset + i]);
+  return v;
+}
+
 void DataPageParser::get_record_bits(const std::vector<uint8_t> &data,
                                      uint32_t bitmap_offset, uint16_t rec_index,
                                      bool &is_free, bool &is_deleted) {
@@ -98,7 +106,10 @@ void DataPageParser::get_record_bits(const std::vector<uint8_t> &data,
 
 bool DataPageParser::parse(const std::vector<uint8_t> &page_data,
                            uint16_t column_size, DataPageInfo &info,
-                           std::string &error) {
+                           std::string &error, HnswRecordKind index_kind,
+                           bool has_lower_level) {
+  info.index_kind = index_kind;
+  info.has_lower_level = has_lower_level;
   // Validate page size
   if (page_data.size() < DataPage::FREE_BITMAP_OFF) {
     error = "Page too small to contain data page header";
@@ -144,6 +155,16 @@ bool DataPageParser::parse(const std::vector<uint8_t> &page_data,
 
   uint32_t vector_dim = (column_size) / sizeof(float);
 
+  // Derived from column_size the same way the root page's display() does
+  // (see hnsw_layout.h) -- only meaningful for the matching index_kind.
+  uint32_t max_neighbours =
+      (index_kind == HnswRecordKind::Neighbour)
+          ? hnsw_max_neighbours(column_size, has_lower_level)
+          : 0;
+  uint32_t overflow_capacity = (index_kind == HnswRecordKind::Overflow)
+                                   ? hnsw_overflow_capacity(column_size)
+                                   : 0;
+
   for (uint16_t i = 0; i < info.max_num_recs; ++i) {
     RecordStatus rec;
 
@@ -157,14 +178,39 @@ bool DataPageParser::parse(const std::vector<uint8_t> &page_data,
     if (!rec.is_free && rec_offset + rec_size <= page_data.size()) {
       // Read transaction reference
       rec.trx_ref = read_uint64(page_data, rec_offset);
+      uint32_t off = rec_offset + DataPage::TRX_REF_SIZE;
 
-      // Read vector data (assuming float32 for display)
-      rec.vector_data.reserve(vector_dim);
-      for (uint32_t j = 0; j < vector_dim; ++j) {
-        uint32_t float_offset =
-            rec_offset + DataPage::TRX_REF_SIZE + (j * sizeof(float));
-        if (float_offset + sizeof(float) <= page_data.size()) {
-          rec.vector_data.push_back(read_float(page_data, float_offset));
+      if (index_kind == HnswRecordKind::Neighbour) {
+        rec.owner_vid = read_id48(page_data, off);
+        off += HNSW_ID_SIZE;
+        if (has_lower_level) {
+          rec.lower_level_nid = read_id48(page_data, off);
+          off += HNSW_ID_SIZE;
+        }
+        rec.neighbours.reserve(max_neighbours);
+        for (uint32_t s = 0; s < max_neighbours; ++s) {
+          uint64_t nid = read_id48(page_data, off);
+          off += HNSW_ID_SIZE;
+          uint64_t vid = read_id48(page_data, off);
+          off += HNSW_ID_SIZE;
+          rec.neighbours.emplace_back(nid, vid);
+        }
+        rec.overflow_nid = read_id48(page_data, off);
+      } else if (index_kind == HnswRecordKind::Overflow) {
+        rec.incoming.reserve(overflow_capacity);
+        for (uint32_t s = 0; s < overflow_capacity; ++s) {
+          rec.incoming.push_back(read_id48(page_data, off));
+          off += HNSW_ID_SIZE;
+        }
+        rec.overflow_nid = read_id48(page_data, off);
+      } else {
+        // Read vector data (assuming float32 for display)
+        rec.vector_data.reserve(vector_dim);
+        for (uint32_t j = 0; j < vector_dim; ++j) {
+          uint32_t float_offset = off + (j * sizeof(float));
+          if (float_offset + sizeof(float) <= page_data.size()) {
+            rec.vector_data.push_back(read_float(page_data, float_offset));
+          }
         }
       }
     } else {
@@ -262,12 +308,67 @@ void DataPageParser::display(const DataPageInfo &info, bool verbose,
         if (rec.is_deleted) {
           std::cout << " (DELETED)";
         }
-        std::cout << " Data:[";
-        for (size_t j = 0; j < rec.vector_data.size(); ++j) {
-          if (j > 0) std::cout << ", ";
-          std::cout << std::fixed << std::setprecision(2) << rec.vector_data[j];
+
+        if (info.index_kind == HnswRecordKind::Neighbour) {
+          std::cout << "\n        Owner VID:     "
+                    << format_hnsw_ref(rec.owner_vid) << "\n";
+          if (info.has_lower_level) {
+            std::cout << "        Lower Level:   "
+                      << format_hnsw_ref(rec.lower_level_nid) << "\n";
+          }
+          std::cout << "        Neighbours (" << rec.neighbours.size()
+                    << " slots):";
+          bool any = false;
+          for (size_t s = 0; s < rec.neighbours.size(); ++s) {
+            uint64_t nid = rec.neighbours[s].first;
+            if (nid == 0)
+              continue; // empty slot (NID::INVALID)
+            any = true;
+            std::cout << "\n          [" << s << "] NID "
+                      << format_hnsw_ref(nid & HNSW_NID_REF_MASK) << " / VID "
+                      << format_hnsw_ref(rec.neighbours[s].second);
+            if (nid & HNSW_NID_INCOMING_BIT)
+              std::cout << " [incoming]";
+          }
+          if (!any)
+            std::cout << " (none)";
+          std::cout << "\n        Overflow:      ";
+          if (rec.overflow_nid == 0) {
+            std::cout << "(none)";
+          } else {
+            std::cout << format_hnsw_ref(rec.overflow_nid);
+          }
+          std::cout << "\n";
+        } else if (info.index_kind == HnswRecordKind::Overflow) {
+          std::cout << "\n        Incoming (" << rec.incoming.size()
+                    << " slots):";
+          bool any = false;
+          for (size_t s = 0; s < rec.incoming.size(); ++s) {
+            if (rec.incoming[s] == 0)
+              continue; // empty slot (NID::INVALID)
+            any = true;
+            std::cout << "\n          [" << s << "] NID "
+                      << format_hnsw_ref(rec.incoming[s]);
+          }
+          if (!any)
+            std::cout << " (none)";
+          std::cout << "\n        Overflow:      ";
+          if (rec.overflow_nid == 0) {
+            std::cout << "(none)";
+          } else {
+            std::cout << format_hnsw_ref(rec.overflow_nid);
+          }
+          std::cout << "\n";
+        } else {
+          std::cout << " Data:[";
+          for (size_t j = 0; j < rec.vector_data.size(); ++j) {
+            if (j > 0)
+              std::cout << ", ";
+            std::cout << std::fixed << std::setprecision(2)
+                      << rec.vector_data[j];
+          }
+          std::cout << "]\n";
         }
-        std::cout << "]\n";
         shown++;
       }
     }

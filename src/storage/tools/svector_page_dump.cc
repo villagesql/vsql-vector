@@ -34,6 +34,7 @@
 //   -r, --records       Show record data
 //   -d, --data-page N   Show specific data page number
 //   -a, --all-pages     Show all data pages (traverse from root)
+//   -i, --index         Treat the root page as an HNSW index root page
 //   -h, --help          Show this help message
 
 #include <cstring>
@@ -42,6 +43,7 @@
 #include <string>
 
 #include "data_page_parser.h"
+#include "hnsw_layout.h"
 #include "page_reader.h"
 #include "root_page_parser.h"
 
@@ -50,120 +52,134 @@ namespace tool {
 
 class SvectorPageDump {
  public:
-  SvectorPageDump()
-      : verbose_(false),
-        show_records_(false),
-        show_all_pages_(false),
-        specific_data_page_(0),
-        has_specific_data_page_(false),
-        record_start_(0),
-        record_count_(10) {}
+   SvectorPageDump()
+       : verbose_(false), show_records_(false), show_all_pages_(false),
+         specific_data_page_(0), has_specific_data_page_(false),
+         record_start_(0), record_count_(10), is_index_(false) {}
 
-  int run(int argc, char *argv[]) {
-    // Show help if called with no arguments
-    if (argc < 2) {
-      print_help(argv[0]);
-      return 0;
-    }
+   int run(int argc, char *argv[]) {
+     // Show help if called with no arguments
+     if (argc < 2) {
+       print_help(argv[0]);
+       return 0;
+     }
 
-    if (!parse_args(argc, argv)) {
-      return 1;
-    }
+     if (!parse_args(argc, argv)) {
+       return 1;
+     }
 
-    if (show_help_) {
-      print_help(argv[0]);
-      return 0;
-    }
+     if (show_help_) {
+       print_help(argv[0]);
+       return 0;
+     }
 
-    if (ibd_file_.empty() || root_page_num_ == 0) {
-      std::cerr << "Error: IBD file and root page number are required\n\n";
-      print_usage(argv[0]);
-      return 1;
-    }
+     if (ibd_file_.empty() || root_page_num_ == 0) {
+       std::cerr << "Error: IBD file and root page number are required\n\n";
+       print_usage(argv[0]);
+       return 1;
+     }
 
-    // Open IBD file
-    PageReader reader(ibd_file_);
-    if (!reader.open()) {
-      std::cerr << "Error: " << reader.get_error() << "\n";
-      return 1;
-    }
+     // Open IBD file
+     PageReader reader(ibd_file_);
+     if (!reader.open()) {
+       std::cerr << "Error: " << reader.get_error() << "\n";
+       return 1;
+     }
 
-    // Read and parse root page
-    auto root_page_data = reader.read_page(root_page_num_);
-    if (!root_page_data) {
-      std::cerr << "Error reading root page: " << reader.get_error() << "\n";
-      return 1;
-    }
+     // Read and parse root page
+     auto root_page_data = reader.read_page(root_page_num_);
+     if (!root_page_data) {
+       std::cerr << "Error reading root page: " << reader.get_error() << "\n";
+       return 1;
+     }
 
-    RootPageParser::RootPageInfo root_info;
-    std::string error;
-    if (!RootPageParser::parse(*root_page_data, root_info, error)) {
-      std::cerr << "Error parsing root page: " << error << "\n";
-      return 1;
-    }
+     RootPageParser::RootPageInfo root_info;
+     std::string error;
+     if (!RootPageParser::parse(*root_page_data, root_info, error)) {
+       std::cerr << "Error parsing root page: " << error << "\n";
+       return 1;
+     }
 
-    // Display root page
-    std::cout << "IBD File: " << ibd_file_ << "\n";
-    std::cout << "Root Page Number: " << root_page_num_ << "\n\n";
-    RootPageParser::display(root_info, verbose_);
+     // Display root page
+     std::cout << "IBD File: " << ibd_file_ << "\n";
+     std::cout << "Root Page Number: " << root_page_num_ << "\n\n";
+     RootPageParser::display(root_info, verbose_, is_index_);
 
-    // Show specific data page if requested
-    if (has_specific_data_page_) {
-      std::cout << "\n" << std::string(80, '=') << "\n\n";
-      if (!show_data_page(reader, specific_data_page_, root_info.column_size)) {
-        return 1;
-      }
-    }
+     // Determine how to decode this store's data page records: as an HNSW
+     // NeighbourEntry/OverflowEntry (see hnsw_layout.h) when --index was
+     // given and the root page's metadata decodes as HNSW StorageMeta, or as
+     // a plain SVECTOR float vector otherwise.
+     if (is_index_) {
+       std::string decode_error;
+       HnswIndexMetadata index_meta;
+       if (parse_hnsw_index_metadata(root_info.storage_metadata_raw, index_meta,
+                                     decode_error)) {
+         record_kind_ = index_meta.is_overflow() ? HnswRecordKind::Overflow
+                                                 : HnswRecordKind::Neighbour;
+         has_lower_level_ = index_meta.level > 0;
+       }
+       // If decoding failed, RootPageParser::display() already warned; fall
+       // through and decode data pages as plain SVECTOR vectors.
+     }
 
-    // Show all data pages if requested
-    if (show_all_pages_) {
-      std::cout << "\n" << std::string(80, '=') << "\n";
-      std::cout << "Traversing all data pages...\n";
-      std::cout << std::string(80, '=') << "\n\n";
+     // Show specific data page if requested
+     if (has_specific_data_page_) {
+       std::cout << "\n" << std::string(80, '=') << "\n\n";
+       if (!show_data_page(reader, specific_data_page_,
+                           root_info.column_size)) {
+         return 1;
+       }
+     }
 
-      // Start from head of all-pages list
-      uint32_t page_num = root_info.all_slot_head;
-      int count = 0;
-      const int max_pages = 100;  // Safety limit
+     // Show all data pages if requested
+     if (show_all_pages_) {
+       std::cout << "\n" << std::string(80, '=') << "\n";
+       std::cout << "Traversing all data pages...\n";
+       std::cout << std::string(80, '=') << "\n\n";
 
-      while (page_num != RootPage::NULL_FREE_PAGE_REF && count < max_pages) {
-        if (!show_data_page(reader, page_num, root_info.column_size)) {
-          std::cerr << "Error displaying data page " << page_num << "\n";
-          break;
-        }
+       // Start from head of all-pages list
+       uint32_t page_num = root_info.all_slot_head;
+       int count = 0;
+       const int max_pages = 100; // Safety limit
 
-        // Read page to get next link
-        auto page_data = reader.read_page(page_num);
-        if (!page_data) {
-          std::cerr << "Error reading page " << page_num << ": "
-                    << reader.get_error() << "\n";
-          break;
-        }
+       while (page_num != RootPage::NULL_FREE_PAGE_REF && count < max_pages) {
+         if (!show_data_page(reader, page_num, root_info.column_size)) {
+           std::cerr << "Error displaying data page " << page_num << "\n";
+           break;
+         }
 
-        DataPageParser::DataPageInfo page_info;
-        if (!DataPageParser::parse(*page_data, root_info.column_size, page_info,
-                                   error)) {
-          std::cerr << "Error parsing page " << page_num << ": " << error
-                    << "\n";
-          break;
-        }
+         // Read page to get next link
+         auto page_data = reader.read_page(page_num);
+         if (!page_data) {
+           std::cerr << "Error reading page " << page_num << ": "
+                     << reader.get_error() << "\n";
+           break;
+         }
 
-        // Move to next page in the all-pages list
-        page_num = page_info.fil_page_next;
-        count++;
+         DataPageParser::DataPageInfo page_info;
+         if (!DataPageParser::parse(*page_data, root_info.column_size,
+                                    page_info, error)) {
+           std::cerr << "Error parsing page " << page_num << ": " << error
+                     << "\n";
+           break;
+         }
 
-        if (page_num != RootPage::NULL_FREE_PAGE_REF) {
-          std::cout << "\n" << std::string(80, '-') << "\n\n";
-        }
-      }
+         // Move to next page in the all-pages list
+         page_num = page_info.fil_page_next;
+         count++;
 
-      if (count >= max_pages) {
-        std::cout << "\nReached safety limit of " << max_pages << " pages\n";
-      }
-    }
+         if (page_num != RootPage::NULL_FREE_PAGE_REF) {
+           std::cout << "\n" << std::string(80, '-') << "\n\n";
+         }
+       }
 
-    return 0;
-  }
+       if (count >= max_pages) {
+         std::cout << "\nReached safety limit of " << max_pages << " pages\n";
+       }
+     }
+
+     return 0;
+   }
 
  private:
   bool parse_args(int argc, char *argv[]) {
@@ -201,6 +217,8 @@ class SvectorPageDump {
         }
       } else if (arg == "-a" || arg == "--all-pages") {
         show_all_pages_ = true;
+      } else if (arg == "-i" || arg == "--index") {
+        is_index_ = true;
       } else if (arg == "-d" || arg == "--data-page") {
         if (i + 1 >= argc) {
           std::cerr << "Error: " << arg << " requires a page number\n";
@@ -254,6 +272,14 @@ class SvectorPageDump {
     std::cout << "  -d, --data-page N     Show specific data page number\n";
     std::cout << "  -a, --all-pages       Show all data pages (traverse from "
                  "root)\n";
+    std::cout << "  -i, --index           Treat the root page as an HNSW "
+                 "index root page:\n";
+    std::cout << "                        decode its metadata as index "
+                 "metadata and\n";
+    std::cout << "                        decode data page records as "
+                 "NeighbourEntry/\n";
+    std::cout << "                        OverflowEntry instead of a plain "
+                 "SVECTOR vector\n";
     std::cout << "  -h, --help            Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << "  # Show root page only\n";
@@ -268,6 +294,8 @@ class SvectorPageDump {
     std::cout << "  " << prog_name << " table.ibd 4 -d 5 -r 50\n\n";
     std::cout << "  # Traverse and show all data pages\n";
     std::cout << "  " << prog_name << " table.ibd 4 -a -v\n\n";
+    std::cout << "  # Show an HNSW index level's root page and its records\n";
+    std::cout << "  " << prog_name << " table.ibd 4 -i -d 5 -r\n\n";
   }
 
   bool show_data_page(PageReader &reader, uint32_t page_num,
@@ -280,7 +308,8 @@ class SvectorPageDump {
 
     DataPageParser::DataPageInfo page_info;
     std::string error;
-    if (!DataPageParser::parse(*page_data, column_size, page_info, error)) {
+    if (!DataPageParser::parse(*page_data, column_size, page_info, error,
+                               record_kind_, has_lower_level_)) {
       std::cerr << "Error parsing data page: " << error << "\n";
       return false;
     }
@@ -301,6 +330,13 @@ class SvectorPageDump {
   uint32_t record_start_;
   uint32_t record_count_;
   bool show_help_ = false;
+
+  // Set by -i/--index. Root page metadata is then decoded as HNSW
+  // StorageMeta, and record_kind_/has_lower_level_ (derived from it once the
+  // root page is parsed) drive index-aware data page decoding.
+  bool is_index_;
+  HnswRecordKind record_kind_ = HnswRecordKind::None;
+  bool has_lower_level_ = false;
 };
 
 }  // namespace tool

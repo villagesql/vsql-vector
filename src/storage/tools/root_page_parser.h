@@ -41,6 +41,11 @@ class RootPageParser {
     uint8_t version;
     uint8_t page_type;
     std::string storage_metadata;
+    // Same bytes as storage_metadata, but read verbatim to their full
+    // declared length instead of stopping at the first NUL -- HNSW's
+    // StorageMeta encoding (see hnsw_layout.h) embeds binary fields after
+    // the name, so display() must decode from this, not storage_metadata.
+    std::string storage_metadata_raw;
     uint8_t num_root_pages;
     std::vector<uint32_t> other_root_page_refs;
     uint16_t column_size;
@@ -57,10 +62,15 @@ class RootPageParser {
   static bool parse(const std::vector<uint8_t> &page_data, RootPageInfo &info,
                     std::string &error);
 
-  // Display root page information
-  static void display(const RootPageInfo &info, bool verbose = false);
+  // Display root page information. When is_index_root is true, storage_
+  // metadata_raw is decoded as an HNSW StorageMeta blob (see hnsw_layout.h)
+  // and shown as index metadata -- level, entry level/points, and the
+  // record layout implied by column_size -- in place of the plain-SVECTOR
+  // "N-dim float vector" interpretation of column_size.
+  static void display(const RootPageInfo &info, bool verbose = false,
+                      bool is_index_root = false);
 
- private:
+private:
   // Helper to read uint8_t from buffer
   static uint8_t read_uint8(const std::vector<uint8_t> &data, uint32_t offset);
 
