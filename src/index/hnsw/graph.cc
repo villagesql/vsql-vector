@@ -974,9 +974,9 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
   // while the edge it belongs to is being landed (see add_overflow_incoming()),
   // so its source is holding a slot for node either way, and linking it again
   // would only give that source a second one. Everything else goes in
-  // incoming-flagged, for step F to reciprocate.
+  // incoming-flagged, for step E to reciprocate.
   //
-  // Their chain slots are collected as they're found and freed in step E, once
+  // Their chain slots are collected as they're found and freed in step D, once
   // node's primary list is the record: find_overflow_link() has already located
   // each one exactly, so there is no reason to walk the chain again looking for
   // them.
@@ -1009,7 +1009,7 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
   // in the ascending order update() requires: a kept link is left exactly as it
   // is -- incoming flag included, since the flag records that the neighbour is
   // not known to link back yet and only the linking step can settle that, which
-  // step F leaves it to do -- and each staged link takes the next slot a
+  // step E leaves it to do -- and each staged link takes the next slot a
   // dropped link vacated or one that was free already, with whatever dropped
   // slots are left over cleared.
   size_t num_updates = 0;
@@ -1035,43 +1035,33 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
   // There is always room: the updated list is capped at max_n, and every slot
   // it does not name is either free or one this call just freed.
   assert(next_staged == num_staged);
+  // Every staged link, promoted ones included, takes a slot counted into
+  // num_updates above, so a non-empty promoted can never arrive here with
+  // num_updates == 0.
+  assert(promoted.empty() || num_updates > 0);
 
   if (num_updates > 0) {
     MtrCtx mtr_ctx;
     auto mtr = mtr_ctx.start();
+
     NeighbourEntry update_entry;
     update_entry.neighbours = m_ctx.m_node_buf_1.span(num_updates);
-    bool failed =
-        store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
+    if (store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
                       m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
-                      m_ctx.m_chunk_ids, err(), err_len());
-    mtr_ctx.commit();
-    if (failed)
+                      m_ctx.m_chunk_ids, err(), err_len()))
       return true;
-  }
 
-  // E. Free the chain slots of the links promoted in step C, now that node's
-  // primary list is the one recording them. Doing it in this order can only
-  // ever leave the same link recorded twice, which costs a wasted visit in
-  // unlink_neighbours() and nothing else; the reverse could leave a link node
-  // does not record at all.
-  if (!promoted.empty()) {
-    // Every one of them is an overflow record, which clear_link() latches in a
-    // short-lived mtr of its own -- mtr is the caller's latch its other branch
-    // needs, and there is none to hold here.
-    MtrCtx mtr_ctx;
-    auto mtr = mtr_ctx.start();
+    // Free the chain slot of each link promoted in step C, now that node's
+    // primary list is the one recording it.
     for (const LinkSlot &link : promoted) {
       assert(link.kind == StoreKind::Overflow);
-      if (clear_link(mtr, level, link)) {
-        mtr_ctx.commit();
+      if (clear_link(mtr, level, link))
         return true;
-      }
     }
     mtr_ctx.commit();
   }
 
-  // F. Reciprocate the links staged as incoming in step C, along with any kept
+  // E. Reciprocate the links staged as incoming in step C, along with any kept
   // link still waiting for its own reciprocal edge -- settling those is exactly
   // what link_neighbours() is for. Nothing else in node's list is flagged
   // incoming by now: every link the updated list does not name has been dropped
