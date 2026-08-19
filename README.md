@@ -164,14 +164,14 @@ The extension includes tests using the MySQL Test Runner (MTR) framework.
 
 ```bash
 cd /path/to/villagesql/build/mysql-test
-perl mysql-test-run.pl --suite=/path/to/vsql-vector/test
+perl mysql-test-run.pl --suite=/path/to/vsql-vector/mysql-test
 ```
 
-**Option 2: Using a specific VEB file**
+**Option 2: Using a VEB from the build directory**
 
 ```bash
 cd /path/to/villagesql/build/mysql-test
-perl mysql-test-run.pl --suite=/path/to/vsql-vector/test --veb-source-dir=/path/to/vsql-vector/build
+perl mysql-test-run.pl --suite=/path/to/vsql-vector/mysql-test --veb-source-dir=/path/to/vsql-vector/build
 ```
 
 ## Diagnostic Tools
@@ -277,7 +277,7 @@ vsql-vector/
 │           └── data_page_parser.h/cc # Data page parser
 ├── cmake/
 │   └── FindVillageSQL.cmake # CMake module to locate VillageSQL SDK
-├── test/
+├── mysql-test/
 │   ├── t/                   # MTR test files
 │   └── r/                   # MTR expected results
 ├── manifest.json            # VEB package manifest

@@ -77,21 +77,20 @@ The extension uses the VillageSQL Extension Framework's fluent builder API to re
 ## Testing
 
 The extension includes a test suite using the MySQL Test Runner (MTR) framework:
-- **Test Location**: `test/` directory with `.test` files and expected `.result` files
+- **Test Location**: `mysql-test/` directory with `.test` files and expected `.result` files
 
 **Default: Using installed VEB**
 
 ```bash
 cd /path/to/mysql-test
-perl mysql-test-run.pl --suite=/path/to/vsql-vector/test
+perl mysql-test-run.pl --suite=/path/to/vsql-vector/mysql-test
 ```
 
-**Alternative: Using a specific VEB file**
+**Alternative: Using a VEB from the build directory**
 
 ```bash
 cd /path/to/mysql-test
-VSQL_VECTOR_VEB=/path/to/vsql-vector/build/vsql_vector.veb \
-  perl mysql-test-run.pl --suite=/path/to/vsql-vector/test
+perl mysql-test-run.pl --suite=/path/to/vsql-vector/mysql-test --veb-source-dir=/path/to/vsql-vector/build
 ```
 
 ## Extension Installation
