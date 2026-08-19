@@ -185,7 +185,7 @@ bool Options::parse(const vef_index_param_t *params, uint32_t count,
         snprintf(error_msg, error_msg_len, "duplicate option 'M'");
         return true;
       }
-      if (!parse_u32(val, &out->M)) {
+      if (parse_u32(val, &out->M)) {
         snprintf(error_msg, error_msg_len,
                  "M must be a positive integer, got '%s'", val);
         return true;
