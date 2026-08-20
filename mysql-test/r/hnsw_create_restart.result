@@ -32,7 +32,7 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
-test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": 8, "ef_construction": 64}
+test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": "8", "ef_construction": "64"}
 test	t1	idx_c	vsql_vector	0.0.1	hnsw	{}
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
 t1	idx_a	0	a	vsql_vector	0.0.1	hnsw_l2
@@ -57,7 +57,7 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
-test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": 8, "ef_construction": 64}
+test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": "8", "ef_construction": "64"}
 test	t1	idx_c	vsql_vector	0.0.1	hnsw	{}
 test	t1	idx_d	vsql_vector	0.0.1	hnsw	{}
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
@@ -85,10 +85,10 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
-test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": 8, "ef_construction": 64}
+test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": "8", "ef_construction": "64"}
 test	t1	idx_c	vsql_vector	0.0.1	hnsw	{}
 test	t1	idx_d	vsql_vector	0.0.1	hnsw	{}
-test	t1	idx_e	vsql_vector	0.0.1	hnsw	{"M": 4, "ef_construction": 32}
+test	t1	idx_e	vsql_vector	0.0.1	hnsw	{"M": "4", "ef_construction": "32"}
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
 t1	idx_a	0	a	vsql_vector	0.0.1	hnsw_l2
 t1	idx_b	0	b	vsql_vector	0.0.1	hnsw_cosine
@@ -116,10 +116,10 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
-test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": 8, "ef_construction": 64}
+test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": "8", "ef_construction": "64"}
 test	t1	idx_c	vsql_vector	0.0.1	hnsw	{}
 test	t1	idx_d	vsql_vector	0.0.1	hnsw	{}
-test	t1	idx_e	vsql_vector	0.0.1	hnsw	{"M": 4, "ef_construction": 32}
+test	t1	idx_e	vsql_vector	0.0.1	hnsw	{"M": "4", "ef_construction": "32"}
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
 t1	idx_a	0	a	vsql_vector	0.0.1	hnsw_l2
 t1	idx_b	0	b	vsql_vector	0.0.1	hnsw_cosine
@@ -145,9 +145,9 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
-test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": 8, "ef_construction": 64}
+test	t1	idx_b	vsql_vector	0.0.1	hnsw	{"M": "8", "ef_construction": "64"}
 test	t1	idx_c	vsql_vector	0.0.1	hnsw	{}
-test	t1	idx_e	vsql_vector	0.0.1	hnsw	{"M": 4, "ef_construction": 32}
+test	t1	idx_e	vsql_vector	0.0.1	hnsw	{"M": "4", "ef_construction": "32"}
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
 t1	idx_a	0	a	vsql_vector	0.0.1	hnsw_l2
 t1	idx_b	0	b	vsql_vector	0.0.1	hnsw_cosine
@@ -211,7 +211,7 @@ t2	CREATE TABLE `t2` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t2	idx_x	vsql_vector	0.0.1	hnsw	{}
-test	t2	idx_y	vsql_vector	0.0.1	hnsw	{"M": 16, "ef_construction": 200}
+test	t2	idx_y	vsql_vector	0.0.1	hnsw	{"M": "16", "ef_construction": "200"}
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
 t2	idx_x	0	x	vsql_vector	0.0.1	hnsw_l2
 t2	idx_y	0	y	vsql_vector	0.0.1	hnsw_cosine
@@ -231,7 +231,7 @@ t2	CREATE TABLE `t2` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t2	idx_x	vsql_vector	0.0.1	hnsw	{}
-test	t2	idx_y	vsql_vector	0.0.1	hnsw	{"M": 16, "ef_construction": 200}
+test	t2	idx_y	vsql_vector	0.0.1	hnsw	{"M": "16", "ef_construction": "200"}
 test	t2	idx_z	vsql_vector	0.0.1	hnsw	{}
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
 t2	idx_x	0	x	vsql_vector	0.0.1	hnsw_l2
@@ -251,7 +251,7 @@ t2	CREATE TABLE `t2` (
   KEY `idx_z` (`z`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
-test	t2	idx_y	vsql_vector	0.0.1	hnsw	{"M": 16, "ef_construction": 200}
+test	t2	idx_y	vsql_vector	0.0.1	hnsw	{"M": "16", "ef_construction": "200"}
 test	t2	idx_z	vsql_vector	0.0.1	hnsw	{}
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
 t2	idx_y	0	y	vsql_vector	0.0.1	hnsw_cosine
