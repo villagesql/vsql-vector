@@ -40,6 +40,10 @@ using vsql::preview_storage::Error;
 
 static_assert(IndexStore::KEY_REF_SIZE == 8, "KeyPartRef must be 8 bytes");
 
+// Live value for the vsql_vector.ef_search system variable, initialized to
+// DEFAULT_EF_SEARCH; the server enforces MIN/MAX on SET.
+long long g_ef_search = DEFAULT_EF_SEARCH;
+
 static void write_u64_be(std::string &buf, uint64_t v) {
   for (int i = 7; i >= 0; --i)
     buf.push_back(static_cast<char>((v >> (i * 8)) & 0xFFu));
@@ -877,7 +881,12 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
 
   IndexGraph::NodeData query{scan_desc[0][VECTOR_KEY_POS]};
   const uint32_t k = scan_desc.limit();
-  const uint32_t ef_search = std::max(k, Cursor::DEFAULT_EF_SEARCH);
+  // ef_search is the bottom-layer beam width: higher = better recall, more
+  // latency; it comes from the global system variable vsql_vector.ef_search
+  // (g_ef_search; session vars are not yet available to extensions). Floor at
+  // k -- a search can't return k results with a narrower beam.
+  const uint32_t ef_search =
+      std::max<uint32_t>(k, static_cast<uint32_t>(g_ef_search));
 
   std::vector<Node> nodes;
   if (GraphOperations<IndexGraph>(graph).search_knn(query, k, ef_search, nodes))
