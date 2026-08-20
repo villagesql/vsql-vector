@@ -600,6 +600,25 @@ void svector_inner_product(CustomArgWith<SVectorParams> vec1,
   svector_distance_impl(vec1, vec2, out, native::dist_inner_product);
 }
 
+// Graph-distance for the HNSW inner-product profile. INNER_PRODUCT is a
+// SIMILARITY (higher = more similar; see README), but the HNSW graph orders by
+// "smaller = nearer". So the graph distance is the NEGATED dot product: smaller
+// -negated-dot == larger dot == more similar, so the graph builds and searches
+// toward the true (maximum-inner-product) neighbours. Used ONLY by the index
+// profile below; the SQL INNER_PRODUCT() function keeps the raw dot
+// (svector_inner_product above) so users get the real similarity value. Do NOT
+// collapse these two.
+static double neg_dist_inner_product(const native::Data *v1,
+                                     const native::Data *v2) {
+  return -native::dist_inner_product(v1, v2);
+}
+
+void svector_inner_product_graph(CustomArgWith<SVectorParams> vec1,
+                                 CustomArgWith<SVectorParams> vec2,
+                                 RealResult out) {
+  svector_distance_impl(vec1, vec2, out, neg_dist_inner_product);
+}
+
 // Upper bound on SVECTOR's persisted byte size: storage-ref header plus
 // MAX_VECTOR_DIMENSION float elements. Used only on the fix_fields-time
 // constant-string inference path; row-time encoding uses the params-resolved
@@ -719,7 +738,7 @@ static const auto HNSW_COSINE_FN =
         .build();
 
 static const auto HNSW_IP_FN =
-    make_index_function<&svector_inner_product>(kHNSWFuncInnerProduct)
+    make_index_function<&svector_inner_product_graph>(kHNSWFuncInnerProduct)
         .returns(vsql::REAL)
         .param(SVECTOR)
         .param(SVECTOR)
