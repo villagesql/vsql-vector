@@ -27,6 +27,7 @@
 
 #include <villagesql/preview/index_builder.h>
 #include <villagesql/preview/storage_builder.h>
+#include <villagesql/preview/sys_var.h>
 #include <villagesql/vsql.h>
 
 #include <algorithm>
@@ -770,12 +771,27 @@ static auto HNSW_PROFILE_CAPABILITY = IndexProfileCapability()
                                           .index_profile(HNSW_COSINE_PROFILE)
                                           .index_profile(HNSW_IP_PROFILE);
 
+// Global system variable vsql_vector.ef_search -- the query-time HNSW search
+// breadth. Backs svector::hnsw::g_ef_search, which the KNN scan reads in
+// begin(). Global (not session) because session variables are not yet available
+// to extensions; see storage.h.
+namespace sv = vsql::preview_sys_var;
+static auto HNSW_SYS_VARS = sv::make_capability({
+    sv::make_int(
+        "ef_search",
+        "HNSW query-time search breadth (ef); higher = better recall, slower. "
+        "Floored at the query LIMIT.",
+        &svector::hnsw::g_ef_search, svector::hnsw::DEFAULT_EF_SEARCH,
+        svector::hnsw::MIN_EF_SEARCH, svector::hnsw::MAX_EF_SEARCH),
+});
+
 VEF_GENERATE_ENTRY_POINTS(
     make_extension()
         .with(STORAGE)
         .with(COLUMN_STORE)
         .with(HNSW_INDEX_CAPABILITY)
         .with(HNSW_PROFILE_CAPABILITY)
+        .with(HNSW_SYS_VARS)
         .type(SVECTOR)
 
         // Hex encoding of raw vector float bytes (SQL)
