@@ -180,7 +180,7 @@ bool Options::parse(const vef_index_param_t *params, uint32_t count,
     const char *key = params[i].key;
     const char *val = params[i].value;
 
-    if (strcasecmp(key, "M") == 0) {
+    if (strcmp(key, "m") == 0) {
       if (seen_m) {
         snprintf(error_msg, error_msg_len, "duplicate option 'M'");
         return true;
