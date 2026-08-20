@@ -749,6 +749,23 @@ bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
 
 bool create(StorageCtx *ctx, const Index &index, Space::Ref space_ref,
             Segment::TrxRef trx_ref, char *err, uint32_t err_len) {
+  // Colocated row resolution (HAS_COLUMN_REF) stores only the leading field of
+  // the row's clustered key (rowid_prefix) alongside the vector, so a row can
+  // be resolved from a col_ref hit. That is complete only when the clustered
+  // key is a single field -- a single-column PRIMARY KEY, a promoted
+  // single-column UNIQUE, or a PK-less table (InnoDB's synthetic rowid, which
+  // reports 1). A composite (multi-field) key would store only its first
+  // column and resolve ambiguously, so reject it at CREATE INDEX rather than
+  // silently returning wrong rows at query time. Composite keys need
+  // server-side row-ref mapping (HAS_ROW_REF) instead.
+  if (index.get_primary_num_key_cols() > 1) {
+    snprintf(err, err_len,
+             "HNSW index requires a single-column key: the table's primary "
+             "key has %u columns; composite keys are not supported",
+             index.get_primary_num_key_cols());
+    return true;
+  }
+
   const auto *opts = index.options<Options>();
   assert(opts != nullptr);
   auto *store = ctx->user();
