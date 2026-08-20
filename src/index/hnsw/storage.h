@@ -64,18 +64,26 @@ struct Options {
                     Options *out, char *error_msg, uint32_t error_msg_len);
 };
 
+// Query-time search breadth (HNSW Algorithm 5 ef): trades recall for latency at
+// SELECT time. Unlike M / ef_construction (baked into the graph at CREATE
+// INDEX), this is tunable per query. Session variables are not yet available to
+// extensions, so for now it is a single GLOBAL knob, registered as the system
+// variable vsql_vector.ef_search and read by the scan's begin(). Floored at use
+// to the query LIMIT (k).
+inline constexpr long long DEFAULT_EF_SEARCH = 40;
+inline constexpr long long MIN_EF_SEARCH = 1;
+inline constexpr long long MAX_EF_SEARCH = 65536;
+
+// The live value backing the ef_search system variable. Defined in storage.cc;
+// bound to the sysvar descriptor in vector.cc. Read (not written) by begin().
+extern long long g_ef_search;
+
 // Per-scan cursor over a materialized KNN search result. begin() runs
 // GraphOperations::search_knn() once and hands the whole (already
 // ascending-by-distance) result to the cursor; position()/fetch() below just
 // walk that fixed vector.
 class Cursor {
 public:
-  // Floor for ef_search (GraphOperations::search_knn's bottom-layer
-  // exploration factor) until a real session-level parameter exists for it.
-  // TODO(villagesql-indexing): replace with a session-level ef_search
-  // parameter; this fixed floor is a placeholder.
-  static constexpr uint32_t DEFAULT_EF_SEARCH = 40;
-
   explicit Cursor(std::vector<Node> nodes)
       : m_nodes(std::move(nodes)), m_pos(m_nodes.empty() ? EOF_POS : 0) {}
 
