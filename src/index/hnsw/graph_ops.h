@@ -83,9 +83,9 @@ public:
   // consume_heuristic(): insert()'s own-neighbour selection, remove()'s
   // repair-neighbour selection, and shrink_neighbours()'s Mmax reselection.
   //
-  // Per Section 3 of the HNSW paper, extendCandidates is false by default
-  // and extends the candidate set with neighbours of the candidates. We use
-  // the default (disabled) behavior.
+  // Per Section 3 of the HNSW paper, extendCandidates, when enabled, extends
+  // the candidate set with neighbours of the candidates. It defaults to
+  // false, and we keep that default.
   //
   // keepPrunedConnections retains pruned candidates to maintain a fixed
   // number of connections per element. We disable it, allowing the heuristic
@@ -93,10 +93,11 @@ public:
   //
   // Keep these centralized as named constants rather than literals at each
   // call site, so there is a single place to change the policy if needed.
-  // TODO(villagesql-indexing): Consider making EXTEND_CANDIDATES and
-  // KEEP_PRUNED_CONNECTIONS configurable.
-  static constexpr ExtendCandidates EXTEND_CANDIDATES = ExtendCandidates::No;
-  static constexpr KeepPrunedConnections KEEP_PRUNED_CONNECTIONS =
+  // TODO(villagesql-indexing): Consider making SHOULD_EXTEND_CANDIDATES and
+  // SHOULD_KEEP_PRUNED_CONNECTIONS configurable.
+  static constexpr ExtendCandidates SHOULD_EXTEND_CANDIDATES =
+      ExtendCandidates::No;
+  static constexpr KeepPrunedConnections SHOULD_KEEP_PRUNED_CONNECTIONS =
       KeepPrunedConnections::No;
 
   GraphOperations(Graph &graph) : m_graph(graph) {};
@@ -117,15 +118,16 @@ private:
   bool advance_to_next_level(std::vector<Node> &candidates, LevelId level);
 
   // Wraps LayerOps::consume_heuristic(), defaulting extend_candidates and
-  // keep_pruned_connections to EXTEND_CANDIDATES and
-  // KEEP_PRUNED_CONNECTIONS so call sites only need to supply what varies --
-  // M, the output, and (optionally) candidate_pool -- while still allowing
-  // either policy to be overridden explicitly.
+  // keep_pruned_connections to SHOULD_EXTEND_CANDIDATES and
+  // SHOULD_KEEP_PRUNED_CONNECTIONS so call sites only need to supply what
+  // varies -- M, the output, and (optionally) candidate_pool -- while still
+  // allowing either policy to be overridden explicitly.
   bool consume_heuristic(
       LayerOps &layer, uint32_t M, std::vector<Node> &out,
       std::vector<Node> *candidate_pool = nullptr,
-      ExtendCandidates extend_candidates = EXTEND_CANDIDATES,
-      KeepPrunedConnections keep_pruned_connections = KEEP_PRUNED_CONNECTIONS);
+      ExtendCandidates extend_candidates = SHOULD_EXTEND_CANDIDATES,
+      KeepPrunedConnections keep_pruned_connections =
+          SHOULD_KEEP_PRUNED_CONNECTIONS);
 
   // Reselects up to Mmax(level) neighbours for each node in 'overflowed',
   // after 'linked_node' was withheld from being linked back to it by

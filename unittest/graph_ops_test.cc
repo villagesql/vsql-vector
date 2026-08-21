@@ -795,7 +795,7 @@ void test_insert_shrinks_overflowed_neighbours_past_mmax() {
   // 2's own neighbour selection: candidates are 1 (distance 2) and 0
   // (distance 3). 1 is nearest and always kept. 0 is dominated -- closer to
   // 1 (distance 1) than to the query -- so whether it survives depends on
-  // GraphOps::KEEP_PRUNED_CONNECTIONS: Yes backfills it in anyway, No
+  // GraphOps::SHOULD_KEEP_PRUNED_CONNECTIONS: Yes backfills it in anyway, No
   // discards it outright. Branching on the same constant GraphOperations
   // itself uses means this test keeps working whichever way that default is
   // set, without needing hand-editing every time it's revisited.
@@ -803,7 +803,7 @@ void test_insert_shrinks_overflowed_neighbours_past_mmax() {
   // 2's own outgoing edges are unaffected either way: shrinking only touches
   // the *neighbour's* list (graph_ops_impl.h's shrink_neighbours()), never
   // the newly inserted node's own list.
-  if (GraphOps::KEEP_PRUNED_CONNECTIONS ==
+  if (GraphOps::SHOULD_KEEP_PRUNED_CONNECTIONS ==
       GraphOps::KeepPrunedConnections::Yes) {
     assert((g.adjacency[0][2] == std::vector<int>{1, 0}));
   } else {
@@ -819,10 +819,10 @@ void test_insert_shrinks_overflowed_neighbours_past_mmax() {
 
   // 0 only gets a reciprocal-link/shrink attempt at all if 2 selected it as
   // a neighbour in the first place, which is exactly the branch above.
-  // Either way 0 keeps its original edge to 1: with KEEP_PRUNED_CONNECTIONS
-  // == Yes, 0's own shrink (candidates {1, 2}, Mmax=1) keeps nearer 1 over
-  // 2; with No, 0 is never a candidate for anything and is simply
-  // untouched.
+  // Either way 0 keeps its original edge to 1: with
+  // SHOULD_KEEP_PRUNED_CONNECTIONS == Yes, 0's own shrink (candidates {1, 2},
+  // Mmax=1) keeps nearer 1 over 2; with No, 0 is never a candidate for
+  // anything and is simply untouched.
   assert((g.adjacency[0][0] == std::vector<int>{1}));
 
   // Exactly as many neighbours as 2 ended up linking to (1, or 1 and 0) go
@@ -833,10 +833,10 @@ void test_insert_shrinks_overflowed_neighbours_past_mmax() {
       ++replace_count;
     }
   }
-  int expected_replace_count =
-      GraphOps::KEEP_PRUNED_CONNECTIONS == GraphOps::KeepPrunedConnections::Yes
-          ? 2
-          : 1;
+  int expected_replace_count = GraphOps::SHOULD_KEEP_PRUNED_CONNECTIONS ==
+                                       GraphOps::KeepPrunedConnections::Yes
+                                   ? 2
+                                   : 1;
   assert(replace_count == expected_replace_count);
 }
 
