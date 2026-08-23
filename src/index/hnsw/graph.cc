@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <mutex>
 #include <random>
 #include <shared_mutex>
@@ -53,7 +54,29 @@ GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size,
                       LevelStore::max_update_chunks(M), err);
 }
 
+constexpr uint32_t kDistanceHelperFnId = 1;
+constexpr uint32_t kKeyPos = 0;
+
 } // namespace
+
+IndexGraph::NativeDistFn IndexGraph::resolve_distance_fn() {
+  // Ask the server for the name of the helper bound at fn_id 1 for this index's
+  // profile, then map it to the matching native kernel. The name<->kernel
+  // correspondence is owned by native_vector.h (dist_for_name), the same map
+  // the SVECTOR registration binds against, so this cannot drift out of sync.
+  char name[64] = {};
+  if (m_index.helper_fn_name(kKeyPos, kDistanceHelperFnId, name, sizeof(name))) {
+    snprintf(get_err_buffer(), get_err_buffer_len(), "HNSW: resolve_distance_fn: %s",
+             m_index.get_error());
+    return nullptr;
+  }
+  NativeDistFn fn = native::dist_for_name(name);
+  if (fn == nullptr) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: resolve_distance_fn: unknown helper function '%s'", name);
+  }
+  return fn;
+}
 
 #ifndef NDEBUG
 bool IndexGraph::debug_check_level(const Node &node, LevelId level) const {
@@ -74,7 +97,8 @@ IndexGraph::IndexGraph(IndexStore &store, const Index &index,
                        Segment::TrxRef trx_ref, size_t vector_buf_size,
                        std::span<char> err)
     : m_store(store), m_index(index), m_trx_ref(trx_ref),
-      m_ctx(make_graph_context(store, vector_buf_size, err)) {}
+      m_ctx(make_graph_context(store, vector_buf_size, err)),
+      m_dist_fn(resolve_distance_fn()) {}
 
 bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
   assert(vid.is_valid());
@@ -91,13 +115,48 @@ bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
 
 bool IndexGraph::distance(const NodeData &a, const NodeData &b,
                           DistanceType &out) {
-  // The helper rather than the profile function proper: it is the
-  // index-internal variant of the same distance, which for L2 is the squared
-  // one -- it orders nodes identically while skipping the sqrt.
+  // Native distance: instead of the per-call VDF profile-helper dispatch, call
+  // the native metric resolved once at construction. Its operands are decoded
+  // native::Data, so each raw [prefix][floats] value is decoded here. (No cache
+  // -- this isolates the dispatch win; decode-once caching is a separate step.)
+  if (m_dist_fn == nullptr) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: distance: no native distance function resolved");
+    return true;
+  }
+  // Decode each operand into a pre-sized reused scratch buffer (never allocate
+  // in this hot path). Both decoded operands must be live at once for m_dist_fn,
+  // so they use separate buffers.
   //
-  // Profile functions are infallible, so there is no error to report past the
-  // operand resolution the callers below do.
-  m_index.helper(VECTOR_KEY_POS, DISTANCE_HELPER_FN_ID, &out, a.data, b.data);
+  // TODO(villagesql): this "strip the [8-byte storage ref] prefix, then
+  // native::from_encoded the floats" decode is duplicated here, in
+  // svector_distance_impl (vector.cc), and in several length computations in
+  // vector.cc that open-code sizeof(vef_storage_ref_t) + n*sizeof(float). The
+  // persisted SVECTOR format ([ref][floats]) has no single owner; consolidate
+  // all these sites into one format helper (e.g. svector_format.h) instead of
+  // adding yet another copy.
+  constexpr uint32_t kPrefix = IndexStore::KEY_REF_SIZE;
+  auto decode = [&](const NodeData &nd, ScratchBytes &buf,
+                    const native::Data **dp) -> bool {
+    if (nd.data.length < kPrefix) {
+      snprintf(get_err_buffer(), get_err_buffer_len(), "HNSW: distance: value too short (len=%u)",
+               nd.data.length);
+      return true;
+    }
+    if (native::from_encoded(nd.data.data + kPrefix, nd.data.length - kPrefix,
+                             buf.data(), buf.size())) {
+      snprintf(get_err_buffer(), get_err_buffer_len(), "HNSW: distance: failed to decode vector");
+      return true;
+    }
+    *dp = reinterpret_cast<const native::Data *>(buf.data());
+    return false;
+  };
+  const native::Data *a_data = nullptr;
+  const native::Data *b_data = nullptr;
+  if (decode(a, m_ctx.m_decoded_buf_1, &a_data) ||
+      decode(b, m_ctx.m_decoded_buf_2, &b_data))
+    return true;
+  out = m_dist_fn(a_data, b_data);
   return false;
 }
 

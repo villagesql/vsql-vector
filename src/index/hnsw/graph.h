@@ -24,6 +24,7 @@
 #ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 
+#include "../../native_vector.h"
 #include "hnsw.h"
 #include "storage.h"
 #include <cassert>
@@ -138,6 +139,7 @@ struct GraphContext {
                size_t max_update_chunks, std::span<char> error)
       : m_neighbour_buf(neighbour_buf_size), m_overflow_buf(overflow_buf_size),
         m_vector_buf_1(vector_buf_size), m_vector_buf_2(vector_buf_size),
+        m_decoded_buf_1(vector_buf_size), m_decoded_buf_2(vector_buf_size),
         m_update_slots(max_update_slots), m_link_slots(max_update_slots),
         m_chunk_ids(max_update_chunks), m_node_buf_1(max_update_slots),
         m_node_buf_2(max_update_slots), m_incoming_buf_1(max_update_slots),
@@ -147,6 +149,12 @@ struct GraphContext {
   ScratchBytes m_overflow_buf;
   ScratchBytes m_vector_buf_1;
   ScratchBytes m_vector_buf_2;
+  // Decoded native::Data for each distance() operand. Sized to vector_buf_size
+  // (the raw max, which is >= the decoded native length), so the leaf distance
+  // decodes into these reused buffers instead of allocating per call. Two
+  // buffers so both operands are live at once for m_dist_fn.
+  ScratchBytes m_decoded_buf_1;
+  ScratchBytes m_decoded_buf_2;
 
   ScratchSlots m_update_slots;
   // On-disk slot indices of the incoming-flagged neighbour links
@@ -446,6 +454,13 @@ private:
   bool debug_check_level(const Node &node, LevelId level) const;
 #endif // NDEBUG
 
+  // Native distance function pointer: at index open, resolve_distance_fn() maps
+  // the bound helper's name to the matching native::dist_*, so the leaf distance
+  // below is a direct native call instead of a per-call VDF profile-helper
+  // dispatch.
+  using NativeDistFn = double (*)(const native::Data *, const native::Data *);
+  NativeDistFn resolve_distance_fn();
+
   // The single distance computation both public distance() overloads end at,
   // once each of their operands has been resolved to the vector data it names.
   bool distance(const NodeData &a, const NodeData &b, DistanceType &out);
@@ -579,6 +594,9 @@ private:
   const Index &m_index;
   Segment::TrxRef m_trx_ref;
   GraphContext m_ctx;
+  // Resolved once at construction from the bound helper's name; the leaf
+  // distance() calls it directly.
+  NativeDistFn m_dist_fn = nullptr;
 };
 
 } // namespace svector::hnsw

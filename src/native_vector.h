@@ -287,6 +287,28 @@ static V_FUNC_ALWAYS_INLINE double norm_l2(const Data *v) {
   return std::sqrt(double(sum_sq));
 }
 
+// Canonical metric names and the single name -> kernel mapping. This is the one
+// owner of "which distance name means which kernel": the SVECTOR function/index
+// registration (vector.cc) binds these names, and index code resolves a bound
+// helper name back to its kernel via dist_for_name(). Keep both sides on these
+// symbols so a rename can never silently mismatch.
+using DistFn = double (*)(const Data *, const Data *);
+
+inline constexpr const char kDistL1[] = "l1_distance";
+inline constexpr const char kDistL2Squared[] = "l2_squared_distance";
+inline constexpr const char kDistCosine[] = "cosine_distance";
+inline constexpr const char kDistInnerProduct[] = "inner_product";
+
+// Map a metric name to its kernel; nullptr if the name is unknown.
+inline DistFn dist_for_name(const char *name) {
+  if (name == nullptr) return nullptr;
+  if (std::strcmp(name, kDistL2Squared) == 0) return &dist_squared_l2;
+  if (std::strcmp(name, kDistL1) == 0) return &dist_l1;
+  if (std::strcmp(name, kDistCosine) == 0) return &dist_cosine;
+  if (std::strcmp(name, kDistInnerProduct) == 0) return &dist_inner_product;
+  return nullptr;
+}
+
 }  // namespace svector::native
 
 #endif  // VILLAGESQL_EXAMPLES_VSQL_SVECTOR_SRC_NATIVE_VECTOR_H
