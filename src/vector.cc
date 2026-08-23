@@ -667,12 +667,17 @@ static constexpr const char kHNSWProfileL2[] = "hnsw_l2";
 static constexpr const char kHNSWProfileCosine[] = "hnsw_cosine";
 static constexpr const char kHNSWProfileInnerProduct[] = "hnsw_inner_product";
 
-static constexpr const char kHNSWFuncL1Distance[] = "l1_distance";
+// Helper-function names bound to the HNSW profiles. The names that map to a
+// native kernel come from native_vector.h (native::kDist*) -- the single owner
+// of the name<->kernel correspondence, which the index resolver
+// (native::dist_for_name) also uses -- so a rename cannot drift between the two
+// sides. l2_distance is SQL-only (the sqrt variant), so it has no native-kernel
+// entry and is named here.
+static constexpr const char *kHNSWFuncL1Distance = native::kDistL1;
 static constexpr const char kHNSWFuncL2Distance[] = "l2_distance";
-static constexpr const char kHNSWFuncCosineDistance[] = "cosine_distance";
-static constexpr const char kHNSWFuncInnerProduct[] = "inner_product";
-static constexpr const char kHNSWFuncL2SquaredDistance[] =
-    "l2_squared_distance";
+static constexpr const char *kHNSWFuncCosineDistance = native::kDistCosine;
+static constexpr const char *kHNSWFuncInnerProduct = native::kDistInnerProduct;
+static constexpr const char *kHNSWFuncL2SquaredDistance = native::kDistL2Squared;
 
 // clang-format off
 static constexpr auto HNSW_INDEX_TYPE =
