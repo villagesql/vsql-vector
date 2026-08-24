@@ -61,6 +61,9 @@ using vsql::preview_storage_builder::ColumnStoreCapability;
 using vsql::preview_storage_builder::make_column_store;
 using vsql::preview_storage_builder::StorageCapability;
 
+using svector::hnsw::DISTANCE_HELPER_FN_ID;
+using svector::hnsw::DISTANCE_PROFILE_FN_ID;
+
 namespace native = svector::native;
 
 struct SVectorParams {
@@ -722,38 +725,42 @@ static const auto HNSW_IP_FN =
         .deterministic()
         .build();
 
-static const auto HNSW_L1_PROFILE = make_index_profile(kHNSWProfileL1)
-                                        .for_type(kSVectorTypeName)
-                                        .using_index(kHNSWIndexName)
-                                        .with_function(1, HNSW_L1_FN)
-                                        .with_helper(1, HNSW_L1_FN)
-                                        .ordering(Index::Ordering::ASC)
-                                        .build();
+static const auto HNSW_L1_PROFILE =
+    make_index_profile(kHNSWProfileL1)
+        .for_type(kSVectorTypeName)
+        .using_index(kHNSWIndexName)
+        .with_function(DISTANCE_PROFILE_FN_ID, HNSW_L1_FN)
+        .with_helper(DISTANCE_HELPER_FN_ID, HNSW_L1_FN)
+        .ordering(Index::Ordering::ASC)
+        .build();
 
-static const auto HNSW_L2_PROFILE = make_index_profile(kHNSWProfileL2)
-                                        .for_type(kSVectorTypeName)
-                                        .using_index(kHNSWIndexName)
-                                        .with_function(1, HNSW_L2_FN)
-                                        .with_helper(1, HNSW_L2_SQUARED_FN)
-                                        .ordering(Index::Ordering::ASC)
-                                        .default_for_type(true)
-                                        .build();
+static const auto HNSW_L2_PROFILE =
+    make_index_profile(kHNSWProfileL2)
+        .for_type(kSVectorTypeName)
+        .using_index(kHNSWIndexName)
+        .with_function(DISTANCE_PROFILE_FN_ID, HNSW_L2_FN)
+        .with_helper(DISTANCE_HELPER_FN_ID, HNSW_L2_SQUARED_FN)
+        .ordering(Index::Ordering::ASC)
+        .default_for_type(true)
+        .build();
 
-static const auto HNSW_COSINE_PROFILE = make_index_profile(kHNSWProfileCosine)
-                                            .for_type(kSVectorTypeName)
-                                            .using_index(kHNSWIndexName)
-                                            .with_function(1, HNSW_COSINE_FN)
-                                            .with_helper(1, HNSW_COSINE_FN)
-                                            .ordering(Index::Ordering::ASC)
-                                            .build();
+static const auto HNSW_COSINE_PROFILE =
+    make_index_profile(kHNSWProfileCosine)
+        .for_type(kSVectorTypeName)
+        .using_index(kHNSWIndexName)
+        .with_function(DISTANCE_PROFILE_FN_ID, HNSW_COSINE_FN)
+        .with_helper(DISTANCE_HELPER_FN_ID, HNSW_COSINE_FN)
+        .ordering(Index::Ordering::ASC)
+        .build();
 
-static const auto HNSW_IP_PROFILE = make_index_profile(kHNSWProfileInnerProduct)
-                                        .for_type(kSVectorTypeName)
-                                        .using_index(kHNSWIndexName)
-                                        .with_function(1, HNSW_IP_FN)
-                                        .with_helper(1, HNSW_IP_FN)
-                                        .ordering(Index::Ordering::DESC)
-                                        .build();
+static const auto HNSW_IP_PROFILE =
+    make_index_profile(kHNSWProfileInnerProduct)
+        .for_type(kSVectorTypeName)
+        .using_index(kHNSWIndexName)
+        .with_function(DISTANCE_PROFILE_FN_ID, HNSW_IP_FN)
+        .with_helper(DISTANCE_HELPER_FN_ID, HNSW_IP_FN)
+        .ordering(Index::Ordering::DESC)
+        .build();
 
 static auto HNSW_INDEX_CAPABILITY =
     IndexTypeCapability().index_type(HNSW_INDEX_TYPE);
