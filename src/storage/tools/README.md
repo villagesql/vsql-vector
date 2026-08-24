@@ -49,6 +49,14 @@ svector_page_dump <ibd_file> <root_page_num> [options]
   metadata as index metadata (level, entry level/points) and decode data
   page records as HNSW NeighbourEntry/OverflowEntry instead of a plain
   SVECTOR vector
+- `-g, --graph`: Render the HNSW graph reachable from the root page's entry
+  point as ASCII tree art, walking every level via NID links. Requires `-i`
+  and a level-0 primary store root page (see "Show the HNSW Graph" below)
+- `--max-nodes N`: Cap on distinct nodes rendered by `-g`/`--graph` across
+  all levels combined (default: 50)
+- `--graph-style tree|list`: How `-g`/`--graph` renders each level -- `tree`
+  (default) draws nested tree art; `list` prints one flat adjacency line per
+  node instead (see "Show the HNSW Graph" below)
 - `-h, --help`: Show help message
 
 ## Examples
@@ -127,6 +135,66 @@ and data page records decode as NeighbourEntry (owner, lower-level link,
 neighbours, overflow chain) or OverflowEntry (incoming links, overflow
 chain) fields instead of vector floats.
 
+### 7. Show the HNSW Graph
+
+```bash
+./svector_page_dump table.ibd 4 -i -g
+```
+
+Renders the graph reachable from `<root_page_num>`'s entry point as ASCII
+tree art, one level at a time:
+
+```
+HNSW Graph (M=16, entry level 1, showing up to 50 nodes)
+
+Level 1 (entry)
+•4:0
+├─ •7:2
+└─ •12:5
+   └─ •4:0  ...
+
+Level 0
+•4:0
+├─ •2:9
+│  ├─ •9:2
+│  └─ •15:4
+├─ •7:3
+└─ •22:0
+```
+
+Only `<root_page_num>` (the level-0 primary store) is needed -- every other
+level and page is found by following NID links embedded in each node's own
+record, the same way a real search descends the graph. A neighbour already
+drawn elsewhere in the same level is shown as a `...` leaf rather
+than re-expanded, since HNSW levels are graphs, not trees. `--max-nodes`
+(default 50) bounds how many distinct nodes are fetched across the whole
+walk; nodes beyond that show as `(truncated)` leaves. Add `-v` to also show
+each node's owner VID as `<node>(<vid>)`.
+
+For levels with many edges per node, `--graph-style list` prints a flat
+adjacency line per node instead of nested tree art:
+
+```bash
+./svector_page_dump table.ibd 4 -i -g --graph-style list
+```
+
+```
+HNSW Graph (M=16, entry level 1, showing up to 50 nodes)
+
+Level 1 (entry)
+•4:0(10:0) -> [7:2(10:3)] degree=1
+
+Level 0
+•4:0(10:0) -> [2:9(10:5), 7:3(10:3)] degree=2
+•2:9(10:5) -> [4:0(10:0), 9:2(10:7), 15:4(10:8)] degree=3
+•7:3(10:3) -> [4:0(10:0)] degree=1
+```
+
+Every node reachable from the level's entry point is listed exactly once
+(BFS order), each showing its own outgoing neighbours and degree; there is
+no `...`/`(seen above)` marker since a node is never re-expanded once
+listed.
+
 ## Finding Root Page Number
 
 The root page number is stored in the table's metadata. You can find it by:
@@ -160,6 +228,8 @@ The tool consists of:
 - `hnsw_layout.{h,cc}`: Reimplements the HNSW index's on-disk metadata and
   record layouts (see `../../index/hnsw/storage.h` and `hnsw.h`) for `-i`
   mode, independent of the HNSW index sources
+- `hnsw_graph.{h,cc}`: Walks and renders the HNSW graph as ASCII tree art for
+  `-g`/`--graph`, following NID links level by level via `hnsw_layout.h`
 - `svector_page_dump.cc`: Main driver program
 
 All components use the format definitions from `../root_page.h` and `../data_page.h` to stay in sync with the server implementation. `hnsw_layout.{h,cc}` must be kept in sync by hand with `../../index/hnsw/storage.h`/`hnsw.h` the same way, since it does not link against them.
