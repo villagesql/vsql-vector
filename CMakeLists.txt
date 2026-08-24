@@ -19,8 +19,17 @@ project(vsql_vector_extension)
 # Default to an optimized build. An empty CMAKE_BUILD_TYPE yields -O0 (no
 # -O flag applied), which builds and runs but leaves the distance kernel
 # unoptimized. Override with -DCMAKE_BUILD_TYPE=.
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+#
+# -DWITH_DEBUG=ON means "give me a debug build" -- it takes priority over
+# any explicitly passed CMAKE_BUILD_TYPE and forces Debug, so NDEBUG is
+# never defined (RelWithDebInfo/Release both define it, which would
+# silently compile out every #ifndef NDEBUG debug check in the library).
+if(NOT CMAKE_CONFIGURATION_TYPES)
+  if(WITH_DEBUG)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+  elseif(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+  endif()
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -63,10 +72,6 @@ if(APPLE)
   target_link_options(svector PRIVATE -undefined dynamic_lookup)
 endif()
 
-if(WITH_DEBUG)
-    target_compile_options(svector PRIVATE -g -O0 -DDEBUG)
-endif()
-
 # Create the VEB package
 VEF_CREATE_VEB(
     NAME ${EXTENSION_NAME}
@@ -88,22 +93,25 @@ target_include_directories(svector_page_dump PRIVATE
     ${VillageSQLExtensionFramework_INCLUDE_DIR}
 )
 
-if(WITH_DEBUG)
-    target_compile_options(svector_page_dump PRIVATE -g -O0 -DDEBUG)
-endif()
-
 # Standalone unit tests. These have no dependency on the VillageSQL SDK.
+# They are assert()-based, so NDEBUG (defined by default in Release and
+# RelWithDebInfo builds) must never suppress their checks -- without -UNDEBUG
+# these binaries would silently skip every assertion and "pass" vacuously.
 enable_testing()
 
 add_executable(layer_ops_test
     unittest/layer_ops_test.cc
 )
 
+target_compile_options(layer_ops_test PRIVATE -UNDEBUG)
+
 add_test(NAME layer_ops_test COMMAND layer_ops_test)
 
 add_executable(graph_ops_test
     unittest/graph_ops_test.cc
 )
+
+target_compile_options(graph_ops_test PRIVATE -UNDEBUG)
 
 add_test(NAME graph_ops_test COMMAND graph_ops_test)
 
@@ -120,5 +128,7 @@ add_executable(storage_test
 target_include_directories(storage_test PRIVATE
     ${VillageSQLExtensionFramework_INCLUDE_DIR}
 )
+
+target_compile_options(storage_test PRIVATE -UNDEBUG)
 
 add_test(NAME storage_test COMMAND storage_test)
