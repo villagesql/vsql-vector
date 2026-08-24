@@ -433,8 +433,8 @@ private:
 
   // Convenience accessors for m_ctx.m_error, this call's non-owning error
   // buffer.
-  char *err() const { return m_ctx.m_error.data(); }
-  uint32_t err_len() const {
+  char *get_err_buffer() const { return m_ctx.m_error.data(); }
+  uint32_t get_err_buffer_len() const {
     return static_cast<uint32_t>(m_ctx.m_error.size());
   }
 
