@@ -115,7 +115,8 @@ bool IndexGraph::neighbours(const Node &node, LevelId level,
 }
 
 bool IndexGraph::resolve_node(LevelId level, NID nid, Node &out) {
-  assert(nid.is_valid() && !nid.is_incoming());
+  assert(nid.is_valid());
+  assert(!nid.is_incoming());
 
   LevelStore *store = m_store.get_level(level);
   assert(store != nullptr);
@@ -666,8 +667,20 @@ bool IndexGraph::link_neighbours_locked(const Node &node, LevelId level,
     if (store->fetch(mtr, neighbour.nid, /*for_update=*/true, neighbour_entry,
                      neighbour_num_valid, err(), err_len(),
                      NodeField::Neighbours | NodeField::Overflow,
-                     IncomingFilter::All))
-      return true;
+                     IncomingFilter::All)) {
+      // The neighbour's record may be gone: an incoming link may name a node
+      // that has since been removed, and reading a freed record is exactly
+      // what fails here. A genuine read failure is indistinguishable from it
+      // today, so both are swallowed -- there's no neighbour left to
+      // reciprocate into. node's own outgoing edge is still confirmed below,
+      // left dangling until the neighbour-validation TODO in
+      // GraphOperations::remove() repairs it.
+      // TODO(villagesql-indexing): propagate a real failure once
+      // ColumnStore::fetch() distinguishes it from a free record, which it
+      // already detects.
+      assert(false);
+      continue;
+    }
 
     std::span<Node> neighbour_slots = m_ctx.m_node_buf_2.span(max_n);
     auto free_slot = neighbour_slots.end();

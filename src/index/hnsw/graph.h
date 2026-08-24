@@ -46,7 +46,7 @@
 //     - Acquire top-down by level.
 //
 //   Level Operation Locks:
-//     - Never acquire/hold multiple Level Operation Locks.
+//     - At most one may be held at a time.
 //
 //   Neighbour Storage Locks across levels:
 //     - Acquire top-down by level.

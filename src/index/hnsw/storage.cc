@@ -326,7 +326,8 @@ bool LevelStore::update(MtrCtx::Ref mtr, NID id, const NeighbourEntry &entry,
     const size_t n = entry.neighbours.size();
     assert(n <= slots.size());
     for (size_t i = 0; i < n; ++i) {
-      assert(slots[i].is_valid() && slots[i].value < max_n);
+      assert(slots[i].is_valid());
+      assert(slots[i].value < max_n);
       assert(i == 0 || slots[i].value > slots[i - 1].value);
       write_chunk(neighbour_nid_chunk(slots[i].value),
                   entry.neighbours[i].nid.value);
@@ -366,7 +367,8 @@ bool LevelStore::update(MtrCtx::Ref mtr, NID id, const OverflowEntry &entry,
     const size_t n = entry.incoming.size();
     assert(n <= slots.size());
     for (size_t i = 0; i < n; ++i) {
-      assert(slots[i].is_valid() && slots[i].value < capacity);
+      assert(slots[i].is_valid());
+      assert(slots[i].value < capacity);
       assert(i == 0 || slots[i].value > slots[i - 1].value);
       write_chunk(incoming_chunk(slots[i].value), entry.incoming[i].value);
     }

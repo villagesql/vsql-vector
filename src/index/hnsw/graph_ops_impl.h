@@ -292,6 +292,9 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
       if (m_graph.incoming_neighbours(current, level, orphaned)) {
         return true;
       }
+      // TODO(villagesql-indexing): Validate/repair stale incoming links on
+      // all surviving neighbours, not just those orphaned by this removal.
+      // Such links may be left behind by a failure while replacing neighbours.
       for (const Node &orphan : orphaned) {
         if (unlinked.empty()) {
           // current was the sole connection for everything left at this
