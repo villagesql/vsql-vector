@@ -26,9 +26,11 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../data_page.h"
+#include "hnsw_layout.h"
 
 namespace svector {
 namespace tool {
@@ -41,7 +43,21 @@ class DataPageParser {
     bool is_free;
     bool is_deleted;
     uint64_t trx_ref;
-    std::vector<float> vector_data;  // Decoded vector (assuming float32)
+    std::vector<float> vector_data; // Decoded vector (assuming float32);
+                                    // valid when index_kind == None
+
+    // Valid only when index_kind == HnswRecordKind::Neighbour, decoding the
+    // record per svector::hnsw::NeighbourEntry's layout.
+    uint64_t owner_vid = 0;
+    uint64_t lower_level_nid = 0; // valid only when has_lower_level
+    std::vector<std::pair<uint64_t, uint64_t>> neighbours; // (nid, vid)
+    uint64_t overflow_nid = 0;
+
+    // Valid only when index_kind == HnswRecordKind::Overflow, decoding the
+    // record per svector::hnsw::OverflowEntry's layout. overflow_nid above
+    // is shared with the Neighbour case -- both records end in the same
+    // trailing overflow-chain NID.
+    std::vector<uint64_t> incoming;
   };
 
   // Parsed data page data
@@ -58,6 +74,11 @@ class DataPageParser {
     uint32_t fil_page_prev;  // Previous page in list
     uint32_t fil_page_next;  // Next page in list
     std::vector<RecordStatus> records;
+
+    // Set from parse()'s index_kind/has_lower_level arguments; tells
+    // display() which of RecordStatus's field groups holds real data.
+    HnswRecordKind index_kind = HnswRecordKind::None;
+    bool has_lower_level = false;
 
     // Calculated statistics
     uint16_t num_allocated() const {
@@ -95,9 +116,16 @@ class DataPageParser {
     }
   };
 
-  // Parse data page from raw page data
+  // Parse data page from raw page data. index_kind selects how each record's
+  // column bytes are decoded: None decodes them as a plain SVECTOR float
+  // vector (the existing behavior); Neighbour/Overflow decode them per HNSW's
+  // NeighbourEntry/OverflowEntry layout instead, with has_lower_level
+  // selecting whether a Neighbour record carries a LowerLevel field (see
+  // svector::hnsw::LevelStore::LevelId::has_lower_level()).
   static bool parse(const std::vector<uint8_t> &page_data, uint16_t column_size,
-                    DataPageInfo &info, std::string &error);
+                    DataPageInfo &info, std::string &error,
+                    HnswRecordKind index_kind = HnswRecordKind::None,
+                    bool has_lower_level = false);
 
   // Display data page information
   static void display(const DataPageInfo &info, bool verbose = false,
@@ -122,6 +150,9 @@ class DataPageParser {
 
   // Helper to read float from buffer (using float4store little-endian format)
   static float read_float(const std::vector<uint8_t> &data, uint32_t offset);
+
+  // Helper to read a 6-byte big-endian NID/VID (HNSW_ID_SIZE) from buffer.
+  static uint64_t read_id48(const std::vector<uint8_t> &data, uint32_t offset);
 
   // Get record status bits from bitmap
   static void get_record_bits(const std::vector<uint8_t> &data,
