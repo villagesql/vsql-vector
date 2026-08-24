@@ -402,7 +402,8 @@ struct MockGraph {
   }
 
   bool replace_neighbours(const Node &node, LevelId level,
-                          const std::vector<Node> &new_neighbours) {
+                          const std::vector<Node> &new_neighbours,
+                          std::vector<Node> &out) {
     assert(level == node.level);
     if (fail_replace_neighbours) {
       return true;
@@ -413,7 +414,11 @@ struct MockGraph {
       adj.push_back(nb.id);
     }
     call_log.push_back("replace:" + std::to_string(node.id));
-    return false;
+    // The real replace_neighbours() reciprocates the edges it added before
+    // returning, under the operation lock it already holds, and reports the
+    // neighbours it had to withhold one from -- so out is whatever linking the
+    // new list back produces (see IndexGraph::replace_neighbours()).
+    return link_neighbours(node, level, out);
   }
 
   bool unlink_neighbours(const Node &node, LevelId level,
