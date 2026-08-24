@@ -23,8 +23,12 @@
 
 #include "graph.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <mutex>
 #include <random>
+#include <shared_mutex>
 
 namespace svector::hnsw {
 
@@ -107,6 +111,93 @@ bool IndexGraph::neighbours(const Node &node, LevelId level,
   }
 
   out.resize(num_valid);
+  return false;
+}
+
+bool IndexGraph::resolve_node(LevelId level, NID nid, Node &out) {
+  assert(nid.is_valid());
+  assert(!nid.is_incoming());
+
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+  NeighbourEntry entry;
+  size_t unused_num_valid;
+  bool failed =
+      store->fetch(mtr, nid, /*for_update=*/false, entry, unused_num_valid,
+                   err(), err_len(), NodeField::Owner);
+  mtr_ctx.commit();
+  if (failed) {
+    out = Node{};
+    return true;
+  }
+
+  out = Node{nid, entry.owner};
+  return false;
+}
+
+bool IndexGraph::incoming_neighbours(const Node &node, LevelId level,
+                                     std::vector<Node> &out) {
+  out.clear();
+  assert(debug_check_level(node, level));
+
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+  const uint32_t max_n = store->max_neighbours();
+  const uint32_t capacity = store->overflow_capacity();
+  assert(capacity <= m_ctx.m_incoming_buf_1.size());
+
+  // Node's own list first. Read-only, so IncomingFilter::All compacts it to
+  // the occupied slots alone -- no on-disk slot has to be tracked here, only
+  // which of those links are incoming ones.
+  NeighbourEntry entry;
+  entry.neighbours = m_ctx.m_node_buf_1.span(max_n);
+  size_t unused_num_valid;
+  {
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    bool failed = store->fetch(mtr, node.nid, /*for_update=*/false, entry,
+                               unused_num_valid, err(), err_len(),
+                               NodeField::Neighbours | NodeField::Overflow,
+                               IncomingFilter::All);
+    mtr_ctx.commit();
+    if (failed)
+      return true;
+  }
+
+  for (const Node &link : entry.neighbours) {
+    if (!link.nid.is_incoming())
+      continue;
+    out.push_back(Node{link.nid.clear_incoming(), link.vid});
+  }
+
+  // Then the overflow chain, which holds incoming links exclusively, one
+  // chain entry per mtr (as in drop_overflow_nodes()).
+  for (NID cur = entry.overflow; cur.is_valid();) {
+    OverflowEntry overflow_entry;
+    overflow_entry.incoming = m_ctx.m_incoming_buf_1.span(capacity);
+    size_t unused_valid;
+    {
+      MtrCtx mtr_ctx;
+      auto mtr = mtr_ctx.start();
+      bool failed =
+          store->fetch(mtr, cur, /*for_update=*/false, overflow_entry,
+                       unused_valid, err(), err_len(), OverflowFieldAll);
+      mtr_ctx.commit();
+      if (failed)
+        return true;
+    }
+
+    for (const NID nid : overflow_entry.incoming) {
+      Node resolved;
+      if (resolve_node(level, nid.clear_incoming(), resolved))
+        return true;
+      out.push_back(resolved);
+    }
+    cur = overflow_entry.overflow;
+  }
   return false;
 }
 
@@ -208,6 +299,14 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
 
   LevelStore *store = m_store.get_level(level);
   assert(store != nullptr);
+
+  // Per the bidirectional-link protocol (see graph.h): this node's edges to
+  // neighbours are recorded as incoming links first, since none of them are
+  // yet reciprocated -- link_neighbours() lands the neighbour's own directed
+  // link back to this node, at which point the flag is cleared and the edge
+  // becomes a confirmed outgoing link.
+  for (Node &n : neighbours)
+    n.nid = n.nid.set_incoming();
 
   // Insert node data at current level. lower_level is left invalid here --
   // the node one level down doesn't exist yet; once it does, the next
@@ -396,10 +495,240 @@ bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
   return false;
 }
 
-bool IndexGraph::link_neighbours(const Node & /*node*/, LevelId /*level*/,
+bool IndexGraph::add_overflow_incoming(MtrCtx::Ref mtr, LevelId level,
+                                       const Node &neighbour, NID overflow_head,
+                                       const Node &node) {
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+  const uint32_t capacity = store->overflow_capacity();
+  assert(capacity <= m_ctx.m_incoming_buf_1.size());
+
+  // Overflow entries hold only unreciprocated incoming connections, so the
+  // stored NID is flagged incoming, mirroring create_node()'s placeholder
+  // links -- a future promotion back into the primary neighbour list clears
+  // it the same way link_neighbours() does at the end of its own run.
+  const NID incoming_nid = node.nid.set_incoming();
+
+  // parent/parent_kind track the record whose Overflow field must be
+  // updated to link in a new entry, if the walk below finds every existing
+  // entry full.
+  NID parent = neighbour.nid;
+  StoreKind parent_kind = StoreKind::Neighbour;
+
+  // Walk the chain, one overflow record at a time: each hop opens its own
+  // short-lived mtr, latching (and, before advancing, releasing) exactly
+  // one overflow page, while mtr keeps neighbour's own page latched for the
+  // whole call -- per the lock hierarchy in graph.h, Overflow Storage Locks
+  // are acquired only after the Neighbour Storage Lock, and only one is
+  // ever held at a time.
+  for (NID cur = overflow_head; cur.is_valid();) {
+    MtrCtx sub_ctx;
+    auto sub_mtr = sub_ctx.start();
+
+    OverflowEntry entry;
+    entry.incoming = m_ctx.m_incoming_buf_1.span(capacity);
+    size_t unused_valid;
+    if (store->fetch(sub_mtr, cur, /*for_update=*/true, entry, unused_valid,
+                     err(), err_len(), OverflowFieldAll))
+      return true;
+
+    auto free_slot = std::find_if(entry.incoming.begin(), entry.incoming.end(),
+                                  [](const NID &n) { return !n.is_valid(); });
+    if (free_slot != entry.incoming.end()) {
+      // Room in this entry: land node's incoming NID there.
+      auto slot = static_cast<uint16_t>(free_slot - entry.incoming.begin());
+      std::array<NID, 1> added{incoming_nid};
+      OverflowEntry update_entry;
+      update_entry.incoming = added;
+      m_ctx.m_update_slots[0] = SlotIndex{slot};
+      bool failed =
+          store->update(sub_mtr, cur, update_entry, OverflowField::Incoming,
+                        m_ctx.m_update_slots, m_ctx.m_overflow_buf,
+                        m_ctx.m_chunk_ids, err(), err_len());
+      sub_ctx.commit();
+      return failed;
+    }
+
+    // Full: move on to the next link, remembering this entry as the
+    // current tail in case the whole chain turns out to be full.
+    parent = cur;
+    parent_kind = StoreKind::Overflow;
+    cur = entry.overflow;
+    sub_ctx.commit();
+  }
+
+  // Every existing overflow entry (if any) is full: create a new one
+  // holding node's incoming NID, inserted (and committed) before it is
+  // linked in below so the chain can never point at a not-yet-existing
+  // entry.
+  NID new_nid;
+  {
+    MtrCtx sub_ctx;
+    auto sub_mtr = sub_ctx.start();
+    std::array<NID, 1> added{incoming_nid};
+    OverflowEntry new_entry;
+    new_entry.incoming = added;
+    bool failed =
+        store->insert(sub_mtr, new_entry, m_trx_ref, m_ctx.m_overflow_buf,
+                      new_nid, err(), err_len());
+    sub_ctx.commit();
+    if (failed)
+      return true;
+  }
+
+  // Link the new entry in as parent's successor. parent is either
+  // neighbour's own record -- still covered by the caller's mtr -- or the
+  // last (full) OverflowEntry in the chain, latched afresh here.
+  if (parent_kind == StoreKind::Neighbour) {
+    NeighbourEntry link_entry;
+    link_entry.overflow = new_nid;
+    return store->update(mtr, parent, link_entry, NodeField::Overflow,
+                         m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
+                         m_ctx.m_chunk_ids, err(), err_len());
+  }
+
+  MtrCtx sub_ctx;
+  auto sub_mtr = sub_ctx.start();
+  OverflowEntry link_entry;
+  link_entry.overflow = new_nid;
+  bool failed =
+      store->update(sub_mtr, parent, link_entry, OverflowField::Overflow,
+                    m_ctx.m_update_slots, m_ctx.m_overflow_buf,
+                    m_ctx.m_chunk_ids, err(), err_len());
+  sub_ctx.commit();
+  return failed;
+}
+
+bool IndexGraph::link_neighbours(const Node &node, LevelId level,
                                  std::vector<Node> &out) {
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+
+  // Level Operation Lock: S. Two concurrently inserted nodes cannot choose
+  // one another as neighbours, so no exclusive serialization is needed at
+  // the level (see the lock hierarchy in graph.h).
+  std::shared_lock<std::shared_mutex> op_lock(store->operation_mutex());
+
+  return link_neighbours_locked(node, level, out);
+}
+
+bool IndexGraph::link_neighbours_locked(const Node &node, LevelId level,
+                                        std::vector<Node> &out) {
   out.clear();
-  return false;
+
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+  const uint32_t max_n = store->max_neighbours();
+
+  NeighbourEntry entry;
+  entry.neighbours = m_ctx.m_node_buf_1.span(max_n);
+  size_t unused_num_valid;
+  {
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    bool failed = store->fetch(mtr, node.nid, /*for_update=*/true, entry,
+                               unused_num_valid, err(), err_len(),
+                               NodeField::Neighbours, IncomingFilter::All);
+    mtr_ctx.commit();
+    if (failed)
+      return true;
+  }
+  std::span<Node> node_slots = m_ctx.m_node_buf_1.span(max_n);
+
+  // Incoming links walked so far, compacted to the front of node_slots with
+  // their flag cleared and paired index-wise with m_link_slots -- the
+  // ascending on-disk slot each came from. Compacting in place is safe: the
+  // write index never runs ahead of the slot being read.
+  size_t num_incoming = 0;
+
+  for (uint32_t slot = 0; slot < max_n; ++slot) {
+    const Node current = node_slots[slot];
+    // Skip empty slots and links already recorded as outgoing: those are
+    // either reciprocated already or had their reciprocal edge deliberately
+    // withheld, so linking them again would add node to a neighbour twice.
+    if (!current.nid.is_valid() || !current.nid.is_incoming())
+      continue;
+
+    const Node neighbour{current.nid.clear_incoming(), current.vid};
+    node_slots[num_incoming] = neighbour;
+    m_ctx.m_link_slots[num_incoming] = SlotIndex{static_cast<uint16_t>(slot)};
+    ++num_incoming;
+
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+
+    // Raw slot layout (for_update=true, slots=nullptr): every on-disk slot
+    // up to max_n, valid or not, in place -- needed to find a free slot to
+    // land node in. IncomingFilter::All makes num_valid an exact occupied
+    // count.
+    NeighbourEntry neighbour_entry;
+    neighbour_entry.neighbours = m_ctx.m_node_buf_2.span(max_n);
+    size_t neighbour_num_valid;
+    if (store->fetch(mtr, neighbour.nid, /*for_update=*/true, neighbour_entry,
+                     neighbour_num_valid, err(), err_len(),
+                     NodeField::Neighbours | NodeField::Overflow,
+                     IncomingFilter::All)) {
+      // The neighbour's record may be gone: an incoming link may name a node
+      // that has since been removed, and reading a freed record is exactly
+      // what fails here. A genuine read failure is indistinguishable from it
+      // today, so both are swallowed -- there's no neighbour left to
+      // reciprocate into. node's own outgoing edge is still confirmed below,
+      // left dangling until the neighbour-validation TODO in
+      // GraphOperations::remove() repairs it.
+      // TODO(villagesql-indexing): propagate a real failure once
+      // ColumnStore::fetch() distinguishes it from a free record, which it
+      // already detects.
+      assert(false);
+      continue;
+    }
+
+    std::span<Node> neighbour_slots = m_ctx.m_node_buf_2.span(max_n);
+    auto free_slot = neighbour_slots.end();
+    if (neighbour_num_valid < max_n)
+      free_slot = std::find_if(neighbour_slots.begin(), neighbour_slots.end(),
+                               [](const Node &n) { return !n.nid.is_valid(); });
+
+    if (free_slot != neighbour_slots.end()) {
+      // Room for a direct reciprocal edge: land node there (Bidirectional
+      // links, step 2 in graph.h).
+      auto free_index =
+          static_cast<uint16_t>(free_slot - neighbour_slots.begin());
+      std::array<Node, 1> added{node};
+      NeighbourEntry update_entry;
+      update_entry.neighbours = added;
+      m_ctx.m_update_slots[0] = SlotIndex{free_index};
+      if (store->update(mtr, neighbour.nid, update_entry, NodeField::Neighbours,
+                        m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
+                        m_ctx.m_chunk_ids, err(), err_len()))
+        return true;
+    } else {
+      // No room: Add an incoming connection link.
+      out.push_back(neighbour);
+      if (add_overflow_incoming(mtr, level, neighbour, neighbour_entry.overflow,
+                                node))
+        return true;
+    }
+    mtr_ctx.commit();
+  }
+
+  // Nothing was flagged incoming: node's list is already fully reciprocated
+  // and there is no flag left to clear.
+  if (num_incoming == 0)
+    return false;
+
+  // Bidirectional links, step 3 in graph.h: every incoming link walked above
+  // has now either landed a reciprocal edge directly or been recorded in the
+  // neighbour's overflow chain, so confirm them all as real outgoing edges,
+  // each written back to the slot m_link_slots recorded for it.
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+  NeighbourEntry update_entry;
+  update_entry.neighbours = m_ctx.m_node_buf_1.span(num_incoming);
+  bool failed = store->update(
+      mtr, node.nid, update_entry, NodeField::Neighbours, m_ctx.m_link_slots,
+      m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(), err_len());
+  mtr_ctx.commit();
+  return failed;
 }
 
 bool IndexGraph::replace_neighbours(const Node & /*node*/, LevelId /*level*/,
@@ -407,10 +736,343 @@ bool IndexGraph::replace_neighbours(const Node & /*node*/, LevelId /*level*/,
   return false;
 }
 
-bool IndexGraph::unlink_neighbours(const Node & /*node*/, LevelId /*level*/,
-                                   UnlinkOrphans /*orphans*/,
+bool IndexGraph::clear_link(MtrCtx::Ref mtr, LevelId level,
+                            const LinkSlot &link) {
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+  assert(link.slot.is_valid());
+
+  m_ctx.m_update_slots[0] = link.slot;
+
+  if (link.kind == StoreKind::Neighbour) {
+    // The caller's mtr already holds link.record's page latch.
+    std::array<Node, 1> cleared{};
+    NeighbourEntry entry;
+    entry.neighbours = cleared;
+    return store->update(mtr, link.record, entry, NodeField::Neighbours,
+                         m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
+                         m_ctx.m_chunk_ids, err(), err_len());
+  }
+
+  // An overflow record is latched in its own short-lived mtr, opened while
+  // the caller's mtr holds the neighbour-record latches it belongs after.
+  MtrCtx sub_ctx;
+  auto sub_mtr = sub_ctx.start();
+  std::array<NID, 1> cleared{};
+  OverflowEntry entry;
+  entry.incoming = cleared;
+  bool failed =
+      store->update(sub_mtr, link.record, entry, OverflowField::Incoming,
+                    m_ctx.m_update_slots, m_ctx.m_overflow_buf,
+                    m_ctx.m_chunk_ids, err(), err_len());
+  sub_ctx.commit();
+  return failed;
+}
+
+bool IndexGraph::find_overflow_link(LevelId level, NID head, NID target,
+                                    LinkSlot &out) {
+  out = LinkSlot{};
+
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+  const uint32_t capacity = store->overflow_capacity();
+  assert(capacity <= m_ctx.m_incoming_buf_2.size());
+
+  for (NID cur = head; cur.is_valid();) {
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+
+    // Raw slot layout (for_update=true): every incoming slot stays in place,
+    // so a hit's index is the on-disk slot clear_link() must write to.
+    OverflowEntry entry;
+    entry.incoming = m_ctx.m_incoming_buf_2.span(capacity);
+    size_t unused_num_valid;
+    bool failed =
+        store->fetch(mtr, cur, /*for_update=*/true, entry, unused_num_valid,
+                     err(), err_len(), OverflowFieldAll);
+    mtr_ctx.commit();
+    if (failed)
+      return true;
+
+    for (uint32_t slot = 0; slot < capacity; ++slot) {
+      // Chained incoming links are always flagged incoming (see
+      // add_overflow_incoming()), so compare with the flag masked off.
+      if (entry.incoming[slot].clear_incoming() != target)
+        continue;
+      out = LinkSlot{cur, StoreKind::Overflow,
+                     SlotIndex{static_cast<uint16_t>(slot)}};
+      return false;
+    }
+    cur = entry.overflow;
+  }
+  return false;
+}
+
+bool IndexGraph::unlink_neighbour(LevelId level, const Node &node,
+                                  NID neighbour_nid, Node &out_neighbour,
+                                  bool &orphan) {
+  orphan = false;
+  // Left unset unless a link is actually severed below -- how the caller tells
+  // that case from having found nothing to sever.
+  out_neighbour = Node{};
+
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+  const uint32_t max_n = store->max_neighbours();
+
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+
+  // Only the neighbour is latched: node's own list is adjusted separately by
+  // unlink_neighbours(), whose Level Operation Lock covers both halves.
+  //
+  // Raw slot layout (for_update=true, slots=nullptr) with IncomingFilter::All:
+  // every on-disk slot in place, so a hit's index is the slot to clear, and an
+  // incoming-flagged link is neither skipped nor mistaken for an outgoing one.
+  NeighbourEntry entry;
+  entry.neighbours = m_ctx.m_node_buf_2.span(max_n);
+  size_t unused_num_valid;
+  if (store->fetch(mtr, neighbour_nid, /*for_update=*/true, entry,
+                   unused_num_valid, err(), err_len(),
+                   NodeField::Owner | NodeField::Neighbours |
+                       NodeField::Overflow,
+                   IncomingFilter::All)) {
+    // The neighbour's record is gone: an incoming link may name a node that
+    // has since been freed, and reading a freed record is exactly what fails
+    // here. A genuine read failure is indistinguishable from it today, so both
+    // are swallowed -- either way there is no link left to sever.
+    // TODO(villagesql-indexing): propagate a real failure once
+    // ColumnStore::fetch() distinguishes it from a free record, which it
+    // already detects.
+    return false;
+  }
+
+  // The neighbour's record of the link, plus the outgoing links it is left
+  // with once that record is gone -- none of them makes it an orphan at this
+  // level.
+  std::span<Node> neighbour_slots = m_ctx.m_node_buf_2.span(max_n);
+  LinkSlot link{};
+  uint32_t outgoing = 0;
+  for (uint32_t slot = 0; slot < max_n; ++slot) {
+    const NID nid = neighbour_slots[slot].nid;
+    if (!nid.is_valid())
+      continue;
+    if (nid.clear_incoming() == node.nid) {
+      link = LinkSlot{neighbour_nid, StoreKind::Neighbour,
+                      SlotIndex{static_cast<uint16_t>(slot)}};
+      continue;
+    }
+    if (!nid.is_incoming())
+      ++outgoing;
+  }
+
+  // Nothing in the neighbour's primary list names node: the link is one the
+  // neighbour had no room for there, recorded as an incoming link in its
+  // overflow chain instead (see add_overflow_incoming()).
+  if (!link.slot.is_valid() &&
+      find_overflow_link(level, entry.overflow, node.nid, link))
+    return true;
+
+  // Nothing names node anywhere: node's own link was a placeholder the
+  // neighbour never reciprocated (Bidirectional links, step 1 in graph.h), or
+  // an earlier, interrupted run of this operation already removed it. Nothing
+  // was severed, so nothing is reported about the neighbour either -- only a
+  // node that really did link back to node can be called an orphan of it.
+  if (!link.slot.is_valid())
+    return false;
+
+  if (clear_link(mtr, level, link))
+    return true;
+
+  mtr_ctx.commit();
+  // The overflow chain carries no vid, so the neighbour's own owner field is
+  // the one place either of unlink_neighbours()' walks can resolve it from.
+  out_neighbour = Node{neighbour_nid, entry.owner};
+  orphan = outgoing == 0;
+  return false;
+}
+
+bool IndexGraph::unlink_neighbours(const Node &node, LevelId level,
                                    std::vector<Node> &out) {
   out.clear();
+  assert(!node.nid.is_incoming());
+  assert(debug_check_level(node, level));
+
+  LevelStore *store = m_store.get_level(level);
+  assert(store != nullptr);
+  const uint32_t max_n = store->max_neighbours();
+  const uint32_t capacity = store->overflow_capacity();
+  assert(capacity <= m_ctx.m_incoming_buf_1.size());
+
+  // Level Operation Lock: X. Severing established connections adjusts nodes
+  // that other operations may be adjusting too, so it has to be serialized
+  // against them at this level. Holding it across the whole operation is also
+  // what makes the one-latch-at-a-time walk below safe: no concurrent
+  // operation can establish or retain a link between node and one of its
+  // neighbours while the two sides are taken apart separately (see the lock
+  // hierarchy in graph.h).
+  std::unique_lock<std::shared_mutex> op_lock(store->operation_mutex());
+
+  // Node's own record of its links: the primary neighbour list -- read in raw
+  // slot layout and with IncomingFilter::All, since an incoming-flagged slot
+  // records a link to sever just the same -- plus the head of the overflow
+  // chain holding the incoming links that had no room in that list.
+  NeighbourEntry entry;
+  entry.neighbours = m_ctx.m_node_buf_1.span(max_n);
+  size_t unused_num_valid;
+  {
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    bool failed = store->fetch(mtr, node.nid, /*for_update=*/true, entry,
+                               unused_num_valid, err(), err_len(),
+                               NodeField::Neighbours | NodeField::Overflow,
+                               IncomingFilter::All);
+    mtr_ctx.commit();
+    if (failed)
+      return true;
+  }
+
+  // Compact node's links to the front of node_slots, flagged incoming and
+  // paired index-wise with m_link_slots -- the ascending on-disk slot each came
+  // from -- as link_neighbours() pairs the links it walks. Compacting in place
+  // is safe: the write index never runs ahead of the slot being read.
+  std::span<Node> node_slots = m_ctx.m_node_buf_1.span(max_n);
+  size_t num_links = 0;
+  for (uint32_t slot = 0; slot < max_n; ++slot) {
+    const Node current = node_slots[slot];
+    if (!current.nid.is_valid())
+      continue;
+    node_slots[num_links] = Node{current.nid.set_incoming(), current.vid};
+    m_ctx.m_link_slots[num_links] = SlotIndex{static_cast<uint16_t>(slot)};
+    ++num_links;
+  }
+
+  // Demote every one of them to an incoming link in a single update: node
+  // keeps the record of which neighbours are left to visit, but no longer has
+  // an outgoing link of its own, so it drops out of every traversal
+  // (neighbours() excludes incoming links) before any neighbour is touched.
+  if (num_links > 0) {
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    NeighbourEntry update_entry;
+    update_entry.neighbours = m_ctx.m_node_buf_1.span(num_links);
+    bool failed = store->update(
+        mtr, node.nid, update_entry, NodeField::Neighbours, m_ctx.m_link_slots,
+        m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(), err_len());
+    mtr_ctx.commit();
+    if (failed)
+      return true;
+  }
+
+  // Follow each link and remove the neighbour's own link back to node,
+  // collecting the slots to free -- every link's but an orphaned neighbour's,
+  // whose slot stays behind as the graph's record that it still needs
+  // reconnecting. Both compactions are safe for the same reason as above: the
+  // write index trails the index being read.
+  size_t num_freed = 0;
+  for (size_t i = 0; i < num_links; ++i) {
+    Node neighbour;
+    bool orphan = false;
+    if (unlink_neighbour(level, node, node_slots[i].nid.clear_incoming(),
+                         neighbour, orphan))
+      return true;
+    if (orphan)
+      continue;
+
+    m_ctx.m_link_slots[num_freed] = m_ctx.m_link_slots[i];
+    node_slots[num_freed] = Node{};
+    ++num_freed;
+    // Only a severed link yields a neighbour to report; nothing is known about
+    // one that turned out to have no link back to node. Bounded by a node's own
+    // degree limit besides: out is only a pool of still-connected nodes to
+    // search from, and the overflow chain below can otherwise push it
+    // arbitrarily far past it.
+    if (neighbour.nid.is_valid() && out.size() < max_n)
+      out.push_back(neighbour);
+  }
+
+  // Free those slots, now that every neighbour has dropped its side. Doing it
+  // last is what makes an interrupted run restartable: whatever is still
+  // recorded is simply walked again, and a neighbour already done just has no
+  // link left to find.
+  if (num_freed > 0) {
+    MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    NeighbourEntry update_entry;
+    update_entry.neighbours = m_ctx.m_node_buf_1.span(num_freed);
+    bool failed = store->update(
+        mtr, node.nid, update_entry, NodeField::Neighbours, m_ctx.m_link_slots,
+        m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(), err_len());
+    mtr_ctx.commit();
+    if (failed)
+      return true;
+  }
+
+  // The overflow chain holds the same kind of link, one indirection away:
+  // every valid incoming NID is a node whose link to node had no slot in the
+  // primary list above, severed exactly the same way, with the chain entry's
+  // own slots freed in place of node's. The entries themselves are left for
+  // drop_node() to unlink and free.
+  for (NID cur = entry.overflow; cur.is_valid();) {
+    OverflowEntry overflow_entry;
+    overflow_entry.incoming = m_ctx.m_incoming_buf_1.span(capacity);
+    size_t unused_valid;
+    {
+      MtrCtx mtr_ctx;
+      auto mtr = mtr_ctx.start();
+      // Raw slot layout, as for node's primary list above.
+      bool failed =
+          store->fetch(mtr, cur, /*for_update=*/true, overflow_entry,
+                       unused_valid, err(), err_len(), OverflowFieldAll);
+      mtr_ctx.commit();
+      if (failed)
+        return true;
+    }
+
+    // Chained links are incoming ones to begin with, so there is nothing to
+    // demote here: compact them straight into the same slot pairing the
+    // primary list used above.
+    std::span<NID> incoming = m_ctx.m_incoming_buf_1.span(capacity);
+    size_t num_incoming = 0;
+    for (uint32_t slot = 0; slot < capacity; ++slot) {
+      if (!incoming[slot].is_valid())
+        continue;
+      incoming[num_incoming] = incoming[slot];
+      m_ctx.m_link_slots[num_incoming] = SlotIndex{static_cast<uint16_t>(slot)};
+      ++num_incoming;
+    }
+
+    num_freed = 0;
+    for (size_t i = 0; i < num_incoming; ++i) {
+      Node neighbour;
+      bool orphan = false;
+      if (unlink_neighbour(level, node, incoming[i].clear_incoming(), neighbour,
+                           orphan))
+        return true;
+      if (orphan)
+        continue;
+
+      m_ctx.m_link_slots[num_freed] = m_ctx.m_link_slots[i];
+      incoming[num_freed] = NID{};
+      ++num_freed;
+      if (neighbour.nid.is_valid() && out.size() < max_n)
+        out.push_back(neighbour);
+    }
+
+    if (num_freed > 0) {
+      MtrCtx mtr_ctx;
+      auto mtr = mtr_ctx.start();
+      OverflowEntry update_entry;
+      update_entry.incoming = m_ctx.m_incoming_buf_1.span(num_freed);
+      bool failed = store->update(
+          mtr, cur, update_entry, OverflowField::Incoming, m_ctx.m_link_slots,
+          m_ctx.m_overflow_buf, m_ctx.m_chunk_ids, err(), err_len());
+      mtr_ctx.commit();
+      if (failed)
+        return true;
+    }
+    cur = overflow_entry.overflow;
+  }
   return false;
 }
 

@@ -31,6 +31,7 @@
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_OPS_IMPL_H
 
 #include <algorithm>
+#include <cassert>
 #include <vector>
 
 #include "graph_ops.h"
@@ -211,7 +212,6 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
   using LockGraph = typename Graph::LockGraph;
   using LockLevels = typename Graph::LockLevels;
   using DescendPolicy = typename Graph::LockLevels::DescendPolicy;
-  using UnlinkOrphans = typename Graph::UnlinkOrphans;
 
   // Lock graph in Shared Mode.
   LockGraph graph_lock(m_graph, LockMode::Shared);
@@ -275,24 +275,26 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
                       DescendPolicy::Release);
     Node current = target_node;
     for (;;) {
-      // First, sever only the edges that won't orphan their other
-      // endpoint, keeping the rest intact -- they're good entry points
-      // for repairing the ones that would be orphaned.
+      // Sever every edge at this level. The neighbours that keep an edge of
+      // their own come back in unlinked -- they're good entry points for
+      // repairing the ones that don't.
       std::vector<Node> unlinked;
-      if (m_graph.unlink_neighbours(current, level, UnlinkOrphans::No,
-                                    unlinked)) {
+      if (m_graph.unlink_neighbours(current, level, unlinked)) {
         return true;
       }
 
-      // Whatever is still linked to current would be orphaned once its
-      // last edge (to current) is cut. Repair each of them at this same
-      // level -- being orphaned is a level-specific phenomenon, so we
-      // never descend further to do it -- using the survivors above as
+      // The rest were orphaned by losing their edge to current, and are the
+      // links current is still recorded as the target of. Repair each of them
+      // at this same level -- being orphaned is a level-specific phenomenon,
+      // so we never descend further to do it -- using the survivors above as
       // search_layer's entry points.
       std::vector<Node> orphaned;
-      if (m_graph.neighbours(current, level, orphaned)) {
+      if (m_graph.incoming_neighbours(current, level, orphaned)) {
         return true;
       }
+      // TODO(villagesql-indexing): Validate/repair stale incoming links on
+      // all surviving neighbours, not just those orphaned by this removal.
+      // Such links may be left behind by a failure while replacing neighbours.
       for (const Node &orphan : orphaned) {
         if (unlinked.empty()) {
           // current was the sole connection for everything left at this
@@ -312,6 +314,14 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
         if (consume_heuristic(layer, m_graph.M(), new_neighbours)) {
           return true;
         }
+        // The search seeds its result set with every entry point that isn't
+        // the query node itself, construction treats every node as visible,
+        // and the nearest result can never be dominated -- so a non-empty
+        // candidates always yields at least one neighbour. unlinked can't
+        // consist of orphan alone either: it is appended to after the repair,
+        // never before, and what unlink_neighbours() put there is disjoint
+        // from the orphans by construction.
+        assert(!new_neighbours.empty());
         if (m_graph.replace_neighbours(orphan, level, new_neighbours)) {
           return true;
         }
@@ -332,14 +342,9 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
         replacement_level = level;
       }
 
-      // Now that the orphaned ones are repaired elsewhere, sever the
-      // remaining edges too.
-      std::vector<Node> unused;
-      if (m_graph.unlink_neighbours(current, level, UnlinkOrphans::Yes,
-                                    unused)) {
-        return true;
-      }
-
+      // The repaired orphans stay recorded as incoming links on current,
+      // which nothing reads any more: no node points at current at this
+      // level, and drop_node() below frees the record they live in.
       nodes.push({current, level});
       if (!level.has_lower_level()) {
         break;
