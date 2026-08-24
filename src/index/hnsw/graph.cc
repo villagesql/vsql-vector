@@ -136,16 +136,15 @@ bool IndexGraph::neighbours(const Node &node, LevelId level,
   NeighbourEntry entry;
   entry.neighbours = out;
   size_t num_valid = 0;
-  bool failed =
-      store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid, err(),
-                   err_len(), NodeField::Neighbours);
-  mtr_ctx.commit();
-  if (failed) {
+  if (store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
+                   get_err_buffer(), get_err_buffer_len(),
+                   NodeField::Neighbours)) {
     out.clear();
     return true;
   }
 
   out.resize(num_valid);
+  mtr_ctx.commit();
   return false;
 }
 
@@ -159,17 +158,15 @@ bool IndexGraph::resolve_node(LevelId level, NID nid, Node &out) {
   MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
   NeighbourEntry entry;
-  size_t unused_num_valid;
-  bool failed =
-      store->fetch(mtr, nid, /*for_update=*/false, entry, unused_num_valid,
-                   err(), err_len(), NodeField::Owner);
-  mtr_ctx.commit();
-  if (failed) {
+  size_t num_valid;
+  if (store->fetch(mtr, nid, /*for_update=*/false, entry, num_valid,
+                   get_err_buffer(), get_err_buffer_len(), NodeField::Owner)) {
     out = Node{};
     return true;
   }
 
   out = Node{nid, entry.owner};
+  mtr_ctx.commit();
   return false;
 }
 
@@ -189,16 +186,14 @@ bool IndexGraph::incoming_neighbours(const Node &node, LevelId level,
   // which of those links are incoming ones.
   NeighbourEntry entry;
   entry.neighbours = m_ctx.m_node_buf_1.span(max_n);
-  size_t unused_num_valid;
+  size_t num_valid;
   {
     MtrCtx mtr_ctx;
     auto mtr = mtr_ctx.start();
-    bool failed = store->fetch(mtr, node.nid, /*for_update=*/false, entry,
-                               unused_num_valid, err(), err_len(),
-                               NodeField::Neighbours | NodeField::Overflow,
-                               IncomingFilter::All);
-    mtr_ctx.commit();
-    if (failed)
+    if (store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(),
+                     NodeField::Neighbours | NodeField::Overflow,
+                     IncomingFilter::All))
       return true;
   }
 
@@ -213,15 +208,13 @@ bool IndexGraph::incoming_neighbours(const Node &node, LevelId level,
   for (NID cur = entry.overflow; cur.is_valid();) {
     OverflowEntry overflow_entry;
     overflow_entry.incoming = m_ctx.m_incoming_buf_1.span(capacity);
-    size_t unused_valid;
+    size_t num_valid;
     {
       MtrCtx mtr_ctx;
       auto mtr = mtr_ctx.start();
-      bool failed =
-          store->fetch(mtr, cur, /*for_update=*/false, overflow_entry,
-                       unused_valid, err(), err_len(), OverflowFieldAll);
-      mtr_ctx.commit();
-      if (failed)
+      if (store->fetch(mtr, cur, /*for_update=*/false, overflow_entry,
+                       num_valid, get_err_buffer(), get_err_buffer_len(),
+                       OverflowFieldAll))
         return true;
     }
 
@@ -280,13 +273,13 @@ bool IndexGraph::set_entry_point(const std::vector<Node> &nodes,
 
   MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
-  bool failed = m_store.set_entry_point(mtr, node, level, err(), err_len());
-  mtr_ctx.commit();
-  return failed;
+  return m_store.set_entry_point(mtr, node, level, get_err_buffer(),
+                                 get_err_buffer_len());
 }
 
 bool IndexGraph::ensure_levels(LevelId level) {
-  return m_store.ensure_levels(level, err(), err_len()) == nullptr;
+  return m_store.ensure_levels(level, get_err_buffer(), get_err_buffer_len()) ==
+         nullptr;
 }
 
 bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
@@ -325,7 +318,8 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
     NeighbourEntry parent_check;
     size_t num_valid = 0;
     if (parent_store->fetch(mtr, parent->nid, /*for_update=*/true, parent_check,
-                            num_valid, err(), err_len(), NodeField::LowerLevel))
+                            num_valid, get_err_buffer(), get_err_buffer_len(),
+                            NodeField::LowerLevel))
       return true;
     // The node one level down doesn't exist yet -- this call is the one
     // that creates it, below.
@@ -353,7 +347,7 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
   entry.neighbours = neighbours;
   NID new_nid;
   if (store->insert(mtr, entry, m_trx_ref, m_ctx.m_neighbour_buf, new_nid,
-                    err(), err_len()))
+                    get_err_buffer(), get_err_buffer_len()))
     return true;
 
   out.nid = new_nid;
@@ -365,8 +359,8 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
     parent_entry.lower_level = new_nid;
     if (parent_store->update(mtr, parent->nid, parent_entry,
                              NodeField::LowerLevel, m_ctx.m_update_slots,
-                             m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(),
-                             err_len()))
+                             m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids,
+                             get_err_buffer(), get_err_buffer_len()))
       return true;
   }
 
@@ -388,11 +382,9 @@ bool IndexGraph::drop_overflow_nodes(LevelId level, const Node &node) {
     auto mtr = mtr_ctx.start();
     NeighbourEntry entry;
     size_t num_valid = 0;
-    bool failed =
-        store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
-                     err(), err_len(), NodeField::Overflow);
-    mtr_ctx.commit();
-    if (failed)
+    if (store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(),
+                     NodeField::Overflow))
       return true;
     head = entry.overflow;
   }
@@ -409,10 +401,9 @@ bool IndexGraph::drop_overflow_nodes(LevelId level, const Node &node) {
     auto mtr = mtr_ctx.start();
     OverflowEntry entry;
     size_t num_valid = 0;
-    bool failed = store->fetch(mtr, cur, /*for_update=*/false, entry, num_valid,
-                               err(), err_len(), OverflowField::Overflow);
-    mtr_ctx.commit();
-    if (failed)
+    if (store->fetch(mtr, cur, /*for_update=*/false, entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(),
+                     OverflowField::Overflow))
       return true;
 
     if (entry.overflow.is_valid())
@@ -445,19 +436,21 @@ bool IndexGraph::drop_overflow_node(LevelId level, const OverflowLink &link) {
     prev_entry.overflow = NID{};
     if (store->update(mtr, link.prev, prev_entry, NodeField::Overflow,
                       m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
-                      m_ctx.m_chunk_ids, err(), err_len()))
+                      m_ctx.m_chunk_ids, get_err_buffer(),
+                      get_err_buffer_len()))
       return true;
   } else {
     OverflowEntry prev_entry;
     prev_entry.overflow = NID{};
     if (store->update(mtr, link.prev, prev_entry, OverflowField::Overflow,
                       m_ctx.m_update_slots, m_ctx.m_overflow_buf,
-                      m_ctx.m_chunk_ids, err(), err_len()))
+                      m_ctx.m_chunk_ids, get_err_buffer(),
+                      get_err_buffer_len()))
       return true;
   }
 
-  if (store->remove(mtr, StoreKind::Overflow, link.nid, m_trx_ref, err(),
-                    err_len()))
+  if (store->remove(mtr, StoreKind::Overflow, link.nid, m_trx_ref,
+                    get_err_buffer(), get_err_buffer_len()))
     return true;
 
   mtr_ctx.commit();
@@ -486,16 +479,16 @@ bool IndexGraph::drop_node(const std::optional<Node> &parent, LevelId level,
     parent_entry.lower_level = NID{};
     if (parent_store->update(mtr, parent->nid, parent_entry,
                              NodeField::LowerLevel, m_ctx.m_update_slots,
-                             m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(),
-                             err_len()))
+                             m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids,
+                             get_err_buffer(), get_err_buffer_len()))
       return true;
   }
 
   LevelStore *store = m_store.get_level(level);
   assert(store != nullptr);
 
-  if (store->remove(mtr, StoreKind::Neighbour, node.nid, m_trx_ref, err(),
-                    err_len()))
+  if (store->remove(mtr, StoreKind::Neighbour, node.nid, m_trx_ref,
+                    get_err_buffer(), get_err_buffer_len()))
     return true;
 
   mtr_ctx.commit();
@@ -511,10 +504,8 @@ bool IndexGraph::mark_delete(const Node &node, LevelId level,
 
   MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
-  bool failed = store->mark_delete(mtr, node.nid, m_trx_ref, delete_mark, err(),
-                                   err_len());
-  mtr_ctx.commit();
-  return failed;
+  return store->mark_delete(mtr, node.nid, m_trx_ref, delete_mark,
+                            get_err_buffer(), get_err_buffer_len());
 }
 
 bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
@@ -530,11 +521,9 @@ bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
 
   NeighbourEntry entry;
   size_t num_valid = 0;
-  bool failed =
-      store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid, err(),
-                   err_len(), NodeField::LowerLevel);
-  mtr_ctx.commit();
-  if (failed) {
+  if (store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
+                   get_err_buffer(), get_err_buffer_len(),
+                   NodeField::LowerLevel)) {
     out = Node{};
     return true;
   }
@@ -542,6 +531,7 @@ bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
   assert(entry.lower_level.is_valid());
   out = Node{entry.lower_level, node.vid};
   assert(debug_check_level(out, level.lower()));
+  mtr_ctx.commit();
   return false;
 }
 
@@ -577,9 +567,9 @@ bool IndexGraph::add_overflow_incoming(MtrCtx::Ref mtr, LevelId level,
 
     OverflowEntry entry;
     entry.incoming = m_ctx.m_incoming_buf_1.span(capacity);
-    size_t unused_valid;
-    if (store->fetch(sub_mtr, cur, /*for_update=*/true, entry, unused_valid,
-                     err(), err_len(), OverflowFieldAll))
+    size_t num_valid;
+    if (store->fetch(sub_mtr, cur, /*for_update=*/true, entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(), OverflowFieldAll))
       return true;
 
     auto free_slot = std::find_if(entry.incoming.begin(), entry.incoming.end(),
@@ -591,12 +581,10 @@ bool IndexGraph::add_overflow_incoming(MtrCtx::Ref mtr, LevelId level,
       OverflowEntry update_entry;
       update_entry.incoming = added;
       m_ctx.m_update_slots[0] = SlotIndex{slot};
-      bool failed =
-          store->update(sub_mtr, cur, update_entry, OverflowField::Incoming,
-                        m_ctx.m_update_slots, m_ctx.m_overflow_buf,
-                        m_ctx.m_chunk_ids, err(), err_len());
-      sub_ctx.commit();
-      return failed;
+      return store->update(sub_mtr, cur, update_entry, OverflowField::Incoming,
+                           m_ctx.m_update_slots, m_ctx.m_overflow_buf,
+                           m_ctx.m_chunk_ids, get_err_buffer(),
+                           get_err_buffer_len());
     }
 
     // Full: move on to the next link, remembering this entry as the
@@ -618,11 +606,8 @@ bool IndexGraph::add_overflow_incoming(MtrCtx::Ref mtr, LevelId level,
     std::array<NID, 1> added{incoming_nid};
     OverflowEntry new_entry;
     new_entry.incoming = added;
-    bool failed =
-        store->insert(sub_mtr, new_entry, m_trx_ref, m_ctx.m_overflow_buf,
-                      new_nid, err(), err_len());
-    sub_ctx.commit();
-    if (failed)
+    if (store->insert(sub_mtr, new_entry, m_trx_ref, m_ctx.m_overflow_buf,
+                      new_nid, get_err_buffer(), get_err_buffer_len()))
       return true;
   }
 
@@ -634,19 +619,18 @@ bool IndexGraph::add_overflow_incoming(MtrCtx::Ref mtr, LevelId level,
     link_entry.overflow = new_nid;
     return store->update(mtr, parent, link_entry, NodeField::Overflow,
                          m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
-                         m_ctx.m_chunk_ids, err(), err_len());
+                         m_ctx.m_chunk_ids, get_err_buffer(),
+                         get_err_buffer_len());
   }
 
   MtrCtx sub_ctx;
   auto sub_mtr = sub_ctx.start();
   OverflowEntry link_entry;
   link_entry.overflow = new_nid;
-  bool failed =
-      store->update(sub_mtr, parent, link_entry, OverflowField::Overflow,
-                    m_ctx.m_update_slots, m_ctx.m_overflow_buf,
-                    m_ctx.m_chunk_ids, err(), err_len());
-  sub_ctx.commit();
-  return failed;
+  return store->update(sub_mtr, parent, link_entry, OverflowField::Overflow,
+                       m_ctx.m_update_slots, m_ctx.m_overflow_buf,
+                       m_ctx.m_chunk_ids, get_err_buffer(),
+                       get_err_buffer_len());
 }
 
 bool IndexGraph::link_neighbours(const Node &node, LevelId level,
@@ -672,15 +656,13 @@ bool IndexGraph::link_neighbours_locked(const Node &node, LevelId level,
 
   NeighbourEntry entry;
   entry.neighbours = m_ctx.m_node_buf_1.span(max_n);
-  size_t unused_num_valid;
+  size_t num_valid;
   {
     MtrCtx mtr_ctx;
     auto mtr = mtr_ctx.start();
-    bool failed = store->fetch(mtr, node.nid, /*for_update=*/true, entry,
-                               unused_num_valid, err(), err_len(),
-                               NodeField::Neighbours, IncomingFilter::All);
-    mtr_ctx.commit();
-    if (failed)
+    if (store->fetch(mtr, node.nid, /*for_update=*/true, entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(),
+                     NodeField::Neighbours, IncomingFilter::All))
       return true;
   }
   std::span<Node> node_slots = m_ctx.m_node_buf_1.span(max_n);
@@ -714,10 +696,11 @@ bool IndexGraph::link_neighbours_locked(const Node &node, LevelId level,
     NeighbourEntry neighbour_entry;
     neighbour_entry.neighbours = m_ctx.m_node_buf_2.span(max_n);
     size_t neighbour_num_valid;
-    if (store->fetch(mtr, neighbour.nid, /*for_update=*/true, neighbour_entry,
-                     neighbour_num_valid, err(), err_len(),
-                     NodeField::Neighbours | NodeField::Overflow,
-                     IncomingFilter::All)) {
+
+    if (store->fetch(
+            mtr, neighbour.nid, /*for_update=*/true, neighbour_entry,
+            neighbour_num_valid, get_err_buffer(), get_err_buffer_len(),
+            NodeField::Neighbours | NodeField::Overflow, IncomingFilter::All)) {
       // The neighbour's record may be gone: an incoming link may name a node
       // that has since been removed, and reading a freed record is exactly
       // what fails here. A genuine read failure is indistinguishable from it
@@ -749,7 +732,8 @@ bool IndexGraph::link_neighbours_locked(const Node &node, LevelId level,
       m_ctx.m_update_slots[0] = SlotIndex{free_index};
       if (store->update(mtr, neighbour.nid, update_entry, NodeField::Neighbours,
                         m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
-                        m_ctx.m_chunk_ids, err(), err_len()))
+                        m_ctx.m_chunk_ids, get_err_buffer(),
+                        get_err_buffer_len()))
         return true;
     } else {
       // No room: Add an incoming connection link.
@@ -774,11 +758,10 @@ bool IndexGraph::link_neighbours_locked(const Node &node, LevelId level,
   auto mtr = mtr_ctx.start();
   NeighbourEntry update_entry;
   update_entry.neighbours = m_ctx.m_node_buf_1.span(num_incoming);
-  bool failed = store->update(
-      mtr, node.nid, update_entry, NodeField::Neighbours, m_ctx.m_link_slots,
-      m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(), err_len());
-  mtr_ctx.commit();
-  return failed;
+  return store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
+                       m_ctx.m_link_slots, m_ctx.m_neighbour_buf,
+                       m_ctx.m_chunk_ids, get_err_buffer(),
+                       get_err_buffer_len());
 }
 
 bool IndexGraph::drop_neighbour_link(LevelId level, const Node &node,
@@ -797,9 +780,9 @@ bool IndexGraph::drop_neighbour_link(LevelId level, const Node &node,
   // on it is exactly what tells the two cases below apart.
   NeighbourEntry entry;
   entry.neighbours = m_ctx.m_node_buf_2.span(max_n);
-  size_t unused_num_valid;
-  if (store->fetch(mtr, neighbour_nid, /*for_update=*/true, entry,
-                   unused_num_valid, err(), err_len(),
+  size_t num_valid;
+  if (store->fetch(mtr, neighbour_nid, /*for_update=*/true, entry, num_valid,
+                   get_err_buffer(), get_err_buffer_len(),
                    NodeField::Neighbours | NodeField::Overflow,
                    IncomingFilter::All)) {
     // The neighbour's record is gone -- swallowed exactly as in
@@ -880,16 +863,14 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
   // the updates below to write back to the one it came from.
   NeighbourEntry entry;
   entry.neighbours = m_ctx.m_node_buf_1.span(max_n);
-  size_t unused_num_valid;
+  size_t num_valid;
   {
     MtrCtx mtr_ctx;
     auto mtr = mtr_ctx.start();
-    bool failed = store->fetch(mtr, node.nid, /*for_update=*/true, entry,
-                               unused_num_valid, err(), err_len(),
-                               NodeField::Neighbours | NodeField::Overflow,
-                               IncomingFilter::All);
-    mtr_ctx.commit();
-    if (failed)
+    if (store->fetch(mtr, node.nid, /*for_update=*/true, entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(),
+                     NodeField::Neighbours | NodeField::Overflow,
+                     IncomingFilter::All))
       return true;
   }
   std::span<Node> slots = m_ctx.m_node_buf_1.span(max_n);
@@ -937,12 +918,10 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
     auto mtr = mtr_ctx.start();
     NeighbourEntry update_entry;
     update_entry.neighbours = m_ctx.m_node_buf_2.span(num_staged);
-    bool failed =
-        store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
+    if (store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
                       m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
-                      m_ctx.m_chunk_ids, err(), err_len());
-    mtr_ctx.commit();
-    if (failed)
+                      m_ctx.m_chunk_ids, get_err_buffer(),
+                      get_err_buffer_len()))
       return true;
   }
 
@@ -971,9 +950,10 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
     // Re-read for the chain head each time round: a previous iteration's
     // add_overflow_incoming() may have been the one to create the chain.
     NeighbourEntry head_entry;
-    size_t unused_valid;
-    if (store->fetch(mtr, node.nid, /*for_update=*/true, head_entry,
-                     unused_valid, err(), err_len(), NodeField::Overflow))
+    size_t num_valid;
+    if (store->fetch(mtr, node.nid, /*for_update=*/true, head_entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(),
+                     NodeField::Overflow))
       return true;
     if (add_overflow_incoming(mtr, level, node, head_entry.overflow, dropped))
       return true;
@@ -1053,12 +1033,10 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
     auto mtr = mtr_ctx.start();
     NeighbourEntry update_entry;
     update_entry.neighbours = m_ctx.m_node_buf_1.span(num_updates);
-    bool failed =
-        store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
+    if (store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
                       m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
-                      m_ctx.m_chunk_ids, err(), err_len());
-    mtr_ctx.commit();
-    if (failed)
+                      m_ctx.m_chunk_ids, get_err_buffer(),
+                      get_err_buffer_len()))
       return true;
   }
 
@@ -1075,10 +1053,8 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
     auto mtr = mtr_ctx.start();
     for (const LinkSlot &link : promoted) {
       assert(link.kind == StoreKind::Overflow);
-      if (clear_link(mtr, level, link)) {
-        mtr_ctx.commit();
+      if (clear_link(mtr, level, link))
         return true;
-      }
     }
     mtr_ctx.commit();
   }
@@ -1106,7 +1082,8 @@ bool IndexGraph::clear_link(MtrCtx::Ref mtr, LevelId level,
     entry.neighbours = cleared;
     return store->update(mtr, link.record, entry, NodeField::Neighbours,
                          m_ctx.m_update_slots, m_ctx.m_neighbour_buf,
-                         m_ctx.m_chunk_ids, err(), err_len());
+                         m_ctx.m_chunk_ids, get_err_buffer(),
+                         get_err_buffer_len());
   }
 
   // An overflow record is latched in its own short-lived mtr, opened while
@@ -1116,12 +1093,10 @@ bool IndexGraph::clear_link(MtrCtx::Ref mtr, LevelId level,
   std::array<NID, 1> cleared{};
   OverflowEntry entry;
   entry.incoming = cleared;
-  bool failed =
-      store->update(sub_mtr, link.record, entry, OverflowField::Incoming,
-                    m_ctx.m_update_slots, m_ctx.m_overflow_buf,
-                    m_ctx.m_chunk_ids, err(), err_len());
-  sub_ctx.commit();
-  return failed;
+  return store->update(sub_mtr, link.record, entry, OverflowField::Incoming,
+                       m_ctx.m_update_slots, m_ctx.m_overflow_buf,
+                       m_ctx.m_chunk_ids, get_err_buffer(),
+                       get_err_buffer_len());
 }
 
 bool IndexGraph::find_overflow_link(LevelId level, NID head, NID target,
@@ -1141,12 +1116,9 @@ bool IndexGraph::find_overflow_link(LevelId level, NID head, NID target,
     // so a hit's index is the on-disk slot clear_link() must write to.
     OverflowEntry entry;
     entry.incoming = m_ctx.m_incoming_buf_2.span(capacity);
-    size_t unused_num_valid;
-    bool failed =
-        store->fetch(mtr, cur, /*for_update=*/true, entry, unused_num_valid,
-                     err(), err_len(), OverflowFieldAll);
-    mtr_ctx.commit();
-    if (failed)
+    size_t num_valid;
+    if (store->fetch(mtr, cur, /*for_update=*/true, entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(), OverflowFieldAll))
       return true;
 
     for (uint32_t slot = 0; slot < capacity; ++slot) {
@@ -1186,9 +1158,9 @@ bool IndexGraph::unlink_neighbour(LevelId level, const Node &node,
   // incoming-flagged link is neither skipped nor mistaken for an outgoing one.
   NeighbourEntry entry;
   entry.neighbours = m_ctx.m_node_buf_2.span(max_n);
-  size_t unused_num_valid;
-  if (store->fetch(mtr, neighbour_nid, /*for_update=*/true, entry,
-                   unused_num_valid, err(), err_len(),
+  size_t num_valid;
+  if (store->fetch(mtr, neighbour_nid, /*for_update=*/true, entry, num_valid,
+                   get_err_buffer(), get_err_buffer_len(),
                    NodeField::Owner | NodeField::Neighbours |
                        NodeField::Overflow,
                    IncomingFilter::All)) {
@@ -1274,16 +1246,14 @@ bool IndexGraph::unlink_neighbours(const Node &node, LevelId level,
   // chain holding the incoming links that had no room in that list.
   NeighbourEntry entry;
   entry.neighbours = m_ctx.m_node_buf_1.span(max_n);
-  size_t unused_num_valid;
+  size_t num_valid;
   {
     MtrCtx mtr_ctx;
     auto mtr = mtr_ctx.start();
-    bool failed = store->fetch(mtr, node.nid, /*for_update=*/true, entry,
-                               unused_num_valid, err(), err_len(),
-                               NodeField::Neighbours | NodeField::Overflow,
-                               IncomingFilter::All);
-    mtr_ctx.commit();
-    if (failed)
+    if (store->fetch(mtr, node.nid, /*for_update=*/true, entry, num_valid,
+                     get_err_buffer(), get_err_buffer_len(),
+                     NodeField::Neighbours | NodeField::Overflow,
+                     IncomingFilter::All))
       return true;
   }
 
@@ -1311,11 +1281,10 @@ bool IndexGraph::unlink_neighbours(const Node &node, LevelId level,
     auto mtr = mtr_ctx.start();
     NeighbourEntry update_entry;
     update_entry.neighbours = m_ctx.m_node_buf_1.span(num_links);
-    bool failed = store->update(
-        mtr, node.nid, update_entry, NodeField::Neighbours, m_ctx.m_link_slots,
-        m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(), err_len());
-    mtr_ctx.commit();
-    if (failed)
+    if (store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
+                      m_ctx.m_link_slots, m_ctx.m_neighbour_buf,
+                      m_ctx.m_chunk_ids, get_err_buffer(),
+                      get_err_buffer_len()))
       return true;
   }
 
@@ -1355,11 +1324,10 @@ bool IndexGraph::unlink_neighbours(const Node &node, LevelId level,
     auto mtr = mtr_ctx.start();
     NeighbourEntry update_entry;
     update_entry.neighbours = m_ctx.m_node_buf_1.span(num_freed);
-    bool failed = store->update(
-        mtr, node.nid, update_entry, NodeField::Neighbours, m_ctx.m_link_slots,
-        m_ctx.m_neighbour_buf, m_ctx.m_chunk_ids, err(), err_len());
-    mtr_ctx.commit();
-    if (failed)
+    if (store->update(mtr, node.nid, update_entry, NodeField::Neighbours,
+                      m_ctx.m_link_slots, m_ctx.m_neighbour_buf,
+                      m_ctx.m_chunk_ids, get_err_buffer(),
+                      get_err_buffer_len()))
       return true;
   }
 
@@ -1371,16 +1339,14 @@ bool IndexGraph::unlink_neighbours(const Node &node, LevelId level,
   for (NID cur = entry.overflow; cur.is_valid();) {
     OverflowEntry overflow_entry;
     overflow_entry.incoming = m_ctx.m_incoming_buf_1.span(capacity);
-    size_t unused_valid;
+    size_t num_valid;
     {
       MtrCtx mtr_ctx;
       auto mtr = mtr_ctx.start();
       // Raw slot layout, as for node's primary list above.
-      bool failed =
-          store->fetch(mtr, cur, /*for_update=*/true, overflow_entry,
-                       unused_valid, err(), err_len(), OverflowFieldAll);
-      mtr_ctx.commit();
-      if (failed)
+      if (store->fetch(mtr, cur, /*for_update=*/true, overflow_entry, num_valid,
+                       get_err_buffer(), get_err_buffer_len(),
+                       OverflowFieldAll))
         return true;
     }
 
@@ -1419,11 +1385,10 @@ bool IndexGraph::unlink_neighbours(const Node &node, LevelId level,
       auto mtr = mtr_ctx.start();
       OverflowEntry update_entry;
       update_entry.incoming = m_ctx.m_incoming_buf_1.span(num_freed);
-      bool failed = store->update(
-          mtr, cur, update_entry, OverflowField::Incoming, m_ctx.m_link_slots,
-          m_ctx.m_overflow_buf, m_ctx.m_chunk_ids, err(), err_len());
-      mtr_ctx.commit();
-      if (failed)
+      if (store->update(mtr, cur, update_entry, OverflowField::Incoming,
+                        m_ctx.m_link_slots, m_ctx.m_overflow_buf,
+                        m_ctx.m_chunk_ids, get_err_buffer(),
+                        get_err_buffer_len()))
         return true;
     }
     cur = overflow_entry.overflow;
