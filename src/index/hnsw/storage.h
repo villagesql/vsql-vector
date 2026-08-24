@@ -169,6 +169,12 @@ public:
   bool remove(MtrCtx::Ref mtr, StoreKind kind, NID nid, Segment::TrxRef trx_ref,
               char *err, uint32_t err_len);
 
+  // Marks or unmarks for deletion the m_store record identified by nid.
+  // m_overflow records have no row of their own to be deleted with, so this
+  // is never needed for them.
+  bool mark_delete(MtrCtx::Ref mtr, NID nid, Segment::TrxRef trx_ref,
+                   bool delete_mark, char *err, uint32_t err_len);
+
   // Rewrites the fields of id's record set in mask from entry, leaving the
   // rest of the record untouched (see ColumnStore::update). When mask
   // includes Neighbours, slots[i] is the on-disk slot index that
@@ -229,6 +235,13 @@ public:
              size_t &num_valid, char *err, uint32_t err_len,
              OverflowField mask = OverflowFieldAll,
              const ScratchChunkIds *slots = nullptr);
+
+  // Resolves nid to the Node it names -- nid itself, paired with the vid
+  // read from its record's Owner field -- via a fetch in its own mtr. A
+  // convenience for callers that only need a record's owning vector: nid
+  // must already be known to belong to this level's store (e.g. via
+  // IndexStore::locate(), or because the caller persisted it there itself).
+  bool resolve_owner(NID nid, Node &out, char *err, uint32_t err_len);
 
 private:
   static constexpr uint32_t MAX_OVERFLOW_LEN = 8;
@@ -345,10 +358,6 @@ public:
 
   bool load(Index::StorageRef storage_ref, const Options &opts, char *err,
             uint32_t err_len);
-
-  // TODO(villagesql-indexing): Implement DML insert, mark_delete, purge
-  // TODO(villagesql-indexing): Implement cursor operations
-  // begin, end, position, fetch, save and restore.
 
   Index::StorageRef storage_ref() const { return m_multi_store.m_ref; }
 

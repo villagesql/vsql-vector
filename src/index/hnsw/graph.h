@@ -281,7 +281,7 @@ public:
   // Constructed fresh by the API entry point handling a single top-level
   // call (e.g. the DML insert() hook), which already has its own index,
   // trx_ref and err/err_len to inject -- not shared or reused across calls.
-  IndexGraph(IndexStore &store, Index &index, Segment::TrxRef trx_ref,
+  IndexGraph(IndexStore &store, const Index &index, Segment::TrxRef trx_ref,
              size_t vector_buf_size, std::span<char> err);
 
   bool distance(const Node &a, const Node &b, DistanceType &out);
@@ -337,6 +337,14 @@ public:
   // level.value + 1 (mirrors create_node()'s parent/level relationship).
   bool drop_node(const std::optional<Node> &parent, LevelId level,
                  const Node &node);
+
+  // Sets or clears the delete mark on node's own record, leaving every link
+  // to and from it in place: a delete-marked node stays part of the graph and
+  // keeps serving as a stepping stone for traversals, it just stops being a
+  // valid result (see GraphVisiblePolicy). Only this level's record is
+  // touched, so a caller marking the whole vector must call this once per
+  // level -- GraphOperations::mark_delete() does. level is node's own level.
+  bool mark_delete(const Node &node, LevelId level, bool delete_mark);
 
   // level is node's own level; level must have a lower level (i.e.
   // level.has_lower_level()) -- callers always already know they're
@@ -568,7 +576,7 @@ private:
                            bool &keeps_link);
 
   IndexStore &m_store;
-  Index &m_index;
+  const Index &m_index;
   Segment::TrxRef m_trx_ref;
   GraphContext m_ctx;
 };

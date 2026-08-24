@@ -38,6 +38,11 @@ namespace svector::hnsw {
 
 using vsql::preview_storage::Column;
 
+// The key column whose bound index profile the distance helper is dispatched
+// through, and whose data create_node()'s incoming NodeData holds. An HNSW
+// index has exactly one key column, the indexed vector.
+constexpr uint32_t VECTOR_KEY_POS = 0;
+
 // fn_ids of the functions every hnsw index profile binds, shared by the profile
 // registrations and the graph operations that dispatch through them. A
 // profile's SQL-visible functions and its index-internal helpers are numbered
