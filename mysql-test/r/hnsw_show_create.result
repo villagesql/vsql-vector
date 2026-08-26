@@ -1,0 +1,99 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+SET SESSION debug='+d,villagesql_custom_index_proceed';
+# --- A default profile is omitted; a non-default one is rendered ---
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+a SVECTOR(4) NOT NULL,
+b SVECTOR(4) NOT NULL,
+c SVECTOR(4) NOT NULL,
+INDEX idx_implicit (a) USING EXTENDED(hnsw),
+INDEX idx_explicit_default (b hnsw_l2) USING EXTENDED(hnsw),
+INDEX idx_non_default (c hnsw_cosine) USING EXTENDED(hnsw)
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `a` vsql_vector.SVECTOR(4) NOT NULL,
+  `b` vsql_vector.SVECTOR(4) NOT NULL,
+  `c` vsql_vector.SVECTOR(4) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_implicit` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_explicit_default` (`b`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_non_default` (`c` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t1;
+# --- WITH option names are canonicalized, not echoed ---
+CREATE TABLE t2 (
+id INT PRIMARY KEY,
+a SVECTOR(4) NOT NULL,
+INDEX idx_mixed_case (a) USING EXTENDED(hnsw) WITH (m = 8, Ef_Construction = 64)
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `id` int NOT NULL,
+  `a` vsql_vector.SVECTOR(4) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_mixed_case` (`a`) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t2;
+# --- USING EXTENDED and WITH precede the other index options ---
+CREATE TABLE t3 (
+id INT PRIMARY KEY,
+a SVECTOR(4) NOT NULL,
+b SVECTOR(4) NOT NULL,
+INDEX idx_comment (a) USING EXTENDED(hnsw) WITH (M = 8) COMMENT 'a comment',
+INDEX idx_invisible (b hnsw_l1) USING EXTENDED(hnsw) INVISIBLE
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t3;
+Table	Create Table
+t3	CREATE TABLE `t3` (
+  `id` int NOT NULL,
+  `a` vsql_vector.SVECTOR(4) NOT NULL,
+  `b` vsql_vector.SVECTOR(4) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_comment` (`a`) USING EXTENDED(vsql_vector.hnsw) WITH (`m` = 8) COMMENT 'a comment',
+  KEY `idx_invisible` (`b` vsql_vector.hnsw_l1) USING EXTENDED(vsql_vector.hnsw) /*!80000 INVISIBLE */
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t3;
+# --- Round trip: SHOW CREATE TABLE output recreates an identical table ---
+CREATE TABLE rt (
+id INT PRIMARY KEY,
+a SVECTOR(4) NOT NULL,
+b SVECTOR(4) NOT NULL,
+c SVECTOR(4) NOT NULL,
+INDEX k1 (a) USING EXTENDED(hnsw),
+INDEX k2 (b hnsw_cosine) USING EXTENDED(hnsw) WITH (M = 8, ef_construction = 64),
+INDEX k3 (c hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw) COMMENT 'note'
+) ENGINE=InnoDB;
+SHOW CREATE TABLE rt;
+Table	Create Table
+rt	CREATE TABLE `rt` (
+  `id` int NOT NULL,
+  `a` vsql_vector.SVECTOR(4) NOT NULL,
+  `b` vsql_vector.SVECTOR(4) NOT NULL,
+  `c` vsql_vector.SVECTOR(4) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `k1` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `k2` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `k3` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw) COMMENT 'note'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE rt;
+CREATE TABLE `rt` (
+  `id` int NOT NULL,
+  `a` vsql_vector.SVECTOR(4) NOT NULL,
+  `b` vsql_vector.SVECTOR(4) NOT NULL,
+  `c` vsql_vector.SVECTOR(4) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `k1` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `k2` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `k3` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw) COMMENT 'note'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+# ... and here
+DROP TABLE rt;
+SET SESSION debug='-d,villagesql_custom_index_proceed';
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;
