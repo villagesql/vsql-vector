@@ -153,9 +153,17 @@ bool IndexGraph::distance(const NodeData &a, const NodeData &b,
   };
   const native::Data *a_data = nullptr;
   const native::Data *b_data = nullptr;
-  if (decode(a, m_ctx.m_decoded_buf_1, &a_data) ||
-      decode(b, m_ctx.m_decoded_buf_2, &b_data))
-    return true;
+  // Operand a (the query/insert vector) is fixed across a traversal's
+  // candidates, so reuse its decode when the source pointer is unchanged;
+  // only re-decode on a new a. b always varies, so it decodes every call.
+  if (a.data.data == m_ctx.m_decoded_buf_1_src) {
+    a_data =
+        reinterpret_cast<const native::Data *>(m_ctx.m_decoded_buf_1.data());
+  } else {
+    if (decode(a, m_ctx.m_decoded_buf_1, &a_data)) return true;
+    m_ctx.m_decoded_buf_1_src = a.data.data;
+  }
+  if (decode(b, m_ctx.m_decoded_buf_2, &b_data)) return true;
   out = m_dist_fn(a_data, b_data);
   return false;
 }
@@ -167,6 +175,11 @@ bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
       resolve_node_data(b.vid, m_ctx.m_vector_buf_2, b_data))
     return true;
 
+  // a_data here is resolved into a REUSED buffer (m_vector_buf_1): its source
+  // pointer repeats across calls with different contents, so it must never hit
+  // the decoded-a reuse cache (which keys on that pointer). Invalidate it; only
+  // the fixed-NodeData-query overload may benefit from the cache.
+  m_ctx.m_decoded_buf_1_src = nullptr;
   return distance(a_data, b_data, out);
 }
 
@@ -180,6 +193,17 @@ bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
     return true;
 
   return distance(a, b_data, out);
+}
+
+bool IndexGraph::resolve_fixed_operand(const Node &node, NodeData &out) {
+  if (resolve_node_data(node.vid, m_ctx.m_vector_buf_1, out)) return true;
+  // out.data.data now points at m_vector_buf_1, whose address repeats across
+  // calls with different content -- the decoded-a reuse cache keys on that
+  // pointer, so it must be invalidated here. The first distance(out, .) then
+  // decodes it once (cache miss) and subsequent calls in the caller's loop
+  // reuse it.
+  m_ctx.m_decoded_buf_1_src = nullptr;
+  return false;
 }
 
 bool IndexGraph::neighbours(const Node &node, LevelId level,
