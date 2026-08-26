@@ -241,6 +241,14 @@ struct MockGraph {
     return false;
   }
 
+  // Resolve a node to its NodeData for use as a fixed distance operand (see
+  // IndexGraph::resolve_fixed_operand). A node's id addresses its position, so
+  // the resolved NodeData carries the same id.
+  bool resolve_fixed_operand(const Node &node, NodeData &out) {
+    out = NodeData{node.id};
+    return false;
+  }
+
   bool neighbours(const Node &node, LevelId level, std::vector<Node> &out) {
     assert(level == node.level);
     if (fail_neighbours) {
