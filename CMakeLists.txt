@@ -115,6 +115,20 @@ target_compile_options(graph_ops_test PRIVATE -UNDEBUG)
 
 add_test(NAME graph_ops_test COMMAND graph_ops_test)
 
+# Distance-kernel test. Header-only (native_vector.h inline kernels), no SDK;
+# needs src/ on the include path to find native_vector.h.
+add_executable(native_vector_test
+    unittest/native_vector_test.cc
+)
+
+target_include_directories(native_vector_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_options(native_vector_test PRIVATE -UNDEBUG)
+
+add_test(NAME native_vector_test COMMAND native_vector_test)
+
 # Storage-layer test. Unlike the header-only graph/layer tests, it drives the
 # real column-storage sources against an in-memory fake storage backend, so it
 # compiles those sources and needs the SDK include dir (storage_api.h).
