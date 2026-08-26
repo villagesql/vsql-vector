@@ -202,75 +202,156 @@ bool from_encoded(const unsigned char *encoded_data, size_t encoded_len,
 bool to_encoded(const void *native_data, unsigned char *encoded_buffer,
                 size_t encoded_buf_len, size_t *encoded_len);
 
-// L1 distance (Manhattan distance) between two vectors
+// Distance kernels: portable, compiler-autovectorized reductions.
+//
+// Each kernel accumulates into LANES independent float32 partial sums and only
+// combines them at the end. Two deliberate properties, both for portability:
+//
+//  1. Splitting the reduction into independent streams expresses the
+//     reassociation IN THE SOURCE. A plain `sum += ...` reduction is vectorized
+//     by Clang (which interleaves accumulators under strict IEEE) but NOT by GCC
+//     at -O2 (GCC treats reassociating an FP reduction as illegal without
+//     -fassociative-math and emits scalar code). With explicit streams, BOTH
+//     compilers vectorize legally, with no fast-math flag and deterministic
+//     results.
+//
+//  2. LANES = 16 lets the compiler fill the WIDEST SIMD register the target has
+//     under -O2 -march=native: x86 AVX-512 -> zmm (16-wide), AVX2 -> ymm
+//     (8-wide), arm64 NEON -> .4s (4-wide, its max), plain SSE/baseline -> xmm
+//     (4-wide). A smaller count (e.g. 4) is optimal for NEON but caps x86 at
+//     128-bit, wasting AVX. 16 is the widest useful width and degrades cleanly
+//     to narrower targets (it just uses more register groups).
+//
+// float32 accumulation (not double) is deliberate: it keeps the whole loop in
+// 32-bit lanes and avoids the per-element float->double widening (fcvtl on NEON)
+// the double version pays. Summing over float32 embeddings in float32 is well
+// within tolerance for ANN (recall is unaffected); streams combine and return as
+// double so callers/graph are unchanged.
+inline constexpr uint32_t DIST_LANES = 16;
+
+// L1 distance (Manhattan distance) between two vectors.
 static V_FUNC_ALWAYS_INLINE double dist_l1(const Data *v1, const Data *v2) {
-  double result = 0.0;
-  for (uint32_t i = 0; i < v1->dim; i++) {
-    result += std::abs(v1->data[i] - v2->data[i]);
+  const float *a = v1->data;
+  const float *b = v2->data;
+  const uint32_t dim = v1->dim;
+
+  float s[DIST_LANES] = {0.0f};
+  uint32_t i = 0;
+  const uint32_t nv = dim & ~(DIST_LANES - 1);
+  for (; i < nv; i += DIST_LANES) {
+    for (uint32_t j = 0; j < DIST_LANES; ++j) {
+      s[j] += std::abs(a[i + j] - b[i + j]);
+    }
   }
+  float result = 0.0f;
+  for (uint32_t j = 0; j < DIST_LANES; ++j) result += s[j];
+  for (; i < dim; ++i) result += std::abs(a[i] - b[i]);  // scalar tail
   return result;
 }
 
-// Squared L2 distance between two vectors (without sqrt for efficiency)
+// Squared L2 distance between two vectors (without sqrt for efficiency).
 static V_FUNC_ALWAYS_INLINE double dist_squared_l2(const Data *v1,
                                                    const Data *v2) {
   const float *a = v1->data;
   const float *b = v2->data;
-  const float *end = a + v1->dim;
+  const uint32_t dim = v1->dim;
 
-  // Use pointer iteration (helps vectorization)
-  double result = 0.0;
-  for (; a != end; ++a, ++b) {
-    double diff = double(*a) - double(*b);
-    result += diff * diff;
+  float s[DIST_LANES] = {0.0f};
+  uint32_t i = 0;
+  const uint32_t nv = dim & ~(DIST_LANES - 1);
+  for (; i < nv; i += DIST_LANES) {
+    for (uint32_t j = 0; j < DIST_LANES; ++j) {
+      const float d = a[i + j] - b[i + j];
+      s[j] += d * d;
+    }
+  }
+  float result = 0.0f;
+  for (uint32_t j = 0; j < DIST_LANES; ++j) result += s[j];
+  for (; i < dim; ++i) {  // scalar tail
+    const float d = a[i] - b[i];
+    result += d * d;
   }
   return result;
 }
 
-// L2 distance (Euclidean distance) between two vectors
+// L2 distance (Euclidean distance) between two vectors.
 static V_FUNC_ALWAYS_INLINE double dist_l2(const Data *v1, const Data *v2) {
   return std::sqrt(dist_squared_l2(v1, v2));
 }
 
-// Cosine distance between two vectors
+// Cosine distance between two vectors. Three parallel reductions (dot, |v1|^2,
+// |v2|^2); the final normalization is scalar double.
 static V_FUNC_ALWAYS_INLINE double dist_cosine(const Data *v1, const Data *v2) {
-  double dot = 0.0, norm1 = 0.0, norm2 = 0.0;
-  for (uint32_t i = 0; i < v1->dim; i++) {
-    double x = v1->data[i];
-    double y = v2->data[i];
+  const float *a = v1->data;
+  const float *b = v2->data;
+  const uint32_t dim = v1->dim;
+
+  float sd[DIST_LANES] = {0.0f}, s1[DIST_LANES] = {0.0f}, s2[DIST_LANES] = {0.0f};
+  uint32_t i = 0;
+  const uint32_t nv = dim & ~(DIST_LANES - 1);
+  for (; i < nv; i += DIST_LANES) {
+    for (uint32_t j = 0; j < DIST_LANES; ++j) {
+      const float x = a[i + j], y = b[i + j];
+      sd[j] += x * y;
+      s1[j] += x * x;
+      s2[j] += y * y;
+    }
+  }
+  float dot = 0.0f, norm1 = 0.0f, norm2 = 0.0f;
+  for (uint32_t j = 0; j < DIST_LANES; ++j) {
+    dot += sd[j];
+    norm1 += s1[j];
+    norm2 += s2[j];
+  }
+  for (; i < dim; ++i) {  // scalar tail
+    const float x = a[i], y = b[i];
     dot += x * y;
     norm1 += x * x;
     norm2 += y * y;
   }
-  double denom = std::sqrt(norm1) * std::sqrt(norm2);
+  const double denom = std::sqrt(double(norm1)) * std::sqrt(double(norm2));
   if (denom > 0.0) {
-    return 1.0 - (dot / denom);
+    return 1.0 - (double(dot) / denom);
   }
   return 1.0;  // Maximum distance
 }
 
-// Inner product (dot product) between two vectors
+// Inner product (dot product) between two vectors.
 static V_FUNC_ALWAYS_INLINE double dist_inner_product(const Data *v1,
                                                       const Data *v2) {
-  double result = 0.0;
-  for (uint32_t i = 0; i < v1->dim; i++) {
-    result += v1->data[i] * v2->data[i];
+  const float *a = v1->data;
+  const float *b = v2->data;
+  const uint32_t dim = v1->dim;
+
+  float s[DIST_LANES] = {0.0f};
+  uint32_t i = 0;
+  const uint32_t nv = dim & ~(DIST_LANES - 1);
+  for (; i < nv; i += DIST_LANES) {
+    for (uint32_t j = 0; j < DIST_LANES; ++j) {
+      s[j] += a[i + j] * b[i + j];
+    }
   }
+  float result = 0.0f;
+  for (uint32_t j = 0; j < DIST_LANES; ++j) result += s[j];
+  for (; i < dim; ++i) result += a[i] * b[i];  // scalar tail
   return result;
 }
 
-// Calculate L2 norm (Euclidean norm) of a vector
+// Calculate L2 norm (Euclidean norm) of a vector.
 static V_FUNC_ALWAYS_INLINE double norm_l2(const Data *v) {
   const float *a = v->data;
-  const float *end = a + v->dim;
+  const uint32_t dim = v->dim;
 
-  // Use pointer iteration (helps vectorization)
-  double sum_sq = 0.0;
-  for (; a != end; ++a) {
-    double val = double(*a);
-    sum_sq += val * val;
+  float s[DIST_LANES] = {0.0f};
+  uint32_t i = 0;
+  const uint32_t nv = dim & ~(DIST_LANES - 1);
+  for (; i < nv; i += DIST_LANES) {
+    for (uint32_t j = 0; j < DIST_LANES; ++j) s[j] += a[i + j] * a[i + j];
   }
-  return std::sqrt(sum_sq);
+  float sum_sq = 0.0f;
+  for (uint32_t j = 0; j < DIST_LANES; ++j) sum_sq += s[j];
+  for (; i < dim; ++i) sum_sq += a[i] * a[i];  // scalar tail
+  return std::sqrt(double(sum_sq));
 }
 
 }  // namespace svector::native
