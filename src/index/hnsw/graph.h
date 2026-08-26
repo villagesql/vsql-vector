@@ -156,6 +156,14 @@ struct GraphContext {
   ScratchBytes m_decoded_buf_1;
   ScratchBytes m_decoded_buf_2;
 
+  // Source pointer last decoded into m_decoded_buf_1. In a search-layer
+  // traversal the first distance() operand (the query/insert vector) is fixed
+  // across every candidate, so decoding it once and reusing it skips the
+  // per-candidate re-decode. Cleared (nullptr) means the buffer holds nothing
+  // reusable. Keyed on the raw source pointer: identical pointer => identical
+  // already-decoded bytes.
+  const unsigned char *m_decoded_buf_1_src = nullptr;
+
   ScratchSlots m_update_slots;
   // On-disk slot indices of the incoming-flagged neighbour links
   // link_neighbours() is reciprocating, collected as it walks them and
@@ -295,6 +303,16 @@ public:
   bool distance(const Node &a, const Node &b, DistanceType &out);
 
   bool distance(const NodeData &a, const Node &b, DistanceType &out);
+
+  // Resolve a graph node's stored vector into NodeData held in a dedicated
+  // buffer (m_vector_buf_1) that is NOT touched by the distance() overloads
+  // (they use m_vector_buf_2 for their varying operand). This lets a caller
+  // that compares one fixed node against many others -- e.g. the Algorithm-4
+  // dominance check -- resolve the fixed operand once, then call
+  // distance(NodeData, Node) in the loop so the fixed operand's decode is
+  // reused across the varying ones instead of re-resolved and re-decoded each
+  // comparison. Returns true on error.
+  bool resolve_fixed_operand(const Node &node, NodeData &out);
 
   // level is node's own level. Callers always already know it (it's how
   // they located node in the first place), so it's taken directly instead

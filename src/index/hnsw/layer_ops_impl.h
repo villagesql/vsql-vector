@@ -277,9 +277,17 @@ bool LayerOperations<Graph, Policy>::is_dominated(
     const Candidate &e, const std::vector<Node> &result, bool &dominated) {
   // Algorithm 4, line 11 (negated): does some element of result already
   // cover e, i.e. is it closer to e than the query node is?
+  //
+  // e.node is fixed across this loop, so resolve+decode it ONCE (into the
+  // fixed-operand buffer) and compare against each r via distance(NodeData,
+  // Node), which reuses e.node's decode instead of re-resolving it per r.
+  NodeData e_data;
+  if (m_graph.resolve_fixed_operand(e.node, e_data)) {
+    return true;
+  }
   for (const Node &r : result) {
     Distance dist_er{};
-    if (m_graph.distance(e.node, r, dist_er)) {
+    if (m_graph.distance(e_data, r, dist_er)) {
       return true;
     }
     if (dist_er < e.distance) {

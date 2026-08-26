@@ -44,6 +44,11 @@ struct LineGraph {
   };
   struct NodeData {
     int value;
+    // Distinguishes the query vector (bound once via m_query) from a node's
+    // vector resolved as a fixed operand (resolve_fixed_operand). Only the
+    // former counts as a query-to-candidate distance; is_dominated() compares a
+    // resolved node against others, which is not a query distance.
+    bool is_query = true;
   };
   using DistanceType = float;
   // LineGraph is a single flat graph with no notion of levels; LevelId
@@ -87,7 +92,7 @@ struct LineGraph {
 
   bool distance(const NodeData &a, const Node &b, DistanceType &out) {
     ++distance_calls;
-    ++query_distance_calls;
+    if (a.is_query) ++query_distance_calls;
     if (fail_distance) {
       return true;
     }
@@ -95,6 +100,14 @@ struct LineGraph {
       return true;
     }
     out = std::abs(a.value - b.value);
+    return false;
+  }
+
+  // Resolve a node to its NodeData for use as a fixed distance operand (see
+  // IndexGraph::resolve_fixed_operand). For LineGraph a node's data is just its
+  // value; resolving is not a distance call, so no counter changes.
+  bool resolve_fixed_operand(const Node &node, NodeData &out) {
+    out = NodeData{node.value, /*is_query=*/false};
     return false;
   }
 
