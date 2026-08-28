@@ -1,0 +1,78 @@
+# SHOW CREATE TABLE rendering for custom (extended) indexes: the index type,
+# the per-key-part profile, and the WITH parameters.
+#
+# villagesql_custom_index_proceed bypasses the "not yet implemented" guard in
+# PT_custom_index_type::do_contextualize()
+--source include/have_debug.inc
+
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+SET SESSION debug='+d,villagesql_custom_index_proceed';
+
+--echo # --- A default profile is omitted; a non-default one is rendered ---
+# hnsw_l2 is the default for SVECTOR, so naming it explicitly renders the same
+# as not naming it at all.
+# The same behaviour as for a key algorithm.
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  a SVECTOR(4) NOT NULL,
+  b SVECTOR(4) NOT NULL,
+  c SVECTOR(4) NOT NULL,
+  INDEX idx_implicit (a) USING EXTENDED(hnsw),
+  INDEX idx_explicit_default (b hnsw_l2) USING EXTENDED(hnsw),
+  INDEX idx_non_default (c hnsw_cosine) USING EXTENDED(hnsw)
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t1;
+DROP TABLE t1;
+
+--echo # --- WITH option names are canonicalized, not echoed ---
+CREATE TABLE t2 (
+  id INT PRIMARY KEY,
+  a SVECTOR(4) NOT NULL,
+  INDEX idx_mixed_case (a) USING EXTENDED(hnsw) WITH (m = 8, Ef_Construction = 64)
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t2;
+DROP TABLE t2;
+
+--echo # --- USING EXTENDED and WITH precede the other index options ---
+CREATE TABLE t3 (
+  id INT PRIMARY KEY,
+  a SVECTOR(4) NOT NULL,
+  b SVECTOR(4) NOT NULL,
+  INDEX idx_comment (a) USING EXTENDED(hnsw) WITH (M = 8) COMMENT 'a comment',
+  INDEX idx_invisible (b hnsw_l1) USING EXTENDED(hnsw) INVISIBLE
+) ENGINE=InnoDB;
+SHOW CREATE TABLE t3;
+DROP TABLE t3;
+
+--echo # --- Round trip: SHOW CREATE TABLE output recreates an identical table ---
+CREATE TABLE rt (
+  id INT PRIMARY KEY,
+  a SVECTOR(4) NOT NULL,
+  b SVECTOR(4) NOT NULL,
+  c SVECTOR(4) NOT NULL,
+  INDEX k1 (a) USING EXTENDED(hnsw),
+  INDEX k2 (b hnsw_cosine) USING EXTENDED(hnsw) WITH (M = 8, ef_construction = 64),
+  INDEX k3 (c hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw) COMMENT 'note'
+) ENGINE=InnoDB;
+SHOW CREATE TABLE rt;
+
+--let $SCT= query_get_value(SHOW CREATE TABLE rt, Create Table, 1)
+DROP TABLE rt;
+--eval $SCT
+--let $SCT_= query_get_value(SHOW CREATE TABLE rt, Create Table, 1)
+
+if ($SCT != $SCT_)
+{
+--echo SHOW CREATE TABLE output not stable
+--echo $SCT
+--echo vs
+--echo $SCT_
+}
+--echo # ... and here
+DROP TABLE rt;
+
+SET SESSION debug='-d,villagesql_custom_index_proceed';
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

@@ -26,9 +26,9 @@ t1	CREATE TABLE `t1` (
   `d` vsql_vector.SVECTOR(4) NOT NULL,
   `e` vsql_vector.SVECTOR(8) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_a` (`a`),
-  KEY `idx_b` (`b`),
-  KEY `idx_c` (`c`)
+  KEY `idx_a` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_b` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `idx_c` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
@@ -50,10 +50,10 @@ t1	CREATE TABLE `t1` (
   `d` vsql_vector.SVECTOR(4) NOT NULL,
   `e` vsql_vector.SVECTOR(8) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_a` (`a`),
-  KEY `idx_b` (`b`),
-  KEY `idx_c` (`c`),
-  KEY `idx_d` (`d`)
+  KEY `idx_a` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_b` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `idx_c` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_d` (`d` vsql_vector.hnsw_l1) USING EXTENDED(vsql_vector.hnsw)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
@@ -77,11 +77,11 @@ t1	CREATE TABLE `t1` (
   `d` vsql_vector.SVECTOR(4) NOT NULL,
   `e` vsql_vector.SVECTOR(8) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_a` (`a`),
-  KEY `idx_b` (`b`),
-  KEY `idx_c` (`c`),
-  KEY `idx_d` (`d`),
-  KEY `idx_e` (`e`)
+  KEY `idx_a` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_b` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `idx_c` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_d` (`d` vsql_vector.hnsw_l1) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_e` (`e`) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 32, `m` = 4)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
@@ -108,11 +108,11 @@ t1	CREATE TABLE `t1` (
   `d` vsql_vector.SVECTOR(4) NOT NULL,
   `e` vsql_vector.SVECTOR(8) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_a` (`a`),
-  KEY `idx_b` (`b`),
-  KEY `idx_c` (`c`),
-  KEY `idx_d` (`d`),
-  KEY `idx_e` (`e`)
+  KEY `idx_a` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_b` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `idx_c` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_d` (`d` vsql_vector.hnsw_l1) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_e` (`e`) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 32, `m` = 4)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
@@ -138,10 +138,10 @@ t1	CREATE TABLE `t1` (
   `d` vsql_vector.SVECTOR(4) NOT NULL,
   `e` vsql_vector.SVECTOR(8) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_a` (`a`),
-  KEY `idx_b` (`b`),
-  KEY `idx_c` (`c`),
-  KEY `idx_e` (`e`)
+  KEY `idx_a` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_b` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `idx_c` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_e` (`e`) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 32, `m` = 4)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
@@ -165,8 +165,8 @@ t1	CREATE TABLE `t1` (
   `d` vsql_vector.SVECTOR(4) NOT NULL,
   `e` vsql_vector.SVECTOR(8) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_a` (`a`),
-  KEY `idx_c` (`c`)
+  KEY `idx_a` (`a`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_c` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t1	idx_a	vsql_vector	0.0.1	hnsw	{}
@@ -206,8 +206,8 @@ t2	CREATE TABLE `t2` (
   `y` vsql_vector.SVECTOR(4) NOT NULL,
   `z` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_x` (`x`),
-  KEY `idx_y` (`y`)
+  KEY `idx_x` (`x`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_y` (`y` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 200, `m` = 16)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t2	idx_x	vsql_vector	0.0.1	hnsw	{}
@@ -225,9 +225,9 @@ t2	CREATE TABLE `t2` (
   `y` vsql_vector.SVECTOR(4) NOT NULL,
   `z` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_x` (`x`),
-  KEY `idx_y` (`y`),
-  KEY `idx_z` (`z`)
+  KEY `idx_x` (`x`) USING EXTENDED(vsql_vector.hnsw),
+  KEY `idx_y` (`y` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 200, `m` = 16),
+  KEY `idx_z` (`z` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t2	idx_x	vsql_vector	0.0.1	hnsw	{}
@@ -247,8 +247,8 @@ t2	CREATE TABLE `t2` (
   `y` vsql_vector.SVECTOR(4) NOT NULL,
   `z` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_y` (`y`),
-  KEY `idx_z` (`z`)
+  KEY `idx_y` (`y` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 200, `m` = 16),
+  KEY `idx_z` (`z` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t2	idx_y	vsql_vector	0.0.1	hnsw	{"M": "16", "ef_construction": "200"}
@@ -265,7 +265,7 @@ t2	CREATE TABLE `t2` (
   `y` vsql_vector.SVECTOR(4) NOT NULL,
   `z` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_z` (`z`)
+  KEY `idx_z` (`z` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 test	t2	idx_z	vsql_vector	0.0.1	hnsw	{}

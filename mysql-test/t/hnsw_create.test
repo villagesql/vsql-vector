@@ -10,11 +10,6 @@
 # TODO(villagesql-indexing): Remove have_debug.inc and the debug flag below
 # once custom index execution is fully implemented and the guard in
 # PT_custom_index_type::do_contextualize() is removed.
-#
-# TODO(villagesql-indexing): SHOW CREATE TABLE currently renders a custom
-# HNSW index as a plain `KEY `idx_name` (`col`)` clause with no indication
-# of USING EXTENDED(...), the index type, profile, or WITH parameters.
-# Update the SHOW CREATE TABLE result below once that detail is rendered.
 --source include/have_debug.inc
 
 SET PERSIST vsql_allow_preview_extensions = ON;
