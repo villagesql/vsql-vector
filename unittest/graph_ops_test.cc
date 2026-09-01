@@ -94,6 +94,9 @@ struct MockGraph {
   };
   using LevelId = MockLevelId;
   using DistanceType = float;
+  // Fixed-operand handle for is_dominated (Graph::CachedVector); the mock
+  // carries its NodeData by value. See LineGraph in layer_ops_test.cc.
+  using CachedVector = NodeData;
   enum class LockMode { Shared, Exclusive };
 
   // ---- RAII lock guards. Single-threaded bookkeeping only: these tests

@@ -278,10 +278,13 @@ bool LayerOperations<Graph, Policy>::is_dominated(
   // Algorithm 4, line 11 (negated): does some element of result already
   // cover e, i.e. is it closer to e than the query node is?
   //
-  // e.node is fixed across this loop, so resolve+decode it ONCE (into the
-  // fixed-operand buffer) and compare against each r via distance(NodeData,
-  // Node), which reuses e.node's decode instead of re-resolving it per r.
-  NodeData e_data;
+  // e.node is fixed across this loop, so resolve its (cached) fixed-operand
+  // handle ONCE, then compare against each r: only the varying operand r is
+  // looked up per comparison. The handle type is Graph-associated
+  // (Graph::CachedVector) so this stays decoupled from any concrete vector
+  // representation -- IndexGraph uses a cached native::Data*, the test mock
+  // uses its own NodeData.
+  typename Graph::CachedVector e_data{};
   if (m_graph.resolve_fixed_operand(e.node, e_data)) {
     return true;
   }

@@ -51,6 +51,11 @@ struct LineGraph {
     bool is_query = true;
   };
   using DistanceType = float;
+  // Fixed-operand handle for is_dominated (Graph::CachedVector). The real
+  // IndexGraph uses a cached decoded-vector pointer; the mock just carries its
+  // NodeData by value, so resolve_fixed_operand/distance below match the
+  // generic contract.
+  using CachedVector = NodeData;
   // LineGraph is a single flat graph with no notion of levels; LevelId
   // exists only to satisfy the Graph interface and carries no state.
   struct LevelId {
