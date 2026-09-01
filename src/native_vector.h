@@ -202,9 +202,17 @@ bool from_encoded(const unsigned char *encoded_data, size_t encoded_len,
 bool to_encoded(const void *native_data, unsigned char *encoded_buffer,
                 size_t encoded_buf_len, size_t *encoded_len);
 
+// The distance kernels accumulate in float (matching the stored element type)
+// so the reduction vectorizes to a single SIMD lane-width under -O3 with the
+// reassociation flags set in CMakeLists.txt. The public return type stays
+// double to match the dispatch function-pointer signature; each kernel widens
+// its float accumulator once at the return. Overflow of the float accumulator
+// produces a well-ordered +inf (the reassociation flags do NOT assume finite
+// math), so L2/inner-product ranking stays correct on pathological inputs.
+
 // L1 distance (Manhattan distance) between two vectors
 static V_FUNC_ALWAYS_INLINE double dist_l1(const Data *v1, const Data *v2) {
-  double result = 0.0;
+  float result = 0.0f;
   for (uint32_t i = 0; i < v1->dim; i++) {
     result += std::abs(v1->data[i] - v2->data[i]);
   }
@@ -219,9 +227,9 @@ static V_FUNC_ALWAYS_INLINE double dist_squared_l2(const Data *v1,
   const float *end = a + v1->dim;
 
   // Use pointer iteration (helps vectorization)
-  double result = 0.0;
+  float result = 0.0f;
   for (; a != end; ++a, ++b) {
-    double diff = double(*a) - double(*b);
+    float diff = *a - *b;
     result += diff * diff;
   }
   return result;
@@ -234,17 +242,24 @@ static V_FUNC_ALWAYS_INLINE double dist_l2(const Data *v1, const Data *v2) {
 
 // Cosine distance between two vectors
 static V_FUNC_ALWAYS_INLINE double dist_cosine(const Data *v1, const Data *v2) {
-  double dot = 0.0, norm1 = 0.0, norm2 = 0.0;
+  float dot = 0.0f, norm1 = 0.0f, norm2 = 0.0f;
   for (uint32_t i = 0; i < v1->dim; i++) {
-    double x = v1->data[i];
-    double y = v2->data[i];
+    float x = v1->data[i];
+    float y = v2->data[i];
     dot += x * y;
     norm1 += x * x;
     norm2 += y * y;
   }
-  double denom = std::sqrt(norm1) * std::sqrt(norm2);
-  if (denom > 0.0) {
-    return 1.0 - (dot / denom);
+  // Widen to double for the division so the ratio keeps full precision even
+  // when the float sums are large.
+  double denom = std::sqrt(double(norm1)) * std::sqrt(double(norm2));
+  // Divide only when denom is finite and positive. A zero vector gives
+  // denom == 0; a large-magnitude vector can overflow the float norm
+  // accumulator to +inf, which would make dot/denom evaluate to inf/inf ==
+  // NaN and corrupt the comparator. Both fall through to max distance. This
+  // guard is on the cold post-loop path, so it does not affect vectorization.
+  if (denom > 0.0 && std::isfinite(denom)) {
+    return 1.0 - (double(dot) / denom);
   }
   return 1.0;  // Maximum distance
 }
@@ -252,7 +267,7 @@ static V_FUNC_ALWAYS_INLINE double dist_cosine(const Data *v1, const Data *v2) {
 // Inner product (dot product) between two vectors
 static V_FUNC_ALWAYS_INLINE double dist_inner_product(const Data *v1,
                                                       const Data *v2) {
-  double result = 0.0;
+  float result = 0.0f;
   for (uint32_t i = 0; i < v1->dim; i++) {
     result += v1->data[i] * v2->data[i];
   }
@@ -265,12 +280,11 @@ static V_FUNC_ALWAYS_INLINE double norm_l2(const Data *v) {
   const float *end = a + v->dim;
 
   // Use pointer iteration (helps vectorization)
-  double sum_sq = 0.0;
+  float sum_sq = 0.0f;
   for (; a != end; ++a) {
-    double val = double(*a);
-    sum_sq += val * val;
+    sum_sq += *a * *a;
   }
-  return std::sqrt(sum_sq);
+  return std::sqrt(double(sum_sq));
 }
 
 }  // namespace svector::native

@@ -66,6 +66,21 @@ target_include_directories(svector PRIVATE
 
 target_compile_options(svector PRIVATE -fPIC)
 
+# Distance-kernel codegen (native_vector.h, inlined into vector.cc). -O3 plus
+# the reassociation subset lets the compiler split the float reduction into
+# SIMD lane-width accumulators and fold multiply-adds, so the L2/cosine/IP/L1
+# kernels vectorize (AVX-512/AVX2/NEON per -march). This is the flag set
+# pgvector uses; it deliberately omits -ffinite-math-only (implied by full
+# -ffast-math) so a float-accumulator overflow still yields a well-ordered
+# +inf rather than undefined behaviour. -march is left to the builder
+# (pass -DCMAKE_CXX_FLAGS=-march=native); cmake ignores env CXXFLAGS.
+target_compile_options(svector PRIVATE
+    -O3
+    -fassociative-math
+    -fno-signed-zeros
+    -fno-trapping-math
+    -ffp-contract=fast)
+
 # On macOS the linker requires all symbols to be resolved at link time by default,
 # but vef_storage_* symbols are provided by the server at dlopen time.
 if(APPLE)
