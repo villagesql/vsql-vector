@@ -30,8 +30,10 @@
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
+#include "../../native_vector.h"
 #include "../../storage/storage.h"
 #include "hnsw.h"
 #include <villagesql/preview/index_builder.h>
@@ -427,6 +429,17 @@ public:
     return LevelStore::LevelId{S_MAX_LEVEL - 1};
   }
 
+  // Resolves vid to its decoded vector via a build-scoped cache: decoded from
+  // storage once per distinct node for the whole build, O(1) hit thereafter.
+  // HNSW revisits the same nodes many times (a node compared as a candidate,
+  // then later as a graph member), so caching the decode avoids re-fetching and
+  // re-decoding the same vector hundreds of times. *out points into the cache
+  // (stable for the store's lifetime; the map owns the bytes). Returns true on
+  // error. SINGLE-THREADED build only: no locking.
+  bool get_decoded_vector(uint64_t vid, const Index &index,
+                          const native::Data **out, char *err,
+                          uint32_t err_len);
+
   // Whole-graph lock, protecting graph-wide metadata (entry point/level).
   std::shared_mutex &mutex() { return m_mutex; }
 
@@ -533,6 +546,20 @@ private:
 
   std::array<std::optional<LevelStore>, S_MAX_LEVEL> m_levels;
   MultiColumnStore m_multi_store;
+
+  // Build-scoped decoded-vector cache (see get_decoded_vector). Keyed by VID
+  // value; each entry owns a byte buffer holding a decoded native::Data. Stable
+  // addresses across insertions (std::unordered_map node storage), so the
+  // native::Data* handed to callers stays valid for the store's lifetime.
+  // SINGLE-THREADED build experiment: no locking, no eviction, no size cap.
+  std::unordered_map<uint64_t, std::vector<unsigned char>> m_vector_cache;
+
+  // Reused scratch that receives get_key_data's copy on a cache MISS (the
+  // caller-provides-buffer contract). Sized once to the column's max length;
+  // reused across misses to avoid a per-miss allocation. Its contents are
+  // decoded into the cache's own buffer and are dead after that, so a single
+  // shared scratch is safe (SINGLE-THREADED, same as m_vector_cache).
+  std::vector<unsigned char> m_decode_scratch;
 };
 
 using StorageCtx = Index::StorageCtx<IndexStore>;

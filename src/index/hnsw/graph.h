@@ -304,15 +304,19 @@ public:
 
   bool distance(const NodeData &a, const Node &b, DistanceType &out);
 
-  // Resolve a graph node's stored vector into NodeData held in a dedicated
-  // buffer (m_vector_buf_1) that is NOT touched by the distance() overloads
-  // (they use m_vector_buf_2 for their varying operand). This lets a caller
+  // Resolve a graph node's decoded vector via the store's build-scoped cache,
+  // returning a stable pointer (valid for the store's lifetime). Lets a caller
   // that compares one fixed node against many others -- e.g. the Algorithm-4
-  // dominance check -- resolve the fixed operand once, then call
-  // distance(NodeData, Node) in the loop so the fixed operand's decode is
-  // reused across the varying ones instead of re-resolved and re-decoded each
-  // comparison. Returns true on error.
-  bool resolve_fixed_operand(const Node &node, NodeData &out);
+  // dominance check -- resolve the fixed operand's decoded vector ONCE before
+  // the loop and pass it to distance(const native::Data *, const Node &),
+  // hoisting the fixed operand's cache lookup out of the inner loop (only the
+  // varying operand is looked up per comparison). Returns true on error.
+  bool resolve_cached_vector(const Node &node, const native::Data **out);
+
+  // distance() with the first operand already resolved to its decoded vector
+  // (see resolve_cached_vector). The second operand is a graph node resolved
+  // via the cache. Returns true on error.
+  bool distance(const native::Data *a, const Node &b, DistanceType &out);
 
   // level is node's own level. Callers always already know it (it's how
   // they located node in the first place), so it's taken directly instead
