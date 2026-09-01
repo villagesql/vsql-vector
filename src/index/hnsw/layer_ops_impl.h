@@ -278,11 +278,14 @@ bool LayerOperations<Graph, Policy>::is_dominated(
   // Algorithm 4, line 11 (negated): does some element of result already
   // cover e, i.e. is it closer to e than the query node is?
   //
-  // e.node is fixed across this loop, so resolve+decode it ONCE (into the
-  // fixed-operand buffer) and compare against each r via distance(NodeData,
-  // Node), which reuses e.node's decode instead of re-resolving it per r.
-  NodeData e_data;
-  if (m_graph.resolve_fixed_operand(e.node, e_data)) {
+  // e.node is fixed across this loop, so resolve its decoded vector via the
+  // store's build-scoped cache ONCE, then compare against each r via
+  // distance(native::Data*, Node): only the varying operand r is looked up per
+  // comparison. Both operands come from the cache (each node decoded once for
+  // the whole build), and this path never touches the query vector's decode
+  // slot (m_decoded_buf_1) that the evaluate_distances loop reuses.
+  const native::Data *e_data = nullptr;
+  if (m_graph.resolve_cached_vector(e.node, &e_data)) {
     return true;
   }
   for (const Node &r : result) {

@@ -169,40 +169,98 @@ bool IndexGraph::distance(const NodeData &a, const NodeData &b,
 }
 
 bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
-  NodeData a_data;
-  NodeData b_data;
-  if (resolve_node_data(a.vid, m_ctx.m_vector_buf_1, a_data) ||
-      resolve_node_data(b.vid, m_ctx.m_vector_buf_2, b_data))
+  // Both operands are graph nodes with VIDs, so route each through the store's
+  // build-scoped decoded-vector cache: every distinct node is resolved from
+  // storage + decoded exactly once for the whole build, and every later touch
+  // (HNSW revisits the same nodes heavily) is an O(1) cache hit -- no storage
+  // access, no re-decode. This is the dominant build-time win. The cached
+  // native::Data* stays valid for the store's lifetime, so both operands can be
+  // live at once for m_dist_fn.
+  if (m_dist_fn == nullptr) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: distance: no native distance function resolved");
     return true;
-
-  // a_data here is resolved into a REUSED buffer (m_vector_buf_1): its source
-  // pointer repeats across calls with different contents, so it must never hit
-  // the decoded-a reuse cache (which keys on that pointer). Invalidate it; only
-  // the fixed-NodeData-query overload may benefit from the cache.
-  m_ctx.m_decoded_buf_1_src = nullptr;
-  return distance(a_data, b_data, out);
+  }
+  const native::Data *a_data = nullptr;
+  const native::Data *b_data = nullptr;
+  if (m_store.get_decoded_vector(a.vid.value, m_index, &a_data,
+                                 get_err_buffer(), get_err_buffer_len()) ||
+      m_store.get_decoded_vector(b.vid.value, m_index, &b_data,
+                                 get_err_buffer(), get_err_buffer_len()))
+    return true;
+  out = m_dist_fn(a_data, b_data);
+  return false;
 }
 
 bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
   // a is the caller's own vector -- the one being inserted or queried for,
-  // which is not in the graph and so has no vid to resolve. Only b needs a
-  // buffer, and it takes the second one so the roles of the two never shift
-  // between the overloads.
-  NodeData b_data;
-  if (resolve_node_data(b.vid, m_ctx.m_vector_buf_2, b_data))
+  // which is not in the graph and so has no vid to resolve. b is a graph node:
+  // route it through the store's build-scoped decoded-vector cache so a node's
+  // storage fetch + decode happen exactly once for the whole build, not once
+  // per revisit. This is THE hot path -- HNSW compares the fixed query vector
+  // against each candidate node, revisiting the same candidates heavily -- so
+  // caching b's decode here is where the build/search win comes from.
+  if (m_dist_fn == nullptr) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: distance: no native distance function resolved");
+    return true;
+  }
+
+  // Decode the query operand a once and reuse it across the traversal's
+  // candidates (its source pointer is fixed until the caller moves to a new
+  // query), then decode into m_decoded_buf_1 on a change.
+  constexpr uint32_t kPrefix = IndexStore::KEY_REF_SIZE;
+  const native::Data *a_data = nullptr;
+  if (a.data.data == m_ctx.m_decoded_buf_1_src) {
+    a_data =
+        reinterpret_cast<const native::Data *>(m_ctx.m_decoded_buf_1.data());
+  } else {
+    if (a.data.length < kPrefix) {
+      snprintf(get_err_buffer(), get_err_buffer_len(),
+               "HNSW: distance: value too short (len=%u)", a.data.length);
+      return true;
+    }
+    if (native::from_encoded(a.data.data + kPrefix, a.data.length - kPrefix,
+                             m_ctx.m_decoded_buf_1.data(),
+                             m_ctx.m_decoded_buf_1.size())) {
+      snprintf(get_err_buffer(), get_err_buffer_len(),
+               "HNSW: distance: failed to decode vector");
+      return true;
+    }
+    a_data =
+        reinterpret_cast<const native::Data *>(m_ctx.m_decoded_buf_1.data());
+    m_ctx.m_decoded_buf_1_src = a.data.data;
+  }
+
+  // b from the VID cache: no storage fetch, no re-decode on a revisit.
+  const native::Data *b_data = nullptr;
+  if (m_store.get_decoded_vector(b.vid.value, m_index, &b_data,
+                                 get_err_buffer(), get_err_buffer_len()))
     return true;
 
-  return distance(a, b_data, out);
+  out = m_dist_fn(a_data, b_data);
+  return false;
 }
 
-bool IndexGraph::resolve_fixed_operand(const Node &node, NodeData &out) {
-  if (resolve_node_data(node.vid, m_ctx.m_vector_buf_1, out)) return true;
-  // out.data.data now points at m_vector_buf_1, whose address repeats across
-  // calls with different content -- the decoded-a reuse cache keys on that
-  // pointer, so it must be invalidated here. The first distance(out, .) then
-  // decodes it once (cache miss) and subsequent calls in the caller's loop
-  // reuse it.
-  m_ctx.m_decoded_buf_1_src = nullptr;
+bool IndexGraph::resolve_cached_vector(const Node &node,
+                                       const native::Data **out) {
+  return m_store.get_decoded_vector(node.vid.value, m_index, out,
+                                    get_err_buffer(), get_err_buffer_len());
+}
+
+bool IndexGraph::distance(const native::Data *a, const Node &b,
+                          DistanceType &out) {
+  if (m_dist_fn == nullptr) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: distance: no native distance function resolved");
+    return true;
+  }
+  // a is already decoded (resolved once by the caller); only b is looked up.
+  const native::Data *b_data = nullptr;
+  if (m_store.get_decoded_vector(b.vid.value, m_index, &b_data,
+                                 get_err_buffer(), get_err_buffer_len()))
+    return true;
+  out = m_dist_fn(a, b_data);
   return false;
 }
 

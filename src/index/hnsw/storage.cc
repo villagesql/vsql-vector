@@ -220,6 +220,64 @@ bool Options::parse(const vef_index_param_t *params, uint32_t count,
   return out->validate(error_msg, error_msg_len);
 }
 
+bool IndexStore::get_decoded_vector(uint64_t vid, const Index &index,
+                                    const native::Data **out, char *err,
+                                    uint32_t err_len) {
+  // Load-once gate. HIT: the vector was already decoded earlier in this build
+  // -> return the cached native::Data, no storage access, no decode.
+  auto it = m_vector_cache.find(vid);
+  if (it != m_vector_cache.end()) {
+    *out = reinterpret_cast<const native::Data *>(it->second.data());
+    return false;
+  }
+
+  // MISS: resolve the col_ref -> encoded float bytes, decode once, cache it.
+  // get_key_data is caller-provides-buffer: point raw at a scratch buffer of at
+  // least the column's max stored length before the call (the server copies the
+  // stored value into it and sets raw.length to the actual value length).
+  const auto ref = static_cast<IndexScanKey::KeyPartRef>(vid);
+  const uint32_t max_len = index.get_max_col_len(VECTOR_KEY_POS);
+  if (m_decode_scratch.size() < max_len) m_decode_scratch.resize(max_len);
+  IndexScanKey::KeyPartData raw;
+  raw.data = m_decode_scratch.data();
+  raw.length = max_len;
+  if (index.get_key_data(VECTOR_KEY_POS, ref, &raw)) {
+    snprintf(err, err_len,
+             "HNSW: get_decoded_vector: failed to resolve VID to vector: %s",
+             index.get_error());
+    return true;
+  }
+
+  // get_key_data returns the value in [8-byte col_ref prefix][floats] form
+  // (uniform with the query/insert element), so skip the prefix and decode the
+  // floats. dim = (length - prefix) / sizeof(float).
+  constexpr uint32_t kPrefix = KEY_REF_SIZE;
+  if (raw.length < kPrefix) {
+    snprintf(err, err_len,
+             "HNSW: get_decoded_vector: value too short (len=%u)", raw.length);
+    return true;
+  }
+  const uint32_t dim =
+      (raw.length - kPrefix) / static_cast<uint32_t>(sizeof(float));
+  const native::Length nlen = native::length(dim);
+  std::vector<unsigned char> buf(nlen.length);
+  // std::vector<unsigned char> data() is max_align_t-aligned by the default
+  // allocator, satisfying native::Data's SIMD alignment requirement.
+  if (native::from_encoded(raw.data + kPrefix, raw.length - kPrefix, buf.data(),
+                           buf.size())) {
+    snprintf(err, err_len,
+             "HNSW: get_decoded_vector: failed to decode vector (len=%u)",
+             raw.length);
+    return true;
+  }
+
+  // Insert last, fully decoded, then hand back a stable pointer into the map.
+  auto [ins, ok] = m_vector_cache.emplace(vid, std::move(buf));
+  (void)ok;
+  *out = reinterpret_cast<const native::Data *>(ins->second.data());
+  return false;
+}
+
 uint16_t IndexStore::entry_len(LevelStore::LevelId level) const {
   auto max_neighbours = LevelStore::max_neighbours(level, m_num_neighbours);
   return static_cast<uint16_t>(
