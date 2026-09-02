@@ -888,8 +888,22 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
   const uint32_t ef_search =
       std::max<uint32_t>(k, static_cast<uint32_t>(g_ef_search));
 
+  // Materialize the FULL ef_search-ranked pool into the cursor, not just the
+  // top k. The search already ranks all ef_search candidates (k is only a
+  // post-hoc truncation), so returning the extra (ef_search - k) costs nothing
+  // but retaining their Node refs in the cursor (~16 B each; bounded by the
+  // thread pool). The server pulls them nearest-first and resolves each to a
+  // row only on demand, so the tail is free unless it is actually consumed.
+  // This gives the server local backfill for two post-index filters without an
+  // immediate index round-trip:
+  //   - a WHERE clause that eliminates some of the top k, and
+  //   - MVCC visibility: a hit on a concurrently-inserted (invisible) row makes
+  //     the clustered lookup return DB_RECORD_NOT_FOUND; the server skips it and
+  //     pulls the next candidate (see custom_index_knn_scan.cc Read()).
+  // Passing ef_search as the result count makes search_knn keep the whole pool.
   std::vector<Node> nodes;
-  if (GraphOperations<IndexGraph>(graph).search_knn(query, k, ef_search, nodes))
+  if (GraphOperations<IndexGraph>(graph).search_knn(query, ef_search, ef_search,
+                                                    nodes))
     return true;
 
   auto *c = new Cursor(std::move(nodes));
