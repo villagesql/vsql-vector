@@ -19,10 +19,18 @@ t1	CREATE TABLE `t1` (
   `b` vsql_vector.SVECTOR(4) NOT NULL,
   `c` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_implicit` (`a`) USING EXTENDED(vsql_vector.hnsw),
-  KEY `idx_explicit_default` (`b`) USING EXTENDED(vsql_vector.hnsw),
-  KEY `idx_non_default` (`c` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw)
+  KEY `idx_implicit` (`a` `vsql_vector`.`hnsw_l2`) USING EXTENDED(`vsql_vector`.`hnsw`),
+  KEY `idx_explicit_default` (`b` `vsql_vector`.`hnsw_l2`) USING EXTENDED(`vsql_vector`.`hnsw`),
+  KEY `idx_non_default` (`c` `vsql_vector`.`hnsw_cosine`) USING EXTENDED(`vsql_vector`.`hnsw`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
+test	t1	idx_explicit_default	vsql_vector	0.0.1	hnsw	{}
+test	t1	idx_implicit	vsql_vector	0.0.1	hnsw	{}
+test	t1	idx_non_default	vsql_vector	0.0.1	hnsw	{}
+table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
+t1	idx_explicit_default	0	b	vsql_vector	0.0.1	hnsw_l2
+t1	idx_implicit	0	a	vsql_vector	0.0.1	hnsw_l2
+t1	idx_non_default	0	c	vsql_vector	0.0.1	hnsw_cosine
 DROP TABLE t1;
 # --- WITH option names are canonicalized, not echoed ---
 CREATE TABLE t2 (
@@ -36,8 +44,12 @@ t2	CREATE TABLE `t2` (
   `id` int NOT NULL,
   `a` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_mixed_case` (`a`) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8)
+  KEY `idx_mixed_case` (`a` `vsql_vector`.`hnsw_l2`) USING EXTENDED(`vsql_vector`.`hnsw`) WITH (`ef_construction` = 64, `m` = 8)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
+test	t2	idx_mixed_case	vsql_vector	0.0.1	hnsw	{"m": "8", "Ef_Construction": "64"}
+table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
+t2	idx_mixed_case	0	a	vsql_vector	0.0.1	hnsw_l2
 DROP TABLE t2;
 # --- USING EXTENDED and WITH precede the other index options ---
 CREATE TABLE t3 (
@@ -54,8 +66,8 @@ t3	CREATE TABLE `t3` (
   `a` vsql_vector.SVECTOR(4) NOT NULL,
   `b` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_comment` (`a`) USING EXTENDED(vsql_vector.hnsw) WITH (`m` = 8) COMMENT 'a comment',
-  KEY `idx_invisible` (`b` vsql_vector.hnsw_l1) USING EXTENDED(vsql_vector.hnsw) /*!80000 INVISIBLE */
+  KEY `idx_comment` (`a` `vsql_vector`.`hnsw_l2`) USING EXTENDED(`vsql_vector`.`hnsw`) WITH (`m` = 8) COMMENT 'a comment',
+  KEY `idx_invisible` (`b` `vsql_vector`.`hnsw_l1`) USING EXTENDED(`vsql_vector`.`hnsw`) /*!80000 INVISIBLE */
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 DROP TABLE t3;
 # --- Round trip: SHOW CREATE TABLE output recreates an identical table ---
@@ -76,10 +88,19 @@ rt	CREATE TABLE `rt` (
   `b` vsql_vector.SVECTOR(4) NOT NULL,
   `c` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `k1` (`a`) USING EXTENDED(vsql_vector.hnsw),
-  KEY `k2` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
-  KEY `k3` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw) COMMENT 'note'
+  KEY `k1` (`a` `vsql_vector`.`hnsw_l2`) USING EXTENDED(`vsql_vector`.`hnsw`),
+  KEY `k2` (`b` `vsql_vector`.`hnsw_cosine`) USING EXTENDED(`vsql_vector`.`hnsw`) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `k3` (`c` `vsql_vector`.`hnsw_inner_product`) USING EXTENDED(`vsql_vector`.`hnsw`) COMMENT 'note'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+# Metadata as stored by the original CREATE TABLE
+db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
+test	rt	k1	vsql_vector	0.0.1	hnsw	{}
+test	rt	k2	vsql_vector	0.0.1	hnsw	{"M": "8", "ef_construction": "64"}
+test	rt	k3	vsql_vector	0.0.1	hnsw	{}
+table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
+rt	k1	0	a	vsql_vector	0.0.1	hnsw_l2
+rt	k2	0	b	vsql_vector	0.0.1	hnsw_cosine
+rt	k3	0	c	vsql_vector	0.0.1	hnsw_inner_product
 DROP TABLE rt;
 CREATE TABLE `rt` (
   `id` int NOT NULL,
@@ -87,10 +108,19 @@ CREATE TABLE `rt` (
   `b` vsql_vector.SVECTOR(4) NOT NULL,
   `c` vsql_vector.SVECTOR(4) NOT NULL,
   PRIMARY KEY (`id`),
-  KEY `k1` (`a`) USING EXTENDED(vsql_vector.hnsw),
-  KEY `k2` (`b` vsql_vector.hnsw_cosine) USING EXTENDED(vsql_vector.hnsw) WITH (`ef_construction` = 64, `m` = 8),
-  KEY `k3` (`c` vsql_vector.hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw) COMMENT 'note'
+  KEY `k1` (`a` `vsql_vector`.`hnsw_l2`) USING EXTENDED(`vsql_vector`.`hnsw`),
+  KEY `k2` (`b` `vsql_vector`.`hnsw_cosine`) USING EXTENDED(`vsql_vector`.`hnsw`) WITH (`ef_construction` = 64, `m` = 8),
+  KEY `k3` (`c` `vsql_vector`.`hnsw_inner_product`) USING EXTENDED(`vsql_vector`.`hnsw`) COMMENT 'note'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+# Metadata as stored by the table recreated from that output.
+db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
+test	rt	k1	vsql_vector	0.0.1	hnsw	{}
+test	rt	k2	vsql_vector	0.0.1	hnsw	{"m": "8", "ef_construction": "64"}
+test	rt	k3	vsql_vector	0.0.1	hnsw	{}
+table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
+rt	k1	0	a	vsql_vector	0.0.1	hnsw_l2
+rt	k2	0	b	vsql_vector	0.0.1	hnsw_cosine
+rt	k3	0	c	vsql_vector	0.0.1	hnsw_inner_product
 # ... and here
 DROP TABLE rt;
 SET SESSION debug='-d,villagesql_custom_index_proceed';

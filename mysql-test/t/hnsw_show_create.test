@@ -23,6 +23,7 @@ CREATE TABLE t1 (
   INDEX idx_non_default (c hnsw_cosine) USING EXTENDED(hnsw)
 ) ENGINE=InnoDB;
 SHOW CREATE TABLE t1;
+--source include/villagesql/query_custom_indexes.inc
 DROP TABLE t1;
 
 --echo # --- WITH option names are canonicalized, not echoed ---
@@ -32,6 +33,7 @@ CREATE TABLE t2 (
   INDEX idx_mixed_case (a) USING EXTENDED(hnsw) WITH (m = 8, Ef_Construction = 64)
 ) ENGINE=InnoDB;
 SHOW CREATE TABLE t2;
+--source include/villagesql/query_custom_indexes.inc
 DROP TABLE t2;
 
 --echo # --- USING EXTENDED and WITH precede the other index options ---
@@ -56,11 +58,15 @@ CREATE TABLE rt (
   INDEX k3 (c hnsw_inner_product) USING EXTENDED(vsql_vector.hnsw) COMMENT 'note'
 ) ENGINE=InnoDB;
 SHOW CREATE TABLE rt;
+--echo # Metadata as stored by the original CREATE TABLE
+--source include/villagesql/query_custom_indexes.inc
 
 --let $SCT= query_get_value(SHOW CREATE TABLE rt, Create Table, 1)
 DROP TABLE rt;
 --eval $SCT
 --let $SCT_= query_get_value(SHOW CREATE TABLE rt, Create Table, 1)
+--echo # Metadata as stored by the table recreated from that output.
+--source include/villagesql/query_custom_indexes.inc
 
 if ($SCT != $SCT_)
 {
