@@ -47,6 +47,7 @@ using vsql::CustomArgWith;
 using vsql::CustomResult;
 using vsql::IntArg;
 using vsql::IntResult;
+using vsql::make_func;
 using vsql::MaybeParams;
 using vsql::RealResult;
 using vsql::ResolvedTypeParams;
@@ -685,41 +686,47 @@ static constexpr auto HNSW_INDEX_TYPE =
         .build();
 // clang-format on
 
-static const auto HNSW_L1_FN =
-    make_index_function<&svector_distance_l1>(kHNSWFuncL1Distance)
+// SQL-visible distance functions: declared with make_func() (not
+// make_index_function()) since they are also registered as SQL functions via
+// .func() below and bound to index profiles via with_function() using this
+// same static descriptor.
+static constexpr auto HNSW_L1_FN =
+    make_func<&svector_distance_l1>(kHNSWFuncL1Distance)
         .returns(vsql::REAL)
         .param(SVECTOR)
         .param(SVECTOR)
         .deterministic()
         .build();
 
-static const auto HNSW_L2_FN =
-    make_index_function<&svector_distance_l2>(kHNSWFuncL2Distance)
+static constexpr auto HNSW_L2_FN =
+    make_func<&svector_distance_l2>(kHNSWFuncL2Distance)
         .returns(vsql::REAL)
         .param(SVECTOR)
         .param(SVECTOR)
         .deterministic()
         .build();
 
-static const auto HNSW_L2_SQUARED_FN =
+static constexpr auto HNSW_COSINE_FN =
+    make_func<&svector_distance_cosine>(kHNSWFuncCosineDistance)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+static constexpr auto HNSW_IP_FN =
+    make_func<&svector_inner_product>(kHNSWFuncInnerProduct)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+// Internal-only helper: squared L2 skips sqrt for cheaper index-scan
+// comparisons and is not SQL-visible, so it stays a make_index_function().
+static constexpr auto HNSW_L2_SQUARED_FN =
     make_index_function<&svector_distance_l2_squared>(
         kHNSWFuncL2SquaredDistance)
-        .returns(vsql::REAL)
-        .param(SVECTOR)
-        .param(SVECTOR)
-        .deterministic()
-        .build();
-
-static const auto HNSW_COSINE_FN =
-    make_index_function<&svector_distance_cosine>(kHNSWFuncCosineDistance)
-        .returns(vsql::REAL)
-        .param(SVECTOR)
-        .param(SVECTOR)
-        .deterministic()
-        .build();
-
-static const auto HNSW_IP_FN =
-    make_index_function<&svector_inner_product>(kHNSWFuncInnerProduct)
         .returns(vsql::REAL)
         .param(SVECTOR)
         .param(SVECTOR)
@@ -730,8 +737,8 @@ static const auto HNSW_L1_PROFILE =
     make_index_profile(kHNSWProfileL1)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function(DISTANCE_PROFILE_FN_ID, HNSW_L1_FN)
-        .with_helper(DISTANCE_HELPER_FN_ID, HNSW_L1_FN)
+        .with_function<HNSW_L1_FN>(DISTANCE_PROFILE_FN_ID)
+        .with_helper<HNSW_L1_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .build();
 
@@ -739,8 +746,8 @@ static const auto HNSW_L2_PROFILE =
     make_index_profile(kHNSWProfileL2)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function(DISTANCE_PROFILE_FN_ID, HNSW_L2_FN)
-        .with_helper(DISTANCE_HELPER_FN_ID, HNSW_L2_SQUARED_FN)
+        .with_function<HNSW_L2_FN>(DISTANCE_PROFILE_FN_ID)
+        .with_helper<HNSW_L2_SQUARED_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .default_for_type(true)
         .build();
@@ -749,8 +756,8 @@ static const auto HNSW_COSINE_PROFILE =
     make_index_profile(kHNSWProfileCosine)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function(DISTANCE_PROFILE_FN_ID, HNSW_COSINE_FN)
-        .with_helper(DISTANCE_HELPER_FN_ID, HNSW_COSINE_FN)
+        .with_function<HNSW_COSINE_FN>(DISTANCE_PROFILE_FN_ID)
+        .with_helper<HNSW_COSINE_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .build();
 
@@ -758,8 +765,8 @@ static const auto HNSW_IP_PROFILE =
     make_index_profile(kHNSWProfileInnerProduct)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function(DISTANCE_PROFILE_FN_ID, HNSW_IP_FN)
-        .with_helper(DISTANCE_HELPER_FN_ID, HNSW_IP_FN)
+        .with_function<HNSW_IP_FN>(DISTANCE_PROFILE_FN_ID)
+        .with_helper<HNSW_IP_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::DESC)
         .build();
 
@@ -836,29 +843,10 @@ VEF_GENERATE_ENTRY_POINTS(
                   .deterministic()
                   .build())
 
-        // Vector distance functions (SQL)
-        .func(make_func<&svector_distance_l1>("l1_distance")
-                  .returns(REAL)
-                  .param(SVECTOR)
-                  .param(SVECTOR)
-                  .deterministic()
-                  .build())
-        .func(make_func<&svector_distance_l2>("l2_distance")
-                  .returns(REAL)
-                  .param(SVECTOR)
-                  .param(SVECTOR)
-                  .deterministic()
-                  .build())
-        .func(make_func<&svector_distance_cosine>("cosine_distance")
-                  .returns(REAL)
-                  .param(SVECTOR)
-                  .param(SVECTOR)
-                  .deterministic()
-                  .build())
-        .func(make_func<&svector_inner_product>("inner_product")
-                  .returns(REAL)
-                  .param(SVECTOR)
-                  .param(SVECTOR)
-                  .deterministic()
-                  .build())
+        // Vector distance functions (SQL) - same static descriptors bound to
+        // HNSW index profiles above via with_function().
+        .func(HNSW_L1_FN)
+        .func(HNSW_L2_FN)
+        .func(HNSW_COSINE_FN)
+        .func(HNSW_IP_FN)
         .func(make_intrinsic_default<&svector_default>("vector_default")))
