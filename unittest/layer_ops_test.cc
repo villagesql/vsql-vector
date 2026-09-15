@@ -181,6 +181,12 @@ std::vector<int> values(const std::vector<LineGraph::Node> &nodes) {
   return out;
 }
 
+std::vector<int> values_sorted(const std::vector<LineGraph::Node> &nodes) {
+  std::vector<int> out = values(nodes);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
 void test_basic_knn() {
   LineGraph graph;
   graph.n = 20;
@@ -707,11 +713,131 @@ void test_consume_heuristic_extend_candidates_distance_failure_propagates() {
   assert((values(result) == std::vector<int>{-1}));
 }
 
+// WITHOUT resumable mode, continue_search() yields nothing: standard HNSW
+// SEARCH-LAYER expand() drops any neighbour outside the ef beam from the
+// frontier, so when search() terminates m_candidates holds nothing farther to
+// resume into. This pins that (it's why resumable mode exists).
+void test_continue_search_without_resumable_is_empty() {
+  LineGraph graph;
+  graph.n = 20;
+  LineGraph::NodeData query{15};
+  svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
+                                                                    query);
+
+  std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 5)); // not resumable
+  std::vector<LineGraph::Node> first;
+  layer.consume_result(first);
+  assert(values_sorted(first) == (std::vector<int>{13, 14, 15, 16, 17}));
+
+  assert(!layer.continue_search(20));
+  std::vector<LineGraph::Node> second;
+  layer.consume_result(second);
+  assert(second.empty());
+}
+
+// WITH resumable mode (set_resumable(true) before the initial search), expand()
+// keeps every unvisited neighbour on the frontier, so continue_search() with a
+// wider ef resumes into candidates the first pass admitted but did not return.
+// The next tranche is non-empty, disjoint from the first, and strictly farther
+// -- the properties that must hold on ANY graph. (Exact node sets are not
+// asserted: the LineGraph is a degenerate 1-D degree-2 graph whose frontier
+// walks one-sided, so the tranche is topology-dependent; the invariants below
+// are what actually define a correct resume. Entry is AT the query so the beam
+// does not sweep to the graph's ends and truly leaves a frontier.)
+void test_continue_search_resumable_yields_next_tranche() {
+  const int n = 40, q = 20;
+  LineGraph graph;
+  graph.n = n;
+  LineGraph::NodeData query{q};
+  svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
+                                                                    query);
+  layer.set_resumable(true);
+
+  std::vector<LineGraph::Node> candidates{LineGraph::Node{q}};
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 5));
+  std::vector<LineGraph::Node> first;
+  layer.consume_result(first);
+  std::vector<int> first_vals = values_sorted(first);
+  assert(first_vals.size() == 5);
+
+  assert(!layer.continue_search(11));
+  std::vector<LineGraph::Node> second;
+  layer.consume_result(second);
+  std::vector<int> second_vals = values_sorted(second);
+
+  // Resumable mode produced a real next tranche (without it this is empty).
+  assert(!second_vals.empty());
+  // Disjoint from the first tranche (no node returned twice)...
+  for (int v : second_vals) {
+    assert(std::find(first_vals.begin(), first_vals.end(), v) ==
+           first_vals.end());
+  }
+  // ...and every second-tranche node is strictly farther from the query than
+  // every first-tranche node -- the frontier only ever moves outward.
+  auto dist = [&](int v) { return std::abs(v - q); };
+  int furthest_first = 0;
+  for (int v : first_vals) furthest_first = std::max(furthest_first, dist(v));
+  for (int v : second_vals) assert(dist(v) > furthest_first);
+}
+
+// consume_result() leaves the object in the Consume state, so resumable
+// continue_search() chains: repeated calls keep extending the frontier outward.
+// Across the whole chain, no node is ever returned twice and each tranche is
+// farther than all preceding ones (a tranche may legitimately be empty once the
+// finite graph's frontier is exhausted -- the invariant is monotone, not that
+// results never run out).
+void test_continue_search_resumable_chains() {
+  const int n = 60, q = 30;
+  LineGraph graph;
+  graph.n = n;
+  LineGraph::NodeData query{q};
+  svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
+                                                                    query);
+  layer.set_resumable(true);
+
+  auto dist = [&](int v) { return std::abs(v - q); };
+  std::vector<int> seen;
+  int prev_furthest = -1;
+  int total = 0;
+
+  std::vector<LineGraph::Node> candidates{LineGraph::Node{q}};
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 4));
+
+  for (uint32_t ef : {4u, 8u, 12u, 16u}) {
+    if (ef != 4u) {
+      assert(!layer.continue_search(ef));
+    }
+    std::vector<LineGraph::Node> batch;
+    layer.consume_result(batch);
+    std::vector<int> vals = values_sorted(batch);
+    if (vals.empty()) {
+      continue; // frontier exhausted for this step; the chain still holds
+    }
+    int nearest_this = 1 << 30, furthest_this = 0;
+    for (int v : vals) {
+      assert(std::find(seen.begin(), seen.end(), v) == seen.end());
+      seen.push_back(v);
+      ++total;
+      nearest_this = std::min(nearest_this, dist(v));
+      furthest_this = std::max(furthest_this, dist(v));
+    }
+    assert(nearest_this > prev_furthest);
+    prev_furthest = furthest_this;
+  }
+  // The chain, taken together, surfaced more than the first tranche alone --
+  // i.e. resuming genuinely produced additional nodes.
+  assert(total > 4);
+}
+
 } // namespace
 
 int main() {
   test_basic_knn();
   test_reuse_after_search();
+  test_continue_search_without_resumable_is_empty();
+  test_continue_search_resumable_yields_next_tranche();
+  test_continue_search_resumable_chains();
   test_search_then_consume_heuristic_reuses_search_distances();
   test_reset_rebinds_query();
   test_ef_bounds_result_size();

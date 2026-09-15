@@ -118,6 +118,27 @@ public:
   bool search(const std::vector<Node> &entry_points, LevelId level,
               uint32_t ef);
 
+  // Enables resumable mode: expand() then keeps every unvisited neighbour on
+  // the frontier instead of dropping those outside the ef beam, so a later
+  // continue_search() with a wider ef has candidates to expand into. Must be
+  // set BEFORE the initial search()/seed() -- a non-resumable search discards
+  // the far frontier as it goes, and there is no way to recover it afterwards.
+  // The cost is a frontier bounded by the explored region rather than ef. Off
+  // by default; one-shot searches (INSERT descent, unfiltered KNN) leave it off.
+  void set_resumable(bool resumable) { m_resumable = resumable; }
+
+  // Resumes the search a preceding search()/seed() left in the Consume state,
+  // continuing from the retained frontier instead of restarting from the entry
+  // points. The caller must have extracted the previous result with
+  // consume_result() (or consume_all()) first -- that drains m_results but
+  // leaves m_candidates and m_visited intact, which is exactly the state this
+  // continues from. A wider ef than the previous call lets the loop admit
+  // further neighbours; the next tranche it produces is strictly farther than
+  // what was already consumed and revisits no node. Leaves the object in the
+  // Consume state (extract again with consume_result()). Must not be preceded
+  // by reset(). Returns true if a graph operation fails.
+  bool continue_search(uint32_t ef);
+
   // Step 1, traversal-free variant: evaluates the distance from the query
   // to each element of candidates directly (Algorithm 2, lines 1-3,
   // without the expansion loop), for callers that already know the exact
@@ -157,6 +178,15 @@ public:
                          KeepPrunedConnections keep_pruned_connections,
                          std::vector<Node> &out,
                          std::vector<Node> *candidate_pool = nullptr);
+
+  // Step 2, variant D -- the resume-friendly extractor. Moves the search
+  // result into out (ordered nearest-first), draining m_results but leaving
+  // m_candidates and m_visited as-is, and leaving the object in the Consume
+  // state. This is the extractor to pair with continue_search(): unlike
+  // consume_all()/consume_simple() (which reset to Init), it preserves the
+  // frontier the resume continues from. The other consume_*() variants are
+  // implemented on top of this.
+  void consume_result(std::vector<Node> &out);
 
   // Resets the search state, allowing the object to be reused for another
   // search with the current query node kept. Puts the object back in the
@@ -205,13 +235,6 @@ private:
   using MaxQueue = detail::PriorityQueue<Candidate, std::vector<Candidate>,
                                          typename Candidate::MaxComparator>;
 
-  // Moves the search result into out, consuming it in the process.
-  // The output vector is replaced with the search result, ordered by
-  // increasing distance from the query node (nearest first). Leaves
-  // m_candidates and m_visited as-is; the next search()/seed() call is
-  // responsible for discarding them via reset().
-  void consume_result(std::vector<Node> &out);
-
   // Fills in the distance for each candidate from index begin onward.
   // Elements before begin are assumed to already carry a valid distance
   // (e.g. copied over from a prior search()/seed() result) and are left
@@ -222,6 +245,13 @@ private:
   // (Algorithm 2, lines 1-3). Returns true if a graph operation fails.
   // The public search() and seed() both wrap this, after their own reset().
   bool seed_impl(const std::vector<Node> &entry_points);
+
+  // The Algorithm 2 expansion loop (lines 4-8), shared by search() (after its
+  // reset()+seed_impl) and continue_search() (which skips both to resume from
+  // the retained frontier). Expands from m_candidates until the nearest
+  // remaining candidate is farther than the furthest result, then puts the
+  // object in the Consume state. Returns true if a graph operation fails.
+  bool run_expansion(uint32_t ef);
 
   // Expands node's neighbourhood into m_candidates and m_results
   // (Algorithm 2, lines 9-17). Returns true if a graph operation fails.
@@ -244,6 +274,12 @@ private:
   Graph &m_graph;
   std::variant<Node, NodeData> m_query;
   State m_state = State::Init;
+
+  // When true, expand() keeps every unvisited neighbour on the frontier rather
+  // than dropping those outside the ef beam, so continue_search() can resume
+  // into them. Set via set_resumable(); survives reset() so a resumable object
+  // stays resumable across the reset()+seed() that search() does. See expand().
+  bool m_resumable = false;
 
   // Level of the nodes passed to the most recent search()/seed() call --
   // every node reachable from them via neighbours() lives at this same

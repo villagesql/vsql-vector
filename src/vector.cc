@@ -795,7 +795,7 @@ static auto HNSW_PROFILE_CAPABILITY = IndexProfileCapability()
                                           .index_profile(HNSW_COSINE_PROFILE)
                                           .index_profile(HNSW_IP_PROFILE);
 
-// vsql_vector.ef_search: per-session HNSW query-time search breadth.
+// vsql_vector session variables: per-session HNSW query-time knobs.
 namespace ssv = vsql::preview_session_var;
 static auto HNSW_SESSION_VARS = ssv::make_capability({
     ssv::make_int("ef_search",
@@ -804,13 +804,30 @@ static auto HNSW_SESSION_VARS = ssv::make_capability({
         .default_(svector::hnsw::DEFAULT_EF_SEARCH)
         .min(svector::hnsw::MIN_EF_SEARCH)
         .max(svector::hnsw::MAX_EF_SEARCH),
+    // Benchmark toggle (0/1): run the KNN search with the frontier retained
+    // (resumable mode) so its overhead can be measured against the default. The
+    // returned results are identical; only the discarded frontier differs.
+    // TODO(villagesql-indexing): remove once resumable refill is productionized.
+    ssv::make_int("resumable",
+                  "Benchmark: run KNN search in resumable mode (retain the search "
+                  "frontier). 0 = off (default), 1 = on. Results are unchanged; "
+                  "this measures the overhead of resumability.")
+        .default_(svector::hnsw::DEFAULT_RESUMABLE)
+        .min(0)
+        .max(1),
 });
 static auto HNSW_EF_SEARCH = HNSW_SESSION_VARS.int_var("ef_search");
+static auto HNSW_RESUMABLE = HNSW_SESSION_VARS.int_var("resumable");
 
 namespace svector::hnsw {
 long long read_ef_search() {
   long long v = DEFAULT_EF_SEARCH;
   HNSW_EF_SEARCH.read(v);
+  return v;
+}
+long long read_resumable() {
+  long long v = DEFAULT_RESUMABLE;
+  HNSW_RESUMABLE.read(v);
   return v;
 }
 }  // namespace svector::hnsw

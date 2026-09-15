@@ -454,19 +454,50 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
 
 // Algorithm 5, K-NN-SEARCH.
 template <typename Graph>
+bool GraphOperations<Graph>::descend_to_bottom(const NodeData &query_node_data,
+                                               typename Graph::LockLevels &levels,
+                                               LevelId entry_level,
+                                               std::vector<Node> &candidates) {
+  // Upper layers are pure navigation: a deleted-but-still-linked node is a
+  // perfectly good stepping stone towards the bottom layer, so visibility
+  // is irrelevant there. Only the bottom layer's search actually produces the
+  // result set, so upper-layer navigation uses AlwaysVisiblePolicy.
+  using UpperLayerOps = LayerOperations<Graph, AlwaysVisiblePolicy>;
+
+  UpperLayerOps upper_layer(m_graph, query_node_data);
+
+  // Lines 4-6: greedily descend from entry_level down to 1 with ef=1, narrowing
+  // to the single nearest element found at each layer. On return, candidates
+  // holds the level-0 entry points for the bottom-layer search.
+  for (auto level = entry_level; level.has_lower_level();
+       level = levels.descend()) {
+    if (upper_layer.search(candidates, level, GREEDY_DESCENT_EF)) {
+      return true;
+    }
+    upper_layer.consume_all(candidates);
+    // Prepare for the next layer by replacing the current candidates
+    // with their next-level counterparts.
+    assert(level.has_lower_level());
+    if (advance_to_next_level(candidates, level)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+template <typename Graph>
 bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
                                         uint32_t k, uint32_t ef_search,
-                                        std::vector<Node> &nearest_nodes) {
+                                        std::vector<Node> &nearest_nodes,
+                                        bool resumable) {
   using LockMode = typename Graph::LockMode;
   using LockGraph = typename Graph::LockGraph;
   using LockLevels = typename Graph::LockLevels;
   using DescendPolicy = typename Graph::LockLevels::DescendPolicy;
 
-  // Upper layers are pure navigation: a deleted-but-still-linked node is a
-  // perfectly good stepping stone towards the bottom layer, so visibility
-  // is irrelevant there. Only the bottom layer's search actually produces
-  // the result set, so that's the only one filtered for visibility.
-  using UpperLayerOps = LayerOperations<Graph, AlwaysVisiblePolicy>;
+  // Only the bottom layer's search produces the returned result set, so it's
+  // the only one filtered for visibility (see descend_to_bottom for why the
+  // upper layers are not).
   using BottomLayerOps = LayerOperations<Graph, GraphVisiblePolicy>;
 
   assert(k <= ef_search);
@@ -487,28 +518,17 @@ bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
 
   LockLevels levels(m_graph, LockMode::Shared, entry_level,
                     DescendPolicy::Release);
-  UpperLayerOps upper_layer(m_graph, query_node_data);
 
-  // Lines 4-6: greedily descend from L down to 1 with ef=1, narrowing to
-  // the single nearest element found at each layer.
-  for (auto level = entry_level; level.has_lower_level();
-       level = levels.descend()) {
-    if (upper_layer.search(candidates, level, GREEDY_DESCENT_EF)) {
-      return true;
-    }
-    upper_layer.consume_all(candidates);
-    // Prepare for the next layer by replacing the current candidates
-    // with their next-level counterparts.
-    assert(level.has_lower_level());
-    if (advance_to_next_level(candidates, level)) {
-      return true;
-    }
+  if (descend_to_bottom(query_node_data, levels, entry_level, candidates)) {
+    return true;
   }
 
-  // Line 7: search the bottom layer with ef=ef_search. This is the only
-  // layer whose result is returned, so it's the only one filtered for
-  // visibility.
+  // Line 7: search the bottom layer with ef=ef_search. This is the only layer
+  // whose result is returned, so it's the only one filtered for visibility.
+  // resumable retains the frontier for a later resume; it does not change the
+  // result this call returns.
   BottomLayerOps bottom_layer(m_graph, query_node_data);
+  bottom_layer.set_resumable(resumable);
   if (bottom_layer.search(candidates, LevelId{0}, ef_search)) {
     return true;
   }

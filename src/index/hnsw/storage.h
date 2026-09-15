@@ -72,6 +72,18 @@ struct Options {
                     Options *out, char *error_msg, uint32_t error_msg_len);
 };
 
+// Benchmark toggle for resumable-mode search: when non-zero, begin() runs the
+// bottom-layer search with the frontier ungated (retained beyond the ef beam),
+// so its overhead can be measured against the default (gated) search on the
+// same query. Results are identical either way -- only the discarded frontier
+// differs -- so any latency/memory delta is the pure cost of resumability.
+// Temporary: remove once resumable refill is wired in and measured.
+// TODO(villagesql-indexing): drop this flag once resume is productionized.
+inline constexpr long long DEFAULT_RESUMABLE = 0;
+
+// Reads the connection's vsql_vector.resumable value. Defined in vector.cc.
+long long read_resumable();
+
 // Per-scan cursor over a materialized KNN search result. begin() runs
 // GraphOperations::search_knn() once and hands the whole (already
 // ascending-by-distance) result to the cursor; position()/fetch() below just

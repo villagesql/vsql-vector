@@ -48,15 +48,7 @@ LayerOperations<Graph, Policy>::LayerOperations(Graph &graph, const Node &query)
     : m_graph(graph), m_query(query) {}
 
 template <typename Graph, template <typename> class Policy>
-bool LayerOperations<Graph, Policy>::search(
-    const std::vector<Node> &entry_points, LevelId level, uint32_t ef) {
-  reset();
-  m_level = level;
-
-  if (seed_impl(entry_points)) {
-    return true;
-  }
-
+bool LayerOperations<Graph, Policy>::run_expansion(uint32_t ef) {
   // Algorithm 2, lines 4-8: repeatedly expand the nearest unexpanded
   // candidate until the closest remaining candidate is further than the
   // furthest element already found.
@@ -76,6 +68,33 @@ bool LayerOperations<Graph, Policy>::search(
 
   m_state = State::Consume;
   return false;
+}
+
+template <typename Graph, template <typename> class Policy>
+bool LayerOperations<Graph, Policy>::search(
+    const std::vector<Node> &entry_points, LevelId level, uint32_t ef) {
+  reset();
+  m_level = level;
+
+  if (seed_impl(entry_points)) {
+    return true;
+  }
+
+  return run_expansion(ef);
+}
+
+template <typename Graph, template <typename> class Policy>
+bool LayerOperations<Graph, Policy>::continue_search(uint32_t ef) {
+  // Resume the search that a prior search()/seed() left in Consume state,
+  // WITHOUT reset()/seed(): m_candidates (the frontier) and m_visited both
+  // survive consume_result() (it drains only m_results), so the same
+  // expansion loop continues from where the last call stopped rather than
+  // restarting from the entry points. A wider ef gives the loop room to admit
+  // further neighbours than the previous call retained -- yielding the next
+  // tranche, strictly farther than what was already consumed, with no node
+  // re-visited (m_visited still holds every node the previous call touched).
+  assert(m_state == State::Consume);
+  return run_expansion(ef);
 }
 
 template <typename Graph, template <typename> class Policy>
@@ -381,12 +400,23 @@ bool LayerOperations<Graph, Policy>::expand(const Node &node, uint32_t ef) {
 
   for (const Candidate &candidate : m_expand_buf) {
     // Algorithm 2, line 13: distance(e, q) < distance(f, q) or |W| < ef.
-    if (m_results.size() < ef || candidate < m_results.top()) {
+    // Non-resumable (default) drops a neighbour farther than the ef-th result
+    // outright -- it never enters the frontier -- which bounds the frontier to
+    // the beam. Resumable mode keeps EVERY unvisited neighbour on the frontier
+    // (only results admission below stays ef-bounded), so a later
+    // continue_search() with a wider ef can expand into candidates this pass
+    // did not admit. The frontier is then bounded by the explored region, not
+    // ef -- the memory cost of resumability.
+    const bool within_beam = m_results.size() < ef || candidate < m_results.top();
+    if (m_resumable || within_beam) {
       m_candidates.push(candidate);
+    }
 
-      // Invisible candidates are still traversed so the search can reach
-      // visible nodes beyond them, but must not enter the result set or
-      // count against ef.
+    // Invisible candidates are still traversed so the search can reach visible
+    // nodes beyond them, but must not enter the result set or count against ef.
+    // Admission to the result set stays ef-bounded in both modes: a neighbour
+    // outside the beam is a frontier stepping-stone only, never a result.
+    if (within_beam) {
       bool visible = false;
       if (Policy<Graph>::is_visible(m_graph, candidate.node, visible)) {
         return true;

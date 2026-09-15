@@ -125,12 +125,27 @@ public:
 
   bool remove(const Node &target_node, LevelId target_level);
 
+  // When resumable is true the bottom-layer search retains its full frontier
+  // (see LayerOperations::set_resumable) so a later resume can continue from it;
+  // the returned result is identical either way. Defaults to false -- the
+  // one-shot search used everywhere today.
   bool search_knn(const NodeData &query_node_data, uint32_t k,
-                  uint32_t ef_search, std::vector<Node> &nearest_nodes);
+                  uint32_t ef_search, std::vector<Node> &nearest_nodes,
+                  bool resumable = false);
 
 private:
   // Algorithm 1, lines 5-7: ef is fixed at 1 for the greedy descent.
   static constexpr uint32_t GREEDY_DESCENT_EF = 1;
+
+  // Algorithm 1, lines 5-7 (the greedy descent through the upper navigation
+  // layers). Descends from entry_level down to level 1 with ef=1, replacing
+  // candidates with the level-0 entry points for the bottom-layer search. The
+  // caller holds the graph and level locks (levels) for the whole descent plus
+  // the bottom-layer search that follows. Returns true if a graph operation
+  // fails.
+  bool descend_to_bottom(const NodeData &query_node_data,
+                         typename Graph::LockLevels &levels, LevelId entry_level,
+                         std::vector<Node> &candidates);
 
   // Replaces each candidate with its counterpart at the next lower level.
   // level is the level every candidate currently lives at.

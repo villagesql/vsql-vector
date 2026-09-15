@@ -894,8 +894,8 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
   //     pulls the next candidate (see custom_index_knn_scan.cc Read()).
   // Passing ef_search as the result count makes search_knn keep the whole pool.
   std::vector<Node> nodes;
-  if (GraphOperations<IndexGraph>(graph).search_knn(query, ef_search, ef_search,
-                                                    nodes))
+  if (GraphOperations<IndexGraph>(graph).search_knn(
+          query, ef_search, ef_search, nodes, /*resumable=*/read_resumable() != 0))
     return true;
 
   auto *c = new Cursor(std::move(nodes));
