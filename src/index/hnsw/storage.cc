@@ -860,7 +860,8 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
 
   IndexGraph::NodeData query{scan_desc[0][VECTOR_KEY_POS]};
   const uint32_t k = scan_desc.limit();
-  const uint32_t ef_search = std::max(k, Cursor::DEFAULT_EF_SEARCH);
+  const uint32_t ef_search =
+      std::max<uint32_t>(k, static_cast<uint32_t>(read_ef_search()));
 
   std::vector<Node> nodes;
   if (GraphOperations<IndexGraph>(graph).search_knn(query, k, ef_search, nodes))

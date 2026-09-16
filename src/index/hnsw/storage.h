@@ -46,6 +46,14 @@ using vsql::preview_storage::Page;
 using vsql::preview_storage::Segment;
 using vsql::preview_storage::Space;
 
+// Default and bounds for the vsql_vector.ef_search session variable.
+inline constexpr long long DEFAULT_EF_SEARCH = 40;
+inline constexpr long long MIN_EF_SEARCH = 1;
+inline constexpr long long MAX_EF_SEARCH = 65536;
+
+// Reads the connection's vsql_vector.ef_search value. Defined in vector.cc.
+long long read_ef_search();
+
 // Options parsed from WITH (...) at CREATE INDEX time.
 struct Options {
   static constexpr uint32_t DEFAULT_M = 16;
@@ -70,12 +78,6 @@ struct Options {
 // walk that fixed vector.
 class Cursor {
 public:
-  // Floor for ef_search (GraphOperations::search_knn's bottom-layer
-  // exploration factor) until a real session-level parameter exists for it.
-  // TODO(villagesql-indexing): replace with a session-level ef_search
-  // parameter; this fixed floor is a placeholder.
-  static constexpr uint32_t DEFAULT_EF_SEARCH = 40;
-
   explicit Cursor(std::vector<Node> nodes)
       : m_nodes(std::move(nodes)), m_pos(m_nodes.empty() ? EOF_POS : 0) {}
 

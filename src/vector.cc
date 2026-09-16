@@ -26,6 +26,7 @@
 // efficient construction and traversal of HNSW indexes for ANN search.
 
 #include <villagesql/preview/index_builder.h>
+#include <villagesql/preview/session_var.h>
 #include <villagesql/preview/storage_builder.h>
 #include <villagesql/vsql.h>
 
@@ -770,12 +771,34 @@ static auto HNSW_PROFILE_CAPABILITY = IndexProfileCapability()
                                           .index_profile(HNSW_COSINE_PROFILE)
                                           .index_profile(HNSW_IP_PROFILE);
 
+// vsql_vector.ef_search: per-session HNSW query-time search breadth.
+namespace ssv = vsql::preview_session_var;
+static auto HNSW_SESSION_VARS = ssv::make_capability({
+    ssv::make_int(
+        "ef_search",
+        "HNSW query-time search breadth (ef); higher = better recall, "
+        "slower. Floored at the query LIMIT.")
+        .default_(svector::hnsw::DEFAULT_EF_SEARCH)
+        .min(svector::hnsw::MIN_EF_SEARCH)
+        .max(svector::hnsw::MAX_EF_SEARCH),
+});
+static auto HNSW_EF_SEARCH = HNSW_SESSION_VARS.int_var("ef_search");
+
+namespace svector::hnsw {
+long long read_ef_search() {
+  long long v = DEFAULT_EF_SEARCH;
+  HNSW_EF_SEARCH.read(v);
+  return v;
+}
+} // namespace svector::hnsw
+
 VEF_GENERATE_ENTRY_POINTS(
     make_extension()
         .with(STORAGE)
         .with(COLUMN_STORE)
         .with(HNSW_INDEX_CAPABILITY)
         .with(HNSW_PROFILE_CAPABILITY)
+        .with(HNSW_SESSION_VARS)
         .type(SVECTOR)
 
         // Hex encoding of raw vector float bytes (SQL)
