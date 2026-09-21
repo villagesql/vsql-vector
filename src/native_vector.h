@@ -27,6 +27,8 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <new>
@@ -37,6 +39,18 @@
 #define V_FUNC_ALWAYS_INLINE __forceinline
 #else
 #define V_FUNC_ALWAYS_INLINE inline
+#endif
+
+// SIMD intrinsic headers for the quantized-int16 dot product. The kernel picks
+// AVX-512 > AVX2 > NEON > scalar at compile time. Guarded so the header still
+// compiles on ISAs/toolchains without them (falls through to scalar).
+#if defined(__AVX2__) || defined(__AVX512F__) || defined(__AVX512BW__)
+#include <immintrin.h>
+#define SVECTOR_QDOT_X86 1
+#endif
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#define SVECTOR_QDOT_NEON 1
 #endif
 
 namespace svector::native {
@@ -272,6 +286,151 @@ static V_FUNC_ALWAYS_INLINE double dist_inner_product(const Data *v1,
     result += v1->data[i] * v2->data[i];
   }
   return result;
+}
+
+// --- Quantized (int16) L2 path -------------------------------------------
+//
+// A separate operand format for the HNSW node's inline vector copy, distinct
+// from Data{dim; float[]} (the main SVECTOR column-store form). Each vector is
+// scalar-quantized to int16 with a per-vector scale, so distances run as an
+// int16 dot product -- twice the SIMD lane density of f32, and the graph is
+// approximate anyway. Mirrors MariaDB MHNSW's FVector (sql/vector_mhnsw.cc).
+//
+// Squared-L2 identity used by the kernel:
+//   ||a - b||^2 = ||a||^2 + ||b||^2 - 2<a,b>
+// With a[i] ~= sa*qa[i], b[i] ~= sb*qb[i], and abs2 storing 0.5*||.||^2 per
+// vector, this becomes:
+//   dist2(a,b) = 2*abs2_a + 2*abs2_b - 2*sa*sb*<qa,qb>
+// The 0.5 factor is folded into abs2 at quantize time so the hot loop is a
+// single int16 dot product plus a constant-time combine. Only the relative
+// order of dist2 matters for KNN ranking, so the shared 2x is kept (it does
+// not change the comparison) to match the plain-f32 dist_squared_l2 scale.
+struct QData {
+  uint32_t dim;      // number of dimensions
+  float scale;       // original[i] ~= scale * dims[i]
+  float abs2;        // 0.5 * scale^2 * <dims, dims>  (precomputed at quantize)
+  int16_t dims[];    // quantized components (flexible array member)
+};
+
+// Byte length of a QData holding `dim` components.
+static V_FUNC_ALWAYS_INLINE size_t qdata_length(uint32_t dim) {
+  return sizeof(QData) + static_cast<size_t>(dim) * sizeof(int16_t);
+}
+
+// Quantize a float vector into a caller-provided QData buffer. Recipe matches
+// MHNSW FVector::create: scale = max|v| / 32767, round to int16, precompute
+// abs2. A zero vector maps to scale=1, all-zero dims, abs2=0.
+//
+// padded_dim (>= v->dim) zero-fills dims[v->dim .. padded_dim) so the SIMD
+// distance kernel can read full blocks; the buffer must be >=
+// qdata_length(padded_dim). out->dim stays the REAL dim (abs2 and the stored
+// scale describe the real vector; the pad zeros contribute nothing).
+static V_FUNC_ALWAYS_INLINE void quantize(const Data *v, QData *out,
+                                          uint32_t padded_dim) {
+  float max_abs = 0.0f;
+  for (uint32_t i = 0; i < v->dim; i++)
+    max_abs = std::max(max_abs, std::abs(v->data[i]));
+
+  float scale = max_abs > 0.0f ? max_abs / 32767.0f : 1.0f;
+  out->dim = v->dim;
+  out->scale = scale;
+
+  int64_t dot = 0;
+  for (uint32_t i = 0; i < v->dim; i++) {
+    int32_t q = static_cast<int32_t>(std::lround(v->data[i] / scale));
+    if (q > 32767) q = 32767;
+    if (q < -32768) q = -32768;
+    out->dims[i] = static_cast<int16_t>(q);
+    dot += static_cast<int32_t>(out->dims[i]) * static_cast<int32_t>(out->dims[i]);
+  }
+  for (uint32_t i = v->dim; i < padded_dim; i++) out->dims[i] = 0;
+  out->abs2 = 0.5f * scale * scale * static_cast<float>(dot);
+}
+
+// int16 dot product of two vectors, returned as float. `dim` MUST be a
+// multiple of 32 (the QVECTOR_DIM_PAD padding guarantee) so every SIMD path
+// consumes whole blocks with no scalar remainder and no over-read. Loads are
+// UNALIGNED (loadu / vld1q): the vectors live in column-store records placed at
+// arbitrary page offsets, so absolute alignment cannot be assumed.
+//
+// Each block's int16xint16 products are reduced to int32 via the fused MAC
+// (madd_epi16 on x86 -- adjacent pairs multiplied and added -- vmull on NEON),
+// then converted to float and accumulated. Converting per block keeps the
+// integer partials small (block sum <= 32 * 2^30 < 2^36, exact in the int32
+// madd/int64 NEON reduce) while the float accumulator carries the running total
+// without the int32 overflow a plain int32 accumulator would hit at high dim.
+// Mirrors MariaDB MHNSW's FVector::dot_product per ISA.
+static V_FUNC_ALWAYS_INLINE float qdot(const int16_t *a, const int16_t *b,
+                                       uint32_t dim) {
+#if defined(SVECTOR_QDOT_X86) && (defined(__AVX512BW__))
+  // AVX-512: 32 int16 per _mm512_madd_epi16.
+  __m512 acc = _mm512_setzero_ps();
+  for (uint32_t i = 0; i < dim; i += 32) {
+    __m512i va = _mm512_loadu_si512((const void *)(a + i));
+    __m512i vb = _mm512_loadu_si512((const void *)(b + i));
+    acc = _mm512_add_ps(acc, _mm512_cvtepi32_ps(_mm512_madd_epi16(va, vb)));
+  }
+  return _mm512_reduce_add_ps(acc);
+#elif defined(SVECTOR_QDOT_X86)
+  // AVX2: 16 int16 per _mm256_madd_epi16.
+  __m256 acc = _mm256_setzero_ps();
+  for (uint32_t i = 0; i < dim; i += 16) {
+    __m256i va = _mm256_loadu_si256((const __m256i *)(a + i));
+    __m256i vb = _mm256_loadu_si256((const __m256i *)(b + i));
+    acc = _mm256_add_ps(acc, _mm256_cvtepi32_ps(_mm256_madd_epi16(va, vb)));
+  }
+  // Horizontal add of the 8 float lanes.
+  __m128 lo = _mm256_castps256_ps128(acc);
+  __m128 hi = _mm256_extractf128_ps(acc, 1);
+  __m128 s = _mm_add_ps(lo, hi);
+  s = _mm_hadd_ps(s, s);
+  s = _mm_hadd_ps(s, s);
+  return _mm_cvtss_f32(s);
+#elif defined(SVECTOR_QDOT_NEON)
+  // NEON: 8 int16 per block. Each int16xint16 product fits int32 (<2^30). The 4
+  // low + 4 high products are pairwise-accumulated into an int64x2 register
+  // across the whole loop (vpadalq widens int32->int64, so no int32 overflow
+  // for any dim), reduced to a scalar ONCE at the end -- not per block.
+  int64x2_t acc = vdupq_n_s64(0);
+  for (uint32_t i = 0; i < dim; i += 8) {
+    int16x8_t va = vld1q_s16(a + i);
+    int16x8_t vb = vld1q_s16(b + i);
+    acc = vpadalq_s32(acc, vmull_s16(vget_low_s16(va), vget_low_s16(vb)));
+    acc = vpadalq_s32(acc, vmull_high_s16(va, vb));
+  }
+  return static_cast<float>(vgetq_lane_s64(acc, 0) + vgetq_lane_s64(acc, 1));
+#else
+  // Portable scalar fallback (float accumulate; still vectorizes under -O3).
+  float dot = 0.0f;
+  for (uint32_t i = 0; i < dim; ++i)
+    dot += static_cast<float>(static_cast<int32_t>(a[i]) *
+                              static_cast<int32_t>(b[i]));
+  return dot;
+#endif
+}
+
+// Squared L2 distance between two quantized vectors, field form. The operands
+// are passed as raw fields (scale, precomputed abs2, int16 dims, dim) so a
+// caller can feed a vector read in place from a record tail without first
+// packing it into a QData. Same ranking scale as dist_squared_l2 (both carry
+// the 2x), so callers can mix f32 and quantized indexes without rescaling
+// thresholds. `dim` is the PADDED length (multiple of 32); the pad zeros add
+// nothing to the dot product.
+static V_FUNC_ALWAYS_INLINE double dist_squared_l2_q(float sa, float abs2a,
+                                                     const int16_t *da,
+                                                     float sb, float abs2b,
+                                                     const int16_t *db,
+                                                     uint32_t dim) {
+  const float dot = qdot(da, db, dim);
+  return 2.0 * (double(abs2a) + double(abs2b) -
+                double(sa) * double(sb) * double(dot));
+}
+
+// Convenience overload for two packed QData operands.
+static V_FUNC_ALWAYS_INLINE double dist_squared_l2_q(const QData *a,
+                                                     const QData *b) {
+  return dist_squared_l2_q(a->scale, a->abs2, a->dims, b->scale, b->abs2,
+                           b->dims, a->dim);
 }
 
 // Calculate L2 norm (Euclidean norm) of a vector

@@ -68,6 +68,27 @@ static inline uint64_t read_id48_be(const std::byte *&p) {
   return v;
 }
 
+// Native-endian raw store/load for the inline quantized vector. The qvector
+// (scale, abs2, int16 dims) is written and read in the host's native byte
+// order -- NOT the portable big-endian id encoding the rest of the record uses
+// -- so the SIMD kernel can load the dims array directly (vld1q_s16 /
+// _mm256_loadu_si256) with no byte-swap. Consequence: an index's on-disk image
+// is not portable across endianness; copying a datadir to a machine of the
+// other endianness requires rebuilding the index. (All current targets are
+// little-endian, so this is a non-issue in practice.)
+template <typename T>
+static inline void write_native(std::byte *&p, T v) {
+  std::memcpy(p, &v, sizeof(T));
+  p += sizeof(T);
+}
+template <typename T>
+static inline T read_native(const std::byte *&p) {
+  T v;
+  std::memcpy(&v, p, sizeof(T));
+  p += sizeof(T);
+  return v;
+}
+
 void StorageMeta::encode(std::string *out) const {
   assert(name.size() <= UINT8_MAX);
   assert(entry_points.size() <= UINT8_MAX);
@@ -218,8 +239,8 @@ bool Options::parse(const vef_index_param_t *params, uint32_t count,
 
 uint16_t IndexStore::entry_len(LevelStore::LevelId level) const {
   auto max_neighbours = LevelStore::max_neighbours(level, m_num_neighbours);
-  return static_cast<uint16_t>(
-      NeighbourEntry::storage_size(max_neighbours, level.has_lower_level()));
+  return static_cast<uint16_t>(NeighbourEntry::storage_size(
+      max_neighbours, level.has_lower_level(), m_dim));
 }
 
 uint16_t IndexStore::overflow_len(LevelStore::LevelId level) const {
@@ -234,7 +255,7 @@ bool LevelStore::insert(MtrCtx::Ref mtr, const NeighbourEntry &entry,
   const uint32_t max_n = max_neighbours();
   assert(entry.neighbours.size() <= max_n);
 
-  const size_t len = NeighbourEntry::storage_size(max_n, has_lower);
+  const size_t len = NeighbourEntry::storage_size(max_n, has_lower, m_dim);
   assert(buffer.size() >= len);
 
   std::byte *p = buffer.data();
@@ -252,6 +273,21 @@ bool LevelStore::insert(MtrCtx::Ref mtr, const NeighbourEntry &entry,
     }
   }
   write_id48_be(p, entry.overflow.value);
+
+  // Every record carries the node's inline quantized vector at the tail:
+  // [scale f32][abs2 f32][padded_dim x int16], native byte order. The dims
+  // array is zero-padded up to QVECTOR_DIM_PAD so the SIMD kernel runs full
+  // blocks; the pad zeros add nothing to the dot product. Read directly by the
+  // quantized distance path, so no column-store fetch per comparison.
+  assert(entry.q_dims.size() == m_dim);
+  write_native(p, entry.q_scale);
+  write_native(p, entry.q_abs2);
+  const uint32_t padded_dim =
+      static_cast<uint32_t>(NeighbourEntry::qvector_padded_dim(m_dim));
+  std::memcpy(p, entry.q_dims.data(), m_dim * sizeof(int16_t));
+  std::memset(p + m_dim * sizeof(int16_t), 0,
+              (padded_dim - m_dim) * sizeof(int16_t));
+  p += padded_dim * sizeof(int16_t);
   assert(static_cast<size_t>(p - buffer.data()) == len);
 
   Column::Data col_data{reinterpret_cast<const unsigned char *>(buffer.data()),
@@ -314,7 +350,11 @@ bool LevelStore::update(MtrCtx::Ref mtr, NID id, const NeighbourEntry &entry,
   assert(!has(mask, NodeField::LowerLevel) || has_lower);
 
   const uint16_t overflow_idx = neighbour_overflow_chunk();
-  const size_t len = (static_cast<size_t>(overflow_idx) + 1) * CHUNK_SIZE;
+  // ColumnStore::update requires col_data to span the whole record width, even
+  // though only the listed chunks are written. That width now includes the
+  // inline quantized-vector tail, so size the image to the full record (the
+  // qvector bytes are never in chunk_ids, so their contents are ignored).
+  const size_t len = NeighbourEntry::storage_size(max_n, has_lower, m_dim);
   assert(buffer.size() >= len);
 
   size_t num_chunks = 0;
@@ -459,6 +499,20 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
   if (has(mask, NodeField::Overflow))
     entry.overflow = NID{read_chunk(neighbour_overflow_chunk())};
 
+  // Inline quantized vector (every level). q_dims points into the fetched
+  // record buffer (base), valid for the lifetime of this fetch's pinned page
+  // -- the same lifetime as the Nodes decoded above.
+  if (has(mask, NodeField::QVector)) {
+    const std::byte *p = base + qvector_byte_offset();
+    entry.q_scale = read_native<float>(p);
+    entry.q_abs2 = read_native<float>(p);
+    // Span the PADDED dims: the trailing zeros are real bytes in the record and
+    // let the SIMD kernel run whole blocks with no scalar remainder.
+    entry.q_dims = std::span<const int16_t>(
+        reinterpret_cast<const int16_t *>(p),
+        NeighbourEntry::qvector_padded_dim(m_dim));
+  }
+
   return false;
 }
 
@@ -535,21 +589,24 @@ bool LevelStore::resolve_owner(NID nid, Node &out, char *err,
   return false;
 }
 
-LevelStore *IndexStore::locate(NID nid, StoreKind &kind, char *err,
-                               uint32_t err_len) {
-  MtrCtx mtr_ctx;
-  auto mtr = mtr_ctx.start();
-
+LevelStore *IndexStore::locate(MtrCtx::Ref mtr, NID nid, StoreKind &kind,
+                               char *err, uint32_t err_len) {
   uint8_t root_idx = 0;
-  bool failed = m_multi_store.get_root_index(mtr, nid.column_ref(), root_idx,
-                                             err, err_len);
-  mtr_ctx.commit();
-
-  if (failed)
+  if (m_multi_store.get_root_index(mtr, nid.column_ref(), root_idx, err,
+                                   err_len))
     return nullptr;
 
   kind = (root_idx & 1) ? StoreKind::Overflow : StoreKind::Neighbour;
   return get_level(LevelStore::LevelId{static_cast<uint8_t>(root_idx >> 1)});
+}
+
+LevelStore *IndexStore::locate(NID nid, StoreKind &kind, char *err,
+                               uint32_t err_len) {
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+  LevelStore *store = locate(mtr, nid, kind, err, err_len);
+  mtr_ctx.commit();
+  return store;
 }
 
 LevelStore *IndexStore::ensure_levels(LevelStore::LevelId target, char *err,
@@ -583,7 +640,8 @@ LevelStore *IndexStore::ensure_levels(LevelStore::LevelId target, char *err,
     if (!m_levels[l].has_value())
       m_levels[l].emplace(
           LevelStore::LevelId{l}, m_multi_store.m_stores[root_index(primary)],
-          m_multi_store.m_stores[root_index(overflow)], m_num_neighbours);
+          m_multi_store.m_stores[root_index(overflow)], m_num_neighbours,
+          m_dim);
   }
   return get_level(target);
 }
@@ -655,8 +713,10 @@ void IndexStore::build_storage_specs(std::vector<Storage_spec> &specs) {
 }
 
 bool IndexStore::create(Space::Ref space_ref, Segment::TrxRef trx_ref,
-                        const Options &opts, char *err, uint32_t err_len) {
+                        const Options &opts, uint32_t dim, char *err,
+                        uint32_t err_len) {
   m_num_neighbours = opts.M;
+  m_dim = dim;
   m_ef_construction = opts.ef_construction;
   m_level_norm_factor = 1.0 / std::log(static_cast<double>(opts.M));
 
@@ -677,7 +737,7 @@ bool IndexStore::create(Space::Ref space_ref, Segment::TrxRef trx_ref,
     return true;
 
   m_levels[0].emplace(LevelStore::LevelId{0}, m_multi_store.m_stores[0],
-                      m_multi_store.m_stores[1], opts.M);
+                      m_multi_store.m_stores[1], opts.M, m_dim);
   m_initialized = true;
   return false;
 }
@@ -687,8 +747,9 @@ bool IndexStore::drop(Segment::TrxRef trx_ref, char *err, uint32_t err_len) {
 }
 
 bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
-                      char *err, uint32_t err_len) {
+                      uint32_t dim, char *err, uint32_t err_len) {
   m_num_neighbours = opts.M;
+  m_dim = dim;
   m_ef_construction = opts.ef_construction;
   m_level_norm_factor = 1.0 / std::log(static_cast<double>(opts.M));
 
@@ -729,7 +790,8 @@ bool IndexStore::load(Index::StorageRef storage_ref, const Options &opts,
     assert(overflow_meta.level == LevelStore::LevelId{lvl});
 #endif // NDEBUG
     m_levels[lvl].emplace(LevelStore::LevelId{lvl}, m_multi_store.m_stores[si],
-                          m_multi_store.m_stores[si + 1], m_num_neighbours);
+                          m_multi_store.m_stores[si + 1], m_num_neighbours,
+                          m_dim);
   }
 
   // Only the entry point's NID is persisted; resolve its VID once here so
@@ -768,8 +830,13 @@ bool create(StorageCtx *ctx, const Index &index, Space::Ref space_ref,
 
   const auto *opts = index.options<Options>();
   assert(opts != nullptr);
+  // Vector dimension from the indexed column's max encoded length: the stored
+  // value is [KEY_REF_SIZE-byte ref][dim x float32], so strip the prefix.
+  const uint32_t dim =
+      (index.get_max_col_len(VECTOR_KEY_POS) - IndexStore::KEY_REF_SIZE) /
+      sizeof(float);
   auto *store = ctx->user();
-  if (store->create(space_ref, trx_ref, *opts, err, err_len))
+  if (store->create(space_ref, trx_ref, *opts, dim, err, err_len))
     return true;
   ctx->set_ref(store->storage_ref());
   return false;
@@ -784,7 +851,10 @@ bool load(StorageCtx *ctx, const Index &index, Index::StorageRef storage_ref,
           char *err, uint32_t err_len) {
   const auto *opts = index.options<Options>();
   assert(opts != nullptr);
-  return ctx->user()->load(storage_ref, *opts, err, err_len);
+  const uint32_t dim =
+      (index.get_max_col_len(VECTOR_KEY_POS) - IndexStore::KEY_REF_SIZE) /
+      sizeof(float);
+  return ctx->user()->load(storage_ref, *opts, dim, err, err_len);
 }
 
 bool insert(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,

@@ -44,13 +44,19 @@ GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size,
   const uint32_t mmax0 = LevelStore::max_neighbours(LevelStore::LevelId{0}, M);
   const uint32_t overflow_capacity =
       LevelStore::overflow_capacity(LevelStore::LevelId{0}, M);
-  // Level 0 has no lower level, so its NeighbourEntry omits that field.
-  const size_t neighbour_buf_size =
-      NeighbourEntry::storage_size(mmax0, /*has_lower_level=*/false);
+  // Level 0 has no lower level, so its NeighbourEntry omits that field, but it
+  // carries the inline quantized vector -- sized by dim -- which upper levels
+  // do not, so level 0 is the worst case for this buffer too.
+  const size_t neighbour_buf_size = NeighbourEntry::storage_size(
+      mmax0, /*has_lower_level=*/false, store.dim());
   const size_t overflow_buf_size =
       OverflowEntry::storage_size(overflow_capacity);
+  // Query QData is padded to the same width as the stored dims so the kernel
+  // reads full blocks from both operands.
+  const size_t qvector_buf_size =
+      native::qdata_length(NeighbourEntry::qvector_padded_dim(store.dim()));
   return GraphContext(neighbour_buf_size, overflow_buf_size, vector_buf_size,
-                      /*max_update_slots=*/mmax0,
+                      qvector_buf_size, /*max_update_slots=*/mmax0,
                       LevelStore::max_update_chunks(M), err);
 }
 
@@ -113,6 +119,97 @@ bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
                               &out.data);
 }
 
+const native::QData *IndexGraph::quantize_into(const NodeData &data,
+                                               ScratchBytes &buf) {
+  constexpr uint32_t kPrefix = IndexStore::KEY_REF_SIZE;
+  if (data.data.length < kPrefix) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: quantize: value too short (len=%u)", data.data.length);
+    return nullptr;
+  }
+  // Decode into m_decoded_buf_2 (the non-cached operand buffer), then quantize
+  // out of it into the caller's QData buffer.
+  if (native::from_encoded(data.data.data + kPrefix, data.data.length - kPrefix,
+                           m_ctx.m_decoded_buf_2.data(),
+                           m_ctx.m_decoded_buf_2.size())) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: quantize: failed to decode vector");
+    return nullptr;
+  }
+  const auto *src =
+      reinterpret_cast<const native::Data *>(m_ctx.m_decoded_buf_2.data());
+  auto *q = reinterpret_cast<native::QData *>(buf.data());
+  native::quantize(src, q,
+                   static_cast<uint32_t>(
+                       NeighbourEntry::qvector_padded_dim(m_store.dim())));
+  return q;
+}
+
+const native::QData *IndexGraph::read_qvector(const Node &node,
+                                              ScratchBytes &buf) {
+  // Single page load (locate + fetch share one mtr), then copy the quantized
+  // vector into buf as a packed QData -- the copy is needed only here, where
+  // the operand must outlive the mtr (the Node x Node path holds it while the
+  // other operand is read). Returns nullptr on failure (err set).
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+  StoreKind kind;
+  LevelStore *store = m_store.locate(mtr, node.nid, kind, get_err_buffer(),
+                                     get_err_buffer_len());
+  NeighbourEntry entry;
+  size_t num_valid = 0;
+  const bool failed =
+      store == nullptr ||
+      store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
+                   get_err_buffer(), get_err_buffer_len(), NodeField::QVector);
+  auto *q = reinterpret_cast<native::QData *>(buf.data());
+  if (!failed) {
+    // Copy the full padded dims so a later kernel call reads full blocks.
+    q->dim = m_store.dim();
+    q->scale = entry.q_scale;
+    q->abs2 = entry.q_abs2;
+    const uint32_t padded = static_cast<uint32_t>(entry.q_dims.size());
+    for (uint32_t i = 0; i < padded; ++i) q->dims[i] = entry.q_dims[i];
+  }
+  mtr_ctx.commit();
+  return failed ? nullptr : q;
+}
+
+bool IndexGraph::distance_q(const native::QData *qa, const Node &node,
+                            DistanceType &out) {
+  // One mtr for the whole thing: the level lookup pins node's data page, and
+  // the record fetch reads the SAME page while it is still resident. The int16
+  // kernel then runs directly against the pinned record bytes (entry.q_dims),
+  // so there is no copy-out and no second page load.
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+
+  StoreKind kind;
+  LevelStore *store = m_store.locate(mtr, node.nid, kind, get_err_buffer(),
+                                     get_err_buffer_len());
+  if (store == nullptr) {
+    mtr_ctx.commit();
+    return true;
+  }
+
+  NeighbourEntry entry;
+  size_t num_valid = 0;
+  if (store->fetch(mtr, node.nid, /*for_update=*/false, entry, num_valid,
+                   get_err_buffer(), get_err_buffer_len(), NodeField::QVector)) {
+    mtr_ctx.commit();
+    return true;
+  }
+
+  // entry.q_dims points into the pinned page and spans the PADDED width; both
+  // operands' dims are zero-padded, so the kernel runs full blocks. abs2/scale
+  // describe the real vectors; the pad zeros add nothing to the dot product.
+  out = native::dist_squared_l2_q(
+      qa->scale, qa->abs2, qa->dims, entry.q_scale, entry.q_abs2,
+      entry.q_dims.data(), static_cast<uint32_t>(entry.q_dims.size()));
+  mtr_ctx.commit();
+  return false;
+}
+
 bool IndexGraph::distance(const NodeData &a, const NodeData &b,
                           DistanceType &out) {
   // Native distance: instead of the per-call VDF profile-helper dispatch, call
@@ -169,6 +266,17 @@ bool IndexGraph::distance(const NodeData &a, const NodeData &b,
 }
 
 bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
+  // Quantized mode: both operands are graph nodes. Read a's inline quantized
+  // vector into a buffer (it must stay live while b is read), then compute
+  // against b's vector in place. a varies across calls here, so invalidate the
+  // fixed-operand reuse cache.
+  if (m_quantized) {
+    const native::QData *qa = read_qvector(a, m_ctx.m_qvector_buf_1);
+    if (qa == nullptr) return true;
+    m_ctx.m_qvector_buf_1_src = nullptr;
+    return distance_q(qa, b, out);
+  }
+
   NodeData a_data;
   NodeData b_data;
   if (resolve_node_data(a.vid, m_ctx.m_vector_buf_1, a_data) ||
@@ -184,6 +292,22 @@ bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
 }
 
 bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
+  // Quantized mode: a is the fixed query/insert vector (quantize once, reuse
+  // across candidates, keyed on a.data.data like the f32 decode cache); b is a
+  // graph node whose inline quantized vector is read from its record.
+  if (m_quantized) {
+    const native::QData *qa;
+    if (a.data.data == m_ctx.m_qvector_buf_1_src) {
+      qa = reinterpret_cast<const native::QData *>(m_ctx.m_qvector_buf_1.data());
+    } else {
+      qa = quantize_into(a, m_ctx.m_qvector_buf_1);
+      if (qa == nullptr) return true;
+      m_ctx.m_qvector_buf_1_src = a.data.data;
+    }
+    // b's quantized vector is read in place from its record (no copy/relocate).
+    return distance_q(qa, b, out);
+  }
+
   // a is the caller's own vector -- the one being inserted or queried for,
   // which is not in the graph and so has no vid to resolve. Only b needs a
   // buffer, and it takes the second one so the roles of the two never shift
@@ -198,11 +322,13 @@ bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
 bool IndexGraph::resolve_fixed_operand(const Node &node, NodeData &out) {
   if (resolve_node_data(node.vid, m_ctx.m_vector_buf_1, out)) return true;
   // out.data.data now points at m_vector_buf_1, whose address repeats across
-  // calls with different content -- the decoded-a reuse cache keys on that
-  // pointer, so it must be invalidated here. The first distance(out, .) then
-  // decodes it once (cache miss) and subsequent calls in the caller's loop
-  // reuse it.
+  // calls with different content -- BOTH the f32 decode cache and the quantized
+  // query cache key on that pointer, so both must be invalidated here or a
+  // later distance() would reuse a stale operand from a prior fixed node. (This
+  // path feeds is_dominated during insert; a stale operand there silently
+  // corrupts neighbour selection and tanks recall.)
   m_ctx.m_decoded_buf_1_src = nullptr;
+  m_ctx.m_qvector_buf_1_src = nullptr;
   return false;
 }
 
@@ -429,6 +555,17 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
   NeighbourEntry entry;
   entry.owner = VID{owner_ref};
   entry.neighbours = neighbours;
+
+  // Every level's record carries the node's inline quantized vector. Quantize
+  // the incoming f32 value here; LevelStore::insert writes it to the tail.
+  {
+    const native::QData *q = quantize_into(data, m_ctx.m_qvector_buf_1);
+    if (q == nullptr) return true;
+    entry.q_scale = q->scale;
+    entry.q_abs2 = q->abs2;
+    entry.q_dims = std::span<const int16_t>(q->dims, q->dim);
+  }
+
   NID new_nid;
   if (store->insert(mtr, entry, m_trx_ref, m_ctx.m_neighbour_buf, new_nid,
                     get_err_buffer(), get_err_buffer_len()))

@@ -130,9 +130,9 @@ public:
   };
 
   LevelStore(LevelId level, ColumnStore &store, ColumnStore &overflow,
-             uint32_t num_neighbours)
+             uint32_t num_neighbours, uint32_t dim)
       : m_level(level), m_store(store), m_overflow(overflow),
-        m_num_neighbours(num_neighbours) {}
+        m_num_neighbours(num_neighbours), m_dim(dim) {}
 
   // Level Lock: guards traversal and existence of this level's storage.
   // Levels are locked top-down and, during lock-coupled descent, released
@@ -333,6 +333,14 @@ private:
                                     max_neighbours());
   }
 
+  // Byte offset of the inline quantized vector, tail-appended after the
+  // overflow chunk on a level-0 record. Kept as a raw byte offset (not a
+  // chunk index) because the qvector is not a CHUNK_SIZE multiple; this leaves
+  // every neighbour/overflow chunk index above unchanged.
+  size_t qvector_byte_offset() const {
+    return static_cast<size_t>(neighbour_overflow_chunk() + 1) * CHUNK_SIZE;
+  }
+
   // -- OverflowEntry (m_overflow) layout --
   static constexpr uint16_t incoming_chunk(uint16_t slot) { return slot; }
   static constexpr uint16_t overflow_chunk(uint32_t capacity) {
@@ -349,6 +357,8 @@ private:
   ColumnStore &m_store;
   ColumnStore &m_overflow;
   uint32_t m_num_neighbours = 0;
+  // Vector dimension; sizes/parses the level-0 inline quantized vector.
+  uint32_t m_dim = 0;
 };
 
 // Metadata stored in each store's root page.
@@ -396,17 +406,20 @@ class IndexStore {
 public:
   static constexpr size_t KEY_REF_SIZE = StorageMeta::ENTRY_POINT_LEN;
   bool create(Space::Ref space_ref, Segment::TrxRef trx_ref,
-              const Options &opts, char *err, uint32_t err_len);
+              const Options &opts, uint32_t dim, char *err, uint32_t err_len);
 
   bool drop(Segment::TrxRef trx_ref, char *err, uint32_t err_len);
 
-  bool load(Index::StorageRef storage_ref, const Options &opts, char *err,
-            uint32_t err_len);
+  bool load(Index::StorageRef storage_ref, const Options &opts, uint32_t dim,
+            char *err, uint32_t err_len);
 
   Index::StorageRef storage_ref() const { return m_multi_store.m_ref; }
 
   // Configured number of neighbours M.
   uint32_t num_neighbours() const { return m_num_neighbours; }
+
+  // Vector dimension (component count).
+  uint32_t dim() const { return m_dim; }
 
   // Graph exploration factor during insertion.
   uint32_t ef_construction() const { return m_ef_construction; }
@@ -455,6 +468,12 @@ public:
   // Overflow) the record lives in. A caller that will not report the failure
   // may pass (nullptr, 0) for err/err_len (see MultiColumnStore::fill_error).
   LevelStore *locate(NID nid, StoreKind &kind, char *err, uint32_t err_len);
+
+  // As locate(), but runs the level lookup under the caller's mtr instead of a
+  // private one, so the data page it pins stays resident for a subsequent
+  // fetch() of the same record under that mtr -- one page load instead of two.
+  LevelStore *locate(MtrCtx::Ref mtr, NID nid, StoreKind &kind, char *err,
+                     uint32_t err_len);
 
   // Materializes every level's storage from m_entry_level (exclusive) up to
   // and including target, allocating and formatting each new level's
@@ -515,6 +534,9 @@ private:
 
   // Configured number of neighbours M.
   uint32_t m_num_neighbours = 0;
+  // Vector dimension (component count). Fixes the level-0 record's inline
+  // quantized-vector size, so it must be known before build_storage_specs.
+  uint32_t m_dim = 0;
   // Graph exploration factor during insertion.
   uint32_t m_ef_construction = 0;
 

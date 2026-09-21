@@ -135,11 +135,13 @@ struct GraphContext {
   // update() emits, which is larger: a neighbour slot costs two chunks (nid
   // and vid) and the scalar fields add a few more.
   GraphContext(size_t neighbour_buf_size, size_t overflow_buf_size,
-               size_t vector_buf_size, size_t max_update_slots,
-               size_t max_update_chunks, std::span<char> error)
+               size_t vector_buf_size, size_t qvector_buf_size,
+               size_t max_update_slots, size_t max_update_chunks,
+               std::span<char> error)
       : m_neighbour_buf(neighbour_buf_size), m_overflow_buf(overflow_buf_size),
         m_vector_buf_1(vector_buf_size), m_vector_buf_2(vector_buf_size),
         m_decoded_buf_1(vector_buf_size), m_decoded_buf_2(vector_buf_size),
+        m_qvector_buf_1(qvector_buf_size),
         m_update_slots(max_update_slots), m_link_slots(max_update_slots),
         m_chunk_ids(max_update_chunks), m_node_buf_1(max_update_slots),
         m_node_buf_2(max_update_slots), m_incoming_buf_1(max_update_slots),
@@ -149,6 +151,14 @@ struct GraphContext {
   ScratchBytes m_overflow_buf;
   ScratchBytes m_vector_buf_1;
   ScratchBytes m_vector_buf_2;
+  // Quantized (native::QData) scratch for the inline int16 path: holds the
+  // fixed query/insert operand (quantized once, reused across candidates). The
+  // candidate operand is read in place from its record by distance_q -- no
+  // second buffer needed. Sized to native::qdata_length(dim).
+  ScratchBytes m_qvector_buf_1;
+  // Source pointer last quantized into m_qvector_buf_1, mirroring the decoded
+  // cache below: identical source => reuse the already-quantized operand.
+  const unsigned char *m_qvector_buf_1_src = nullptr;
   // Decoded native::Data for each distance() operand. Sized to vector_buf_size
   // (the raw max, which is >= the decoded native length), so the leaf distance
   // decodes into these reused buffers instead of allocating per call. Two
@@ -479,6 +489,21 @@ private:
   using NativeDistFn = double (*)(const native::Data *, const native::Data *);
   NativeDistFn resolve_distance_fn();
 
+  // Computes squared-L2 between the already-quantized query operand `qa` and
+  // `node`'s inline quantized vector, reading the latter IN PLACE from node's
+  // record. One page load (locate + fetch share a single mtr, so the page the
+  // level lookup pins is still resident for the record read) and no copy: the
+  // int16 kernel runs directly against the pinned record bytes. This is the
+  // point of storing the qvector inline -- no separate column-store fetch, no
+  // locate double-load, no copy-out. Returns true on failure (err set).
+  bool distance_q(const native::QData *qa, const Node &node, DistanceType &out);
+
+  // Reads node's inline quantized vector into buf as a packed native::QData
+  // (single page load), returning it. Used only for the fixed operand of the
+  // Node x Node distance, which must outlive the read of the other operand;
+  // the common query-vs-node path uses distance_q's in-place read instead.
+  const native::QData *read_qvector(const Node &node, ScratchBytes &buf);
+
   // The single distance computation both public distance() overloads end at,
   // once each of their operands has been resolved to the vector data it names.
   bool distance(const NodeData &a, const NodeData &b, DistanceType &out);
@@ -489,6 +514,12 @@ private:
   // (m_vector_buf_1/m_vector_buf_2), so the first stays valid while the second
   // is resolved.
   bool resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out);
+
+  // Decodes the raw [ref][floats] value in `data` and quantizes it into `buf`
+  // (>= native::qdata_length(dim)), returning the resulting QData. Used at
+  // insert to fill a level-0 record's inline quantized vector. Returns nullptr
+  // on a malformed value (err set).
+  const native::QData *quantize_into(const NodeData &data, ScratchBytes &buf);
 
   // One link in a node's overflow chain: the overflow entry to drop (nid),
   // and the record whose Overflow field currently points to it (prev, of
@@ -613,8 +644,16 @@ private:
   Segment::TrxRef m_trx_ref;
   GraphContext m_ctx;
   // Resolved once at construction from the bound helper's name; the leaf
-  // distance() calls it directly.
+  // distance() calls it directly. Unused while m_quantized is set (the
+  // quantized path uses the QData kernel instead) -- kept resolved so a revert
+  // to the f32 path is a one-line change here.
   NativeDistFn m_dist_fn = nullptr;
+  // HARD-CODED quantized branch: this build always uses the inline int16 graph
+  // distance. distance() reads each operand as a node-stored QData and ranks
+  // with native::dist_squared_l2_q; the query is quantized once and reused
+  // across candidates. Purely internal -- nothing in the extension's SQL/index
+  // surface changes. Flip to false to restore the f32 graph path.
+  bool m_quantized = true;
 };
 
 } // namespace svector::hnsw

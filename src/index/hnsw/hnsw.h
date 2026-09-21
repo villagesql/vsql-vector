@@ -187,10 +187,40 @@ struct NeighbourEntry {
   // Reference to the first overflow entry, if any.
   NID overflow{};
 
+  // Inline int16-quantized copy of this node's vector, stored on every level's
+  // record so distance can read it directly from the fetched node without a
+  // separate column-store fetch -- at any level, branchlessly. On a fetch this
+  // points at the record buffer; on an insert the caller fills it. scale/abs2
+  // carry the per-vector quantization scale and precomputed
+  // 0.5*scale^2*<dims,dims> (see native::QData / native::dist_squared_l2_q).
+  float q_scale = 0.0f;
+  float q_abs2 = 0.0f;
+  std::span<const int16_t> q_dims{};
+
+  // The stored int16 dims array is zero-padded up to a multiple of this many
+  // components so the SIMD distance kernel processes only full-width blocks
+  // (no scalar remainder). 32 covers every target: AVX-512 (32 int16/reg),
+  // AVX2 (16), and NEON (8) all divide it. The pad zeros contribute nothing to
+  // the dot product. (Absolute SIMD alignment is not attempted here -- the
+  // column store places records at arbitrary page offsets -- so the kernel uses
+  // unaligned loads; only the length is padded.)
+  static constexpr size_t QVECTOR_DIM_PAD = 32;
+
+  static constexpr size_t qvector_padded_dim(size_t dim) {
+    return (dim + QVECTOR_DIM_PAD - 1) / QVECTOR_DIM_PAD * QVECTOR_DIM_PAD;
+  }
+
+  // Serialized size of the inline quantized vector, appended to every record:
+  // [scale f32][abs2 f32][padded_dim x int16], padded_dim >= dim.
+  static constexpr size_t qvector_size(size_t dim) {
+    return 2 * sizeof(float) + qvector_padded_dim(dim) * sizeof(int16_t);
+  }
+
   static constexpr size_t storage_size(size_t max_neighbours,
-                                       bool has_lower_level) {
+                                       bool has_lower_level, size_t dim) {
     return VID::STORAGE_SIZE + (has_lower_level ? NID::STORAGE_SIZE : 0) +
-           max_neighbours * Node::STORAGE_SIZE + NID::STORAGE_SIZE;
+           max_neighbours * Node::STORAGE_SIZE + NID::STORAGE_SIZE +
+           qvector_size(dim);
   }
 };
 
@@ -201,6 +231,10 @@ enum class NodeField : uint32_t {
   LowerLevel = 1 << 1,
   Neighbours = 1 << 2,
   Overflow = 1 << 3,
+  // Inline int16 quantized vector on the level-0 record. Deliberately NOT in
+  // FieldAll: only the quantized distance path requests it, so normal graph
+  // maintenance fetches never pay to decode it.
+  QVector = 1 << 4,
 };
 
 constexpr NodeField operator|(NodeField a, NodeField b) {
