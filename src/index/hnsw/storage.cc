@@ -774,11 +774,11 @@ bool insert(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
             IndexScanKey::KeyPartData *key_columns,
             IndexScanKey::KeyPartData * /*pkey_columns*/,
             IndexScanKey::KeyPartRef *key_ref, char *err, uint32_t err_len) {
-  IndexGraph graph(*ctx->user(), index, trx_ref,
+  IndexGraph graph(ctx->user(), index, trx_ref,
                    index.get_max_col_len(VECTOR_KEY_POS),
                    std::span<char>(err, err_len));
 
-  IndexGraph::NodeData node_data{key_columns[VECTOR_KEY_POS]};
+  IndexGraph::NodeData node_data{key_columns[VECTOR_KEY_POS], trx_ref};
   Node top_node;
   if (GraphOperations<IndexGraph>(graph).insert(node_data, top_node))
     return true;
@@ -811,8 +811,7 @@ bool mark_delete(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
   // The mark belongs on every level's record for this vector, not just the
   // top one key_ref names, so it goes through the graph operation that walks
   // the whole per-level chain.
-  IndexGraph graph(*store, index, trx_ref,
-                   index.get_max_col_len(VECTOR_KEY_POS),
+  IndexGraph graph(store, index, trx_ref, index.get_max_col_len(VECTOR_KEY_POS),
                    std::span<char>(err, err_len));
   return GraphOperations<IndexGraph>(graph).mark_delete(
       target, level_store->level(), delete_mark);
@@ -839,8 +838,7 @@ bool purge(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
   if (level_store->resolve_owner(nid, target, err, err_len))
     return true;
 
-  IndexGraph graph(*store, index, trx_ref,
-                   index.get_max_col_len(VECTOR_KEY_POS),
+  IndexGraph graph(store, index, trx_ref, index.get_max_col_len(VECTOR_KEY_POS),
                    std::span<char>(err, err_len));
   return GraphOperations<IndexGraph>(graph).remove(target,
                                                    level_store->level());
@@ -854,9 +852,10 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
   assert(scan_desc.is_knn());
   assert(scan_desc.num_keys() == 1 && scan_desc[0].is_knn());
 
-  IndexGraph graph(*ctx->user(), index, Segment::TrxRef{},
+  IndexGraph graph(ctx->user(), index, Segment::TrxRef{},
                    index.get_max_col_len(VECTOR_KEY_POS),
                    std::span<char>(err, err_len));
+  graph.set_read_view(scan_desc.read_view());
 
   IndexGraph::NodeData query{scan_desc[0][VECTOR_KEY_POS]};
   const uint32_t k = scan_desc.limit();
@@ -866,7 +865,7 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
   if (GraphOperations<IndexGraph>(graph).search_knn(query, k, ef_search, nodes))
     return true;
 
-  auto *c = new Cursor(std::move(nodes));
+  auto *c = new Cursor(std::move(graph), std::move(nodes));
   *cursor = c;
   *eof = c->eof();
   return false;

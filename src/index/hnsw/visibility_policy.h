@@ -28,14 +28,17 @@ namespace svector::hnsw {
 
 template <typename Graph> struct GraphVisiblePolicy {
   using Node = typename Graph::Node;
-  static bool is_visible(Graph &graph, const Node &node, bool &out) {
-    return graph.visible(node, out);
+  using TrxRef = typename Graph::TrxRef;
+  static bool is_visible(Graph &graph, const Node &node, TrxRef trx_ref,
+                         bool &out) {
+    return graph.visible(node, trx_ref, out);
   }
 };
 
 template <typename Graph> struct AlwaysVisiblePolicy {
   using Node = typename Graph::Node;
-  static bool is_visible(Graph &, const Node &, bool &out) {
+  using TrxRef = typename Graph::TrxRef;
+  static bool is_visible(Graph &, const Node &, TrxRef, bool &out) {
     out = true;
     return false;
   }

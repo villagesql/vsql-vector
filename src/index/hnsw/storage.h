@@ -64,51 +64,6 @@ struct Options {
                     Options *out, char *error_msg, uint32_t error_msg_len);
 };
 
-// Per-scan cursor over a materialized KNN search result. begin() runs
-// GraphOperations::search_knn() once and hands the whole (already
-// ascending-by-distance) result to the cursor; position()/fetch() below just
-// walk that fixed vector.
-class Cursor {
-public:
-  // Floor for ef_search (GraphOperations::search_knn's bottom-layer
-  // exploration factor) until a real session-level parameter exists for it.
-  // TODO(villagesql-indexing): replace with a session-level ef_search
-  // parameter; this fixed floor is a placeholder.
-  static constexpr uint32_t DEFAULT_EF_SEARCH = 40;
-
-  explicit Cursor(std::vector<Node> nodes)
-      : m_nodes(std::move(nodes)), m_pos(m_nodes.empty() ? EOF_POS : 0) {}
-
-  // Node at the current position, or nullptr at eof().
-  const Node *current() const {
-    return m_pos == EOF_POS ? nullptr : &m_nodes[m_pos];
-  }
-
-  // Advances per op. A cursor at eof() stays there regardless of op -- there
-  // is no way back onto the result set once past either end. Returns eof().
-  bool advance(Index::CursorOp op) {
-    if (m_pos == EOF_POS)
-      return true;
-    switch (op) {
-    case Index::CursorOp::Next:
-      m_pos = (m_pos + 1 < m_nodes.size()) ? m_pos + 1 : EOF_POS;
-      break;
-    case Index::CursorOp::Prev:
-      m_pos = (m_pos > 0) ? m_pos - 1 : EOF_POS;
-      break;
-    }
-    return m_pos == EOF_POS;
-  }
-
-  bool eof() const { return m_pos == EOF_POS; }
-
-private:
-  static constexpr size_t EOF_POS = std::numeric_limits<size_t>::max();
-
-  std::vector<Node> m_nodes;
-  size_t m_pos;
-};
-
 using svector::ColumnStore;
 using svector::MultiColumnStore;
 

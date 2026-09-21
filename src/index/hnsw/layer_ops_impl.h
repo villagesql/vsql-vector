@@ -33,6 +33,7 @@
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_LAYER_OPS_IMPL_H
 
 #include <cassert>
+#include <type_traits>
 
 #include "layer_ops.h"
 
@@ -300,7 +301,14 @@ bool LayerOperations<Graph, Policy>::evaluate_distances(
     Candidate &candidate = candidates[i];
     bool failed = std::visit(
         [&](const auto &query) {
-          return m_graph.distance(query, candidate.node, candidate.distance);
+          using QueryType = std::decay_t<decltype(query)>;
+          // A Node query is used under AlwaysVisiblePolicy.
+          if constexpr (std::is_same_v<QueryType, Node>) {
+            return m_graph.distance(query, candidate.node, candidate.distance);
+          } else {
+            return m_graph.distance(query, candidate.node, candidate.distance,
+                                    candidate.trx_ref);
+          }
         },
         m_query);
     if (failed) {
@@ -343,7 +351,8 @@ bool LayerOperations<Graph, Policy>::seed_impl(
     // Invisible entry points are still traversed from, but must not seed
     // the result set.
     bool visible = false;
-    if (PolicyType::is_visible(m_graph, candidate.node, visible)) {
+    if (PolicyType::is_visible(m_graph, candidate.node, candidate.trx_ref,
+                               visible)) {
       return true;
     }
     if (visible) {
@@ -380,7 +389,8 @@ bool LayerOperations<Graph, Policy>::expand(const Node &node, uint32_t ef) {
       // visible nodes beyond them, but must not enter the result set or
       // count against ef.
       bool visible = false;
-      if (Policy<Graph>::is_visible(m_graph, candidate.node, visible)) {
+      if (Policy<Graph>::is_visible(m_graph, candidate.node, candidate.trx_ref,
+                                    visible)) {
         return true;
       }
       if (visible) {
