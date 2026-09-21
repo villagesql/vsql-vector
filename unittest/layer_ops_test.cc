@@ -46,6 +46,7 @@ struct LineGraph {
     int value;
   };
   using DistanceType = float;
+  using TrxRef = int;
   // LineGraph is a single flat graph with no notion of levels; LevelId
   // exists only to satisfy the Graph interface and carries no state.
   struct LevelId {
@@ -85,7 +86,8 @@ struct LineGraph {
     return false;
   }
 
-  bool distance(const NodeData &a, const Node &b, DistanceType &out) {
+  bool distance(const NodeData &a, const Node &b, DistanceType &out,
+                TrxRef &b_trx_ref) {
     ++distance_calls;
     ++query_distance_calls;
     if (fail_distance) {
@@ -95,6 +97,7 @@ struct LineGraph {
       return true;
     }
     out = std::abs(a.value - b.value);
+    b_trx_ref = TrxRef{};
     return false;
   }
 
@@ -112,7 +115,7 @@ struct LineGraph {
     return false;
   }
 
-  bool is_visible(const Node &node, bool &out) {
+  bool is_visible(const Node &node, TrxRef /*trx_ref*/, bool &out) {
     if (fail_is_visible) {
       return true;
     }
@@ -129,8 +132,10 @@ struct LineGraph {
 // Consults LineGraph::is_visible(), as a real query-time caller would.
 template <typename Graph> struct VisibilityPolicy {
   using Node = typename Graph::Node;
-  static bool is_visible(Graph &graph, const Node &node, bool &out) {
-    return graph.is_visible(node, out);
+  using TrxRef = typename Graph::TrxRef;
+  static bool is_visible(Graph &graph, const Node &node, TrxRef trx_ref,
+                         bool &out) {
+    return graph.is_visible(node, trx_ref, out);
   }
 };
 
@@ -138,7 +143,8 @@ template <typename Graph> struct VisibilityPolicy {
 // index-construction caller would.
 template <typename Graph> struct AlwaysVisiblePolicy {
   using Node = typename Graph::Node;
-  static bool is_visible(Graph &, const Node &, bool &out) {
+  using TrxRef = typename Graph::TrxRef;
+  static bool is_visible(Graph &, const Node &, TrxRef, bool &out) {
     out = true;
     return false;
   }
