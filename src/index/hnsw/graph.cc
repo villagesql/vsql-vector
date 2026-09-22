@@ -169,96 +169,82 @@ bool IndexGraph::distance(const NodeData &a, const NodeData &b,
 }
 
 bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
-  // Both operands are graph nodes with VIDs, so route each through the store's
-  // build-scoped decoded-vector cache: every distinct node is resolved from
-  // storage + decoded exactly once for the whole build, and every later touch
-  // (HNSW revisits the same nodes heavily) is an O(1) cache hit -- no storage
-  // access, no re-decode. This is the dominant build-time win. The cached
-  // native::Data* stays valid for the store's lifetime, so both operands can be
-  // live at once for m_dist_fn.
-  if (m_dist_fn == nullptr) {
+  // Both operands are graph nodes: route each through the store's resident
+  // int16 quantized-vector cache (decode + quantize once per node, O(1) hit
+  // thereafter), then rank with the int16 kernel. Half the bytes loaded per
+  // comparison vs f32 -- the vector-load-bound hot path.
+  const quant::QData *qa = nullptr;
+  const quant::QData *qb = nullptr;
+  if (m_store.get_cached_qvector(a.vid.value, m_index, &qa, get_err_buffer(),
+                                 get_err_buffer_len()) ||
+      m_store.get_cached_qvector(b.vid.value, m_index, &qb, get_err_buffer(),
+                                 get_err_buffer_len()))
+    return true;
+  out = quant::dist_squared_l2_q(qa, qb, quant::qvector_padded_dim(qa->dim));
+  return false;
+}
+
+bool IndexGraph::quantize_query(const NodeData &a, const quant::QData **out) {
+  // Reuse the quantized query across a traversal's candidates: keyed on the
+  // raw source pointer (fixed until the caller moves to a new query).
+  if (a.data.data == m_ctx.m_decoded_buf_1_src) {
+    *out = reinterpret_cast<const quant::QData *>(m_ctx.m_query_qdata.data());
+    return false;
+  }
+
+  constexpr uint32_t kPrefix = IndexStore::KEY_REF_SIZE;
+  if (a.data.length < kPrefix) {
     snprintf(get_err_buffer(), get_err_buffer_len(),
-             "HNSW: distance: no native distance function resolved");
+             "HNSW: distance: value too short (len=%u)", a.data.length);
     return true;
   }
-  const native::Data *a_data = nullptr;
-  const native::Data *b_data = nullptr;
-  if (m_store.get_decoded_vector(a.vid.value, m_index, &a_data,
-                                 get_err_buffer(), get_err_buffer_len()) ||
-      m_store.get_decoded_vector(b.vid.value, m_index, &b_data,
-                                 get_err_buffer(), get_err_buffer_len()))
+  if (native::from_encoded(a.data.data + kPrefix, a.data.length - kPrefix,
+                           m_ctx.m_decoded_buf_1.data(),
+                           m_ctx.m_decoded_buf_1.size())) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: distance: failed to decode vector");
     return true;
-  out = m_dist_fn(a_data, b_data);
+  }
+  const auto *decoded =
+      reinterpret_cast<const native::Data *>(m_ctx.m_decoded_buf_1.data());
+  const uint32_t padded = quant::qvector_padded_dim(decoded->dim);
+  auto *q = reinterpret_cast<quant::QData *>(m_ctx.m_query_qdata.data());
+  quant::quantize(decoded->data, decoded->dim, padded, q);
+
+  m_ctx.m_decoded_buf_1_src = a.data.data;
+  *out = q;
   return false;
 }
 
 bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
-  // a is the caller's own vector -- the one being inserted or queried for,
-  // which is not in the graph and so has no vid to resolve. b is a graph node:
-  // route it through the store's build-scoped decoded-vector cache so a node's
-  // storage fetch + decode happen exactly once for the whole build, not once
-  // per revisit. This is THE hot path -- HNSW compares the fixed query vector
-  // against each candidate node, revisiting the same candidates heavily -- so
-  // caching b's decode here is where the build/search win comes from.
-  if (m_dist_fn == nullptr) {
-    snprintf(get_err_buffer(), get_err_buffer_len(),
-             "HNSW: distance: no native distance function resolved");
-    return true;
-  }
+  // a is the caller's own vector (query/insert), not in the graph. Quantize it
+  // ONCE and reuse across the traversal's candidates (its source pointer is
+  // fixed until the caller moves to a new query); b is a graph node read from
+  // the resident int16 cache. This is THE hot path.
+  const quant::QData *qa = nullptr;
+  if (quantize_query(a, &qa)) return true;
 
-  // Decode the query operand a once and reuse it across the traversal's
-  // candidates (its source pointer is fixed until the caller moves to a new
-  // query), then decode into m_decoded_buf_1 on a change.
-  constexpr uint32_t kPrefix = IndexStore::KEY_REF_SIZE;
-  const native::Data *a_data = nullptr;
-  if (a.data.data == m_ctx.m_decoded_buf_1_src) {
-    a_data =
-        reinterpret_cast<const native::Data *>(m_ctx.m_decoded_buf_1.data());
-  } else {
-    if (a.data.length < kPrefix) {
-      snprintf(get_err_buffer(), get_err_buffer_len(),
-               "HNSW: distance: value too short (len=%u)", a.data.length);
-      return true;
-    }
-    if (native::from_encoded(a.data.data + kPrefix, a.data.length - kPrefix,
-                             m_ctx.m_decoded_buf_1.data(),
-                             m_ctx.m_decoded_buf_1.size())) {
-      snprintf(get_err_buffer(), get_err_buffer_len(),
-               "HNSW: distance: failed to decode vector");
-      return true;
-    }
-    a_data =
-        reinterpret_cast<const native::Data *>(m_ctx.m_decoded_buf_1.data());
-    m_ctx.m_decoded_buf_1_src = a.data.data;
-  }
-
-  // b from the VID cache: no storage fetch, no re-decode on a revisit.
-  const native::Data *b_data = nullptr;
-  if (m_store.get_decoded_vector(b.vid.value, m_index, &b_data,
-                                 get_err_buffer(), get_err_buffer_len()))
+  const quant::QData *qb = nullptr;
+  if (m_store.get_cached_qvector(b.vid.value, m_index, &qb, get_err_buffer(),
+                                 get_err_buffer_len()))
     return true;
 
-  out = m_dist_fn(a_data, b_data);
+  out = quant::dist_squared_l2_q(qa, qb, quant::qvector_padded_dim(qb->dim));
   return false;
 }
 
 bool IndexGraph::resolve_fixed_operand(const Node &node, CachedVector &out) {
-  return m_store.get_decoded_vector(node.vid.value, m_index, &out,
+  return m_store.get_cached_qvector(node.vid.value, m_index, &out,
                                     get_err_buffer(), get_err_buffer_len());
 }
 
 bool IndexGraph::distance(CachedVector a, const Node &b, DistanceType &out) {
-  if (m_dist_fn == nullptr) {
-    snprintf(get_err_buffer(), get_err_buffer_len(),
-             "HNSW: distance: no native distance function resolved");
+  // a is already resolved (a cached QData). Only b is looked up.
+  const quant::QData *qb = nullptr;
+  if (m_store.get_cached_qvector(b.vid.value, m_index, &qb, get_err_buffer(),
+                                 get_err_buffer_len()))
     return true;
-  }
-  // a is already decoded (resolved once by the caller); only b is looked up.
-  const native::Data *b_data = nullptr;
-  if (m_store.get_decoded_vector(b.vid.value, m_index, &b_data,
-                                 get_err_buffer(), get_err_buffer_len()))
-    return true;
-  out = m_dist_fn(a, b_data);
+  out = quant::dist_squared_l2_q(a, qb, quant::qvector_padded_dim(a->dim));
   return false;
 }
 

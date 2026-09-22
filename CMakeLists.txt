@@ -57,6 +57,7 @@ add_library(svector SHARED
     src/storage/root_page.cc
     src/storage/storage.cc
     src/native_vector.cc
+    src/quantize.cc
     src/vector.cc
 )
 

@@ -216,14 +216,14 @@ bool Options::parse(const vef_index_param_t *params, uint32_t count,
   return out->validate(error_msg, error_msg_len);
 }
 
-bool IndexStore::get_decoded_vector(uint64_t vid, const Index &index,
-                                    const native::Data **out, char *err,
+bool IndexStore::get_cached_qvector(uint64_t vid, const Index &index,
+                                    const quant::QData **out, char *err,
                                     uint32_t err_len) {
-  // Load-once gate. HIT: the vector was already decoded earlier in this build
-  // -> return the cached native::Data, no storage access, no decode.
+  // Load-once gate. HIT: the vector was already decoded + quantized earlier ->
+  // return the cached int16 QData, no storage access, no decode, no re-quantize.
   auto it = m_vector_cache.find(vid);
   if (it != m_vector_cache.end()) {
-    *out = reinterpret_cast<const native::Data *>(it->second.data());
+    *out = reinterpret_cast<const quant::QData *>(it->second.data());
     return false;
   }
 
@@ -255,22 +255,32 @@ bool IndexStore::get_decoded_vector(uint64_t vid, const Index &index,
   }
   const uint32_t dim =
       (raw.length - kPrefix) / static_cast<uint32_t>(sizeof(float));
+
+  // Decode the f32 floats into a scratch native::Data, then quantize into the
+  // cache's own int16 QData buffer (padded for the SIMD kernel). The resident
+  // cache holds int16, halving the bytes loaded per distance comparison -- the
+  // 28% dist_squared_l2 hot path is vector-load-bound, so this is the lever.
   const native::Length nlen = native::length(dim);
-  std::vector<unsigned char> buf(nlen.length);
-  // std::vector<unsigned char> data() is max_align_t-aligned by the default
-  // allocator, satisfying native::Data's SIMD alignment requirement.
-  if (native::from_encoded(raw.data + kPrefix, raw.length - kPrefix, buf.data(),
-                           buf.size())) {
+  if (m_qdecode_scratch.size() < nlen.length)
+    m_qdecode_scratch.resize(nlen.length);
+  if (native::from_encoded(raw.data + kPrefix, raw.length - kPrefix,
+                           m_qdecode_scratch.data(), m_qdecode_scratch.size())) {
     snprintf(err, err_len,
-             "HNSW: get_decoded_vector: failed to decode vector (len=%u)",
+             "HNSW: get_cached_qvector: failed to decode vector (len=%u)",
              raw.length);
     return true;
   }
+  const auto *decoded =
+      reinterpret_cast<const native::Data *>(m_qdecode_scratch.data());
 
-  // Insert last, fully decoded, then hand back a stable pointer into the map.
+  const uint32_t padded = quant::qvector_padded_dim(dim);
+  std::vector<unsigned char> buf(quant::qdata_length(padded));
+  auto *q = reinterpret_cast<quant::QData *>(buf.data());
+  quant::quantize(decoded->data, dim, padded, q);
+
   auto [ins, ok] = m_vector_cache.emplace(vid, std::move(buf));
   (void)ok;
-  *out = reinterpret_cast<const native::Data *>(ins->second.data());
+  *out = reinterpret_cast<const quant::QData *>(ins->second.data());
   return false;
 }
 

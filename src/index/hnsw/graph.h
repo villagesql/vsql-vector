@@ -140,6 +140,7 @@ struct GraphContext {
       : m_neighbour_buf(neighbour_buf_size), m_overflow_buf(overflow_buf_size),
         m_vector_buf_1(vector_buf_size), m_vector_buf_2(vector_buf_size),
         m_decoded_buf_1(vector_buf_size), m_decoded_buf_2(vector_buf_size),
+        m_query_qdata(vector_buf_size),
         m_update_slots(max_update_slots), m_link_slots(max_update_slots),
         m_chunk_ids(max_update_chunks), m_node_buf_1(max_update_slots),
         m_node_buf_2(max_update_slots), m_incoming_buf_1(max_update_slots),
@@ -163,6 +164,11 @@ struct GraphContext {
   // reusable. Keyed on the raw source pointer: identical pointer => identical
   // already-decoded bytes.
   const unsigned char *m_decoded_buf_1_src = nullptr;
+
+  // Reused quant::QData holding the quantized query/insert vector; filled once
+  // per distinct query (keyed by m_decoded_buf_1_src) and reused across the
+  // traversal's candidates. Sized to vector_buf_size (>= qdata_length).
+  ScratchBytes m_query_qdata;
 
   ScratchSlots m_update_slots;
   // On-disk slot indices of the incoming-flagged neighbour links
@@ -209,10 +215,11 @@ public:
   using DistanceType = double;
 
   // Fixed-operand handle for is_dominated's "one node vs many" loop: a stable
-  // pointer to the node's decoded vector, owned by the store's build-scoped
-  // cache. Named as a Graph-associated type so LayerOperations stays decoupled
-  // from the concrete vector representation (the test mock uses its own).
-  using CachedVector = const native::Data *;
+  // pointer to the node's resident int16 quantized vector, owned by the store's
+  // build-scoped cache. Named as a Graph-associated type so LayerOperations
+  // stays decoupled from the concrete representation (the test mock uses its
+  // own).
+  using CachedVector = const quant::QData *;
 
   enum class LockMode { Shared, Exclusive };
 
@@ -324,6 +331,12 @@ public:
   // vector (see resolve_fixed_operand). The second operand is a graph node
   // resolved via the cache. Returns true on error.
   bool distance(CachedVector a, const Node &b, DistanceType &out);
+
+  // Decodes + quantizes the caller's query/insert vector `a` into the reused
+  // query-QData buffer, returning it via *out. The decode+quantize happens once
+  // per distinct query (keyed on a.data.data, fixed across a traversal's
+  // candidates) and is reused thereafter. Returns true on error.
+  bool quantize_query(const NodeData &a, const quant::QData **out);
 
   // level is node's own level. Callers always already know it (it's how
   // they located node in the first place), so it's taken directly instead
