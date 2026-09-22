@@ -55,6 +55,23 @@ GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size,
 
 } // namespace
 
+std::array<char, 64> IndexGraph::fetch_distance_helper_name() {
+  // Read the name of the distance helper this index's profile bound (see the
+  // .with_helper(DISTANCE_HELPER_FN_ID, ...) registrations in vector.cc). That
+  // is all the server-facing part of distance resolution: DistanceEvaluator
+  // maps the name to a native kernel itself (via distance_registry.h) and
+  // reports an unknown name. On a server error, return an empty name -- the
+  // evaluator then stays unresolved and eval() reports it.
+  std::array<char, 64> name{};
+  if (m_index.helper_fn_name(VECTOR_KEY_POS, DISTANCE_HELPER_FN_ID, name.data(),
+                             name.size())) {
+    snprintf(get_err_buffer(), get_err_buffer_len(),
+             "HNSW: fetch_distance_helper_name: %s", m_index.get_error());
+    name[0] = '\0';
+  }
+  return name;
+}
+
 #ifndef NDEBUG
 bool IndexGraph::debug_check_level(const Node &node, LevelId level) const {
   // Nothing here is reportable -- the assert at every call site aborts
@@ -74,7 +91,9 @@ IndexGraph::IndexGraph(IndexStore &store, const Index &index,
                        Segment::TrxRef trx_ref, size_t vector_buf_size,
                        std::span<char> err)
     : m_store(store), m_index(index), m_trx_ref(trx_ref),
-      m_ctx(make_graph_context(store, vector_buf_size, err)) {}
+      m_ctx(make_graph_context(store, vector_buf_size, err)),
+      m_dist(fetch_distance_helper_name().data(), vector_buf_size,
+             IndexStore::KEY_REF_SIZE) {}
 
 bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
   assert(vid.is_valid());
@@ -91,14 +110,11 @@ bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
 
 bool IndexGraph::distance(const NodeData &a, const NodeData &b,
                           DistanceType &out) {
-  // The helper rather than the profile function proper: it is the
-  // index-internal variant of the same distance, which for L2 is the squared
-  // one -- it orders nodes identically while skipping the sqrt.
-  //
-  // Profile functions are infallible, so there is no error to report past the
-  // operand resolution the callers below do.
-  m_index.helper(VECTOR_KEY_POS, DISTANCE_HELPER_FN_ID, &out, a.data, b.data);
-  return false;
+  // The leaf distance is a direct native-kernel call over the two operands'
+  // decoded vectors, with operand a's decode reused across a traversal's
+  // candidates. All of that -- the resolved kernel, the decode scratch, and the
+  // fixed-operand reuse -- lives in m_dist; see distance_evaluator.h.
+  return m_dist.eval(a.data, b.data, out, m_ctx.m_error);
 }
 
 bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
@@ -108,6 +124,12 @@ bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
       resolve_node_data(b.vid, m_ctx.m_vector_buf_2, b_data))
     return true;
 
+  // a_data here is resolved into a REUSED buffer (m_vector_buf_1): its source
+  // pointer repeats across calls with different contents, so it must never hit
+  // the evaluator's decoded-a reuse cache (which keys on that pointer).
+  // Invalidate it; only the fixed-NodeData-query overload may benefit from the
+  // cache.
+  m_dist.invalidate_fixed_operand();
   return distance(a_data, b_data, out);
 }
 
@@ -121,6 +143,17 @@ bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
     return true;
 
   return distance(a, b_data, out);
+}
+
+bool IndexGraph::resolve_fixed_operand(const Node &node, NodeData &out) {
+  if (resolve_node_data(node.vid, m_ctx.m_vector_buf_1, out)) return true;
+  // out.data.data now points at m_vector_buf_1, whose address repeats across
+  // calls with different content -- the evaluator's decoded-a reuse cache keys
+  // on that pointer, so it must be invalidated here. The first distance(out, .)
+  // then decodes it once (cache miss) and subsequent calls in the caller's loop
+  // reuse it.
+  m_dist.invalidate_fixed_operand();
+  return false;
 }
 
 bool IndexGraph::neighbours(const Node &node, LevelId level,

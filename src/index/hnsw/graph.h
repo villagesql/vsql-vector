@@ -24,8 +24,10 @@
 #ifndef VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 #define VILLAGESQL_VSQL_VECTOR_SRC_INDEX_HNSW_GRAPH_H
 
+#include "distance_evaluator.h"
 #include "hnsw.h"
 #include "storage.h"
+#include <array>
 #include <cassert>
 #include <span>
 #include <stack>
@@ -288,6 +290,16 @@ public:
 
   bool distance(const NodeData &a, const Node &b, DistanceType &out);
 
+  // Resolve a graph node's stored vector into NodeData held in a dedicated
+  // buffer (m_vector_buf_1) that is NOT touched by the distance() overloads
+  // (they use m_vector_buf_2 for their varying operand). This lets a caller
+  // that compares one fixed node against many others -- e.g. the Algorithm-4
+  // dominance check -- resolve the fixed operand once, then call
+  // distance(NodeData, Node) in the loop so the fixed operand's decode is
+  // reused across the varying ones instead of re-resolved and re-decoded each
+  // comparison. Returns true on error.
+  bool resolve_fixed_operand(const Node &node, NodeData &out);
+
   // level is node's own level. Callers always already know it (it's how
   // they located node in the first place), so it's taken directly instead
   // of rediscovering it with a locate() call.
@@ -446,8 +458,16 @@ private:
   bool debug_check_level(const Node &node, LevelId level) const;
 #endif // NDEBUG
 
+  // Read the profile's bound distance-helper name from the server, to hand to
+  // the DistanceEvaluator (which maps it to a native kernel itself). Returns an
+  // empty name on a server error, having written the error buffer. Used once,
+  // to construct m_dist.
+  std::array<char, 64> fetch_distance_helper_name();
+
   // The single distance computation both public distance() overloads end at,
   // once each of their operands has been resolved to the vector data it names.
+  // Delegates to m_dist; kept as a member so the overloads and their buffer
+  // bookkeeping read the same as before.
   bool distance(const NodeData &a, const NodeData &b, DistanceType &out);
 
   // Resolves a node's vid -- which is the server's stable column reference for
@@ -579,6 +599,10 @@ private:
   const Index &m_index;
   Segment::TrxRef m_trx_ref;
   GraphContext m_ctx;
+  // Owns the resolved native kernel and the decode scratch/reuse for the leaf
+  // distance(). Constructed once from resolve_distance_fn(); see
+  // distance_evaluator.h.
+  DistanceEvaluator m_dist;
 };
 
 } // namespace svector::hnsw
