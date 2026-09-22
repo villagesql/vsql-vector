@@ -884,6 +884,10 @@ bool ColumnStore::update_metadata(MtrCtx::Ref mctx, std::string_view metadata,
 // ColumnStorage implementation: top-level entry points called via ABI wrappers
 // in storage_builder.h. Each method retrieves the user context via
 // storage->user() and delegates to its methods.
+//
+// Baseline (no rowid trailer). When SVECTOR_ROWID_TRAILER is defined this is
+// compiled out and column_storage_rowid.cc provides ColumnStorage instead.
+#ifndef SVECTOR_ROWID_TRAILER
 
 bool ColumnStorage::create(Ctx *storage, Space::Ref space,
                            Segment::TrxRef trx_ref, uint32_t col_len,
@@ -951,5 +955,7 @@ bool ColumnStorage::purge(Ctx *storage, MtrCtx::Ref mctx,
   return storage->user()->m_stores[0].purge(mctx, trx_ref, col_ref, error_msg,
                                             error_msg_len);
 }
+
+#endif  // !SVECTOR_ROWID_TRAILER
 
 }  // namespace svector

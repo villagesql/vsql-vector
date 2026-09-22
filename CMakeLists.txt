@@ -16,6 +16,16 @@
 cmake_minimum_required(VERSION 3.16)
 project(vsql_vector_extension)
 
+# Per-record rowid trailer for colocated row resolution (REF_LOOKUP). When ON
+# (the default), the SVECTOR column-storage adapter keeps a fixed rowid trailer
+# after each vector so an index scan can resolve a stored col_ref back to its
+# owning row, and CREATE INDEX rejects composite primary keys. The trailer lives
+# entirely in the ColumnStorage adapter (src/storage/column_storage_rowid.cc);
+# the generic ColumnStore engine is identical either way. Turn OFF
+# (-DSVECTOR_ROWID_TRAILER=OFF) for the baseline adapter that stores the vector
+# as-is and does not retain the rowid.
+option(SVECTOR_ROWID_TRAILER "Store a per-record rowid trailer for REF_LOOKUP" ON)
+
 # Default to an optimized build. An empty CMAKE_BUILD_TYPE yields -O0 (no
 # -O flag applied), which builds and runs but leaves the distance kernel
 # unoptimized. Override with -DCMAKE_BUILD_TYPE=.
@@ -60,11 +70,21 @@ add_library(svector SHARED
     src/vector.cc
 )
 
+# The rowid-trailer ColumnStorage variant is compiled in only when the option
+# is enabled; otherwise the baseline ColumnStorage in storage.cc is used.
+if(SVECTOR_ROWID_TRAILER)
+  target_sources(svector PRIVATE src/storage/column_storage_rowid.cc)
+endif()
+
 target_include_directories(svector PRIVATE
     ${VillageSQLExtensionFramework_INCLUDE_DIR}
 )
 
 target_compile_options(svector PRIVATE -fPIC)
+
+if(SVECTOR_ROWID_TRAILER)
+  target_compile_definitions(svector PRIVATE SVECTOR_ROWID_TRAILER)
+endif()
 
 # Distance-kernel codegen (native_vector.h, inlined into vector.cc). -O3 plus
 # the reassociation subset lets the compiler split the float reduction into
