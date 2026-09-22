@@ -42,6 +42,10 @@
 #include "index/hnsw/storage.h"
 #include "native_vector.h"
 #include "storage/storage.h"
+// Selects the rowid-trailer ColumnStorage when SVECTOR_ROWID_TRAILER is defined;
+// otherwise self-guards to nothing and the baseline ColumnStorage in storage.h
+// is used. Either way the registration below binds &svector::ColumnStorage::*.
+#include "storage/column_storage_rowid.h"
 
 using vsql::CustomArgWith;
 using vsql::CustomResult;
