@@ -41,10 +41,11 @@ Also builds `svector_page_dump`, a standalone diagnostic tool for inspecting SVE
 
 **Core Components:**
 - `src/vector.cc` - All VDF implementations, type registration via `VEF_GENERATE_ENTRY_POINTS()`
-- `src/native_vector.h` / `src/native_vector.cc` - Native vector type, encoding/decoding, distance functions
+- `src/native_vector.h` / `src/native_vector.cc` - Native vector type, encoding/decoding
 - `src/storage/storage.h` / `src/storage/storage.cc` - Column storage context and insert/delete/fetch operations
 - `src/storage/root_page.h` / `src/storage/root_page.cc` - Root page structure, free slot management, page linking
 - `src/storage/data_page.h` / `src/storage/data_page.cc` - Data page structure, record bitmap, slot management
+- `src/storage/vector_distance.h` / `src/storage/vector_distance.cc` - Runtime-dispatched SIMD distance kernels (scalar / SSE4.2 / AVX2+FMA / AVX-512F / NEON / SVE2). **do not edit**, see below
 - `src/storage/tools/` - Standalone `svector_page_dump` diagnostic tool
 - `cmake/FindVillageSQL.cmake` - CMake module to locate the VillageSQL SDK
 
@@ -56,6 +57,27 @@ The extension uses the VillageSQL Extension Framework's fluent builder API to re
 **Available Functions:**
 - `SVECTOR(dims)` - Create a vector with specified dimensions
 - `SVECTOR_DISTANCE(v1, v2, metric)` - Compute distance between vectors (L1, L2, cosine, inner product)
+
+**Distance kernels:**
+`src/storage/vector_distance.{cc,h}` is a verbatim copy of the server's
+`vector-common/vector_distance.{cc,h}` and must stay re-syncable with a plain `cp`.
+Do not modify existing functions in those two files.
+Exactly two mechanical port shims are permitted and must be re-applied after every re-sync:
+
+1. `#include "vector-common/vector_distance.h"` -> `#include "vector_distance.h"` (the copy lives in `src/storage/`)
+2. Drop `#include "mysql/attribute.h"` and rewrite the `MY_ATTRIBUTE((target(...)))` prefixes to `__attribute__((target(...)))` — the extension SDK does not ship that header
+
+Verify a re-sync with:
+
+```bash
+diff -u <server>/vector-common/vector_distance.h src/storage/vector_distance.h            # must be empty
+diff -u <server>/vector-common/vector_distance.cc src/storage/vector_distance.cc \
+  | grep '^[-+]' | grep -iv 'attribute((target'                                            # only the two include lines
+```
+
+Anything the extension needs on top of the kernels — the little-endian and IEEE-754 compile-time
+guards, the zero-norm cosine adapter, the `sqrt` for L2, the once-guard around
+`init_vector_distance_functions()` — lives in `src/vector.cc` instead.
 
 **SVECTOR Type:**
 - Fixed-dimension float32 vector stored in external columnar pages
@@ -77,12 +99,12 @@ The extension uses the VillageSQL Extension Framework's fluent builder API to re
 ## Testing
 
 The extension includes a test suite using the MySQL Test Runner (MTR) framework:
-- **Test Location**: `mysql-test/` directory with `.test` files and expected `.result` files
+- **Test Location**: `mysql-test/` directory, with `t/*.test` files and expected `r/*.result` files
 
 **Default: Using installed VEB**
 
 ```bash
-cd /path/to/mysql-test
+cd /path/to/villagesql/build/mysql-test
 perl mysql-test-run.pl --suite=/path/to/vsql-vector/mysql-test
 ```
 

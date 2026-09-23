@@ -1,0 +1,137 @@
+# Install vsql-svector extension
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+
+########################################################################
+#
+# Distance-function coverage across the SIMD dispatch boundaries.
+#
+# The distance kernels (src/storage/vector_distance.cc) dispatch on both CPU
+# tier and dimension: dims < 16 use the narrow kernels (SSE4.2 / NEON), dims
+# >= 16 use the widest tier the host supports (AVX2, AVX-512F, SVE2).  The
+# rest of the suite only exercises dim 4, i.e. the narrow path.  This test
+# crosses that boundary and the SIMD body/tail boundaries.
+#
+# DESIGN RULE — PRESERVE WHEN ADDING CASES:
+#   Use integer-valued components whose partial sums stay well under
+#   2^24 = 16777216.  Every float32 add and FMA is then exact, so lane
+#   reassociation and single- vs double-rounding are bit-identical across
+#   scalar / SSE4.2 / AVX2 / AVX-512F / NEON / SVE2.  Only the final sqrt or
+#   divide (always double) shapes the printed value.  That is what keeps this
+#   .result stable across x86 and ARM runners, which matters because MTR
+#   cannot force a tier.  Non-exact components at high dims will flap.
+#
+########################################################################
+
+--echo # === dim 16: wide path, no SIMD tail ===
+# AVX-512F: exactly one 16-float body iteration, no tail.
+# AVX2: two iterations.  SSE4.2 / NEON: four.
+CREATE TABLE simd16 (
+  id INT PRIMARY KEY,
+  v1 SVECTOR(16) NOT NULL,
+  v2 SVECTOR(16) NOT NULL
+) ENGINE=InnoDB;
+
+# id=1 identical       -> l1=0   l2=0        cos=0 ip=1496 (sum i^2, i=1..16)
+# id=2 shifted by +1   -> l1=16  l2=4              ip=1632
+# id=3 parallel, 2x    -> l1=136             cos=0 ip=2992
+# id=4 anti-parallel   -> l1=272             cos=2 ip=-1496
+# id=5 v2 zero vector  -> l1=16  l2=4        cos=1 (zero-norm sentinel) ip=0
+INSERT INTO simd16 VALUES
+  (1, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]',
+      '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]'),
+  (2, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]',
+      '[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]'),
+  (3, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]',
+      '[2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32]'),
+  (4, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]',
+      '[-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12,-13,-14,-15,-16]'),
+  (5, '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]',
+      '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]');
+
+SELECT id, L1_DISTANCE(v1, v2)     AS l1,
+           L2_DISTANCE(v1, v2)     AS l2,
+           COSINE_DISTANCE(v1, v2) AS cos_dist,
+           INNER_PRODUCT(v1, v2)   AS ip
+FROM simd16 ORDER BY id;
+
+--echo # === dim 17: one scalar-tail element on every SIMD tier ===
+# id=2 is the zero-norm cosine sentinel WITH a SIMD tail.
+CREATE TABLE simd17 (
+  id INT PRIMARY KEY,
+  v1 SVECTOR(17) NOT NULL,
+  v2 SVECTOR(17) NOT NULL
+) ENGINE=InnoDB;
+
+# id=1 all-ones vs all-twos -> l1=17 l2=sqrt(17) cos=0 ip=34
+# id=2 v2 zero vector       -> cos=1 (zero-norm sentinel) ip=0
+# id=3 anti-parallel        -> cos=2 ip=-1785 (sum i^2, i=1..17)
+INSERT INTO simd17 VALUES
+  (1, '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]',
+      '[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]'),
+  (2, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]',
+      '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'),
+  (3, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]',
+      '[-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12,-13,-14,-15,-16,-17]');
+
+SELECT id, L1_DISTANCE(v1, v2)     AS l1,
+           L2_DISTANCE(v1, v2)     AS l2,
+           COSINE_DISTANCE(v1, v2) AS cos_dist,
+           INNER_PRODUCT(v1, v2)   AS ip
+FROM simd17 ORDER BY id;
+
+--echo # === dim 3072 (MAX_VECTOR_DIMENSION): many SIMD iterations ===
+# CONCAT/REPEAT idiom follows vector_boundary.test.  Typed columns rather than
+# an inferred SVECTOR so this does not depend on inference limits.
+CREATE TABLE simd_max (
+  id INT PRIMARY KEY,
+  v1 SVECTOR(3072) NOT NULL,
+  v2 SVECTOR(3072) NOT NULL
+) ENGINE=InnoDB;
+
+SET @ones  = CONCAT('[', REPEAT('1,', 3071), '1]');
+SET @twos  = CONCAT('[', REPEAT('2,', 3071), '2]');
+SET @zeros = CONCAT('[', REPEAT('0,', 3071), '0]');
+
+# id=1 identical      -> l1=0    l2=0           cos=0 ip=3072
+# id=2 ones vs twos   -> l1=3072 l2=sqrt(3072)  cos=0 ip=6144
+# id=3 v2 zero vector -> l1=3072 l2=sqrt(3072)  cos=1 (sentinel) ip=0
+# Partial sums peak at 12288 — exact in float32 on every tier.
+INSERT INTO simd_max VALUES (1, @ones, @ones), (2, @ones, @twos),
+                            (3, @ones, @zeros);
+
+SELECT id, L1_DISTANCE(v1, v2)     AS l1,
+           L2_DISTANCE(v1, v2)     AS l2,
+           COSINE_DISTANCE(v1, v2) AS cos_dist,
+           INNER_PRODUCT(v1, v2)   AS ip
+FROM simd_max ORDER BY id;
+
+--echo # === VECTOR_NORM shares the dot kernel ===
+# ||v|| is computed as sqrt(v . v) through vector_distance_dot, so it follows
+# the same narrow/wide dispatch as the distance functions.
+SELECT VECTOR_NORM(v1) AS n16 FROM simd16 WHERE id = 1;
+SELECT VECTOR_NORM(v1) AS n17 FROM simd17 WHERE id = 1;
+SELECT VECTOR_NORM(v1) AS n3072 FROM simd_max WHERE id = 1;
+# Squaring 2e38 overflows float32, but the dot kernels multiply in double --
+# including in the non-finite fallback -- so the norm stays finite.
+SELECT VECTOR_NORM(SVECTOR::FROM_STRING('[2e38, 0]')) AS n_big;
+SELECT VECTOR_NORM(SVECTOR::FROM_STRING('[2e38,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'))
+       AS n_big_wide;
+
+--echo # === dimension mismatch across the narrow/wide boundary ===
+# Rejected during type resolution, before the distance function runs — so
+# svector_distance_impl's own "dimension mismatch" guard is not reachable from
+# SQL.  Pinned here so a change in that split is visible.
+--error ER_VILLAGESQL_GENERIC_ERROR
+SELECT L1_DISTANCE(a.v1, b.v1) FROM simd16 a, simd17 b
+  WHERE a.id = 1 AND b.id = 1;
+
+DROP TABLE simd16;
+DROP TABLE simd17;
+DROP TABLE simd_max;
+
+--echo # SVECTOR SIMD distance test completed
+
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

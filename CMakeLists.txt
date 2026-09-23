@@ -56,6 +56,7 @@ add_library(svector SHARED
     src/storage/data_page.cc
     src/storage/root_page.cc
     src/storage/storage.cc
+    src/storage/vector_distance.cc
     src/native_vector.cc
     src/vector.cc
 )

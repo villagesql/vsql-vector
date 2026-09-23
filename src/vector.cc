@@ -35,13 +35,16 @@
 #include <cctype>
 #include <cerrno>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 
 #include "index/hnsw/storage.h"
 #include "native_vector.h"
 #include "storage/storage.h"
+#include "storage/vector_distance.h"
 
 using vsql::CustomArgWith;
 using vsql::CustomResult;
@@ -95,11 +98,6 @@ constexpr size_t MAX_FLOAT_STR_LENGTH = 16;
 template <size_t N>
 constexpr size_t DECODE_BUFFER_SIZE =
     2 + N * MAX_FLOAT_STR_LENGTH + (N - 1) + 1;
-
-// Stack buffer size for AlignedBuffer (4KB - sized to handle typical vectors
-// on stack while keeping total stack usage reasonable when multiple buffers
-// are allocated. Larger vectors automatically use heap allocation.)
-constexpr size_t VECTOR_STACK_BUFFER_SIZE = 4096;
 
 // Verify at compile time that MAX_VECTOR_DIMENSION won't overflow
 static_assert(native::MAX_VECTOR_DIMENSION <=
@@ -453,20 +451,21 @@ void svector_norm(CustomArgWith<SVectorParams> vec, RealResult out) {
     out.error("encoded vector is too short");
     return;
   }
-  const unsigned char *floats = data.data() + sizeof(vef_storage_ref_t);
-  native::Length native_len = native::length(count);
-  native::AlignedBuffer<VECTOR_STACK_BUFFER_SIZE> buffer(native_len.length,
-                                                         native_len.alignment);
-  if (!buffer.is_initialized()) {
-    out.error("buffer allocation failed");
-    return;
-  }
-  if (native::from_encoded(floats, floats_len, buffer.get(), buffer.size())) {
-    out.error("malformed vector");
-    return;
-  }
-  const native::Data *v = static_cast<const native::Data *>(buffer.get());
-  out.set(native::norm_l2(v));
+  assert(count > 0 && count <= native::MAX_VECTOR_DIMENSION);
+
+  // ||v|| = sqrt(v . v).  The kernels expose no norm entry point, but the dot
+  // product with both arguments pointing at the same payload is exactly that,
+  // and it reuses the SIMD dispatch and the decode-free layout described above
+  // svector_distance_impl.
+  //
+  // The dot kernels multiply in double ("(double)av * bv"), including in the
+  // non-finite fallback, so a vector whose squared elements exceed the float32
+  // range still yields a finite norm -- unlike the euclidean kernels, which
+  // difference in float32 first.
+  const char *floats =
+      reinterpret_cast<const char *>(data.data() + sizeof(vef_storage_ref_t));
+  out.set(std::sqrt(
+      vector_distance_dot(floats, floats, static_cast<uint32_t>(count))));
 }
 
 // Get the dimension of a vector
@@ -507,12 +506,60 @@ void svector_format(CustomArgWith<SVectorParams> vec, IntArg precision,
   out.set_length(out_len);
 }
 
+// The distance kernels in storage/vector_distance.h read the payload as
+// host-order float32 (SIMD loads / memcpy), and svector_distance_impl below
+// hands them the encoded SVECTOR body unchanged.  SVECTOR persists
+// little-endian float32 (native_vector.h float4store), so a big-endian host
+// would byte-swap every element and return garbage rather than fail.  Fail at
+// compile time instead.
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+#if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "SVECTOR distance requires a little-endian host"
+#endif
+#elif !defined(_MSC_VER)  // all MSVC targets are little-endian
+#if defined(__BIG_ENDIAN__) || defined(__ARMEB__) || defined(_BIG_ENDIAN)
+#error "SVECTOR distance requires a little-endian host"
+#endif
+#endif
+
+static_assert(sizeof(float) == 4, "SVECTOR distance assumes 32-bit float");
+static_assert(std::numeric_limits<float>::is_iec559,
+              "the zero-norm +Inf cosine sentinel and the kernels' non-finite "
+              "fallback rely on IEEE-754 Inf/NaN semantics");
+
+// L2 is the square root of the shared squared-Euclidean kernel; the kernels
+// omit sqrt so indexing algo can rank on the cheaper squared value.
+static double svector_euclidean(const char *a, const char *b, uint32_t dims) {
+  return std::sqrt(vector_distance_euclidean_squared(a, b, dims));
+}
+
+// The kernels return +Inf when either vector has zero norm (undefined cosine).
+// SVECTOR's contract, inherited from the previous scalar path, is 1.0 (maximum
+// distance), so map it back.
+//
+// This cannot swallow bad-data NaN: +Inf is reachable only via a zero
+// denominator.  An Inf element makes the matching norm Inf too, so the
+// denominator is Inf or NaN and 1 - ab/denom evaluates to NaN, which passes
+// through unchanged.
+static double svector_cosine(const char *a, const char *b, uint32_t dims) {
+  const double d = vector_distance_cosine(a, b, dims);
+  return std::isinf(d) ? 1.0 : d;
+}
+
 // Common implementation for vector distance SQL functions
+//
+// The encoded SVECTOR body is a contiguous run of little-endian float32 with no
+// padding, starting at sizeof(vef_storage_ref_t) (see svector_from_string).
+// That is exactly the layout the distance kernels consume, so the payload is
+// passed through with no decode step and no intermediate buffer.  The kernels
+// use unaligned SIMD loads but do index a const float *, so they need 4-byte
+// alignment; sizeof(vef_storage_ref_t) is 8 and the record base is at least
+// float-aligned, so every SVECTOR payload satisfies that.
 static void svector_distance_impl(CustomArgWith<SVectorParams> vec1,
                                   CustomArgWith<SVectorParams> vec2,
                                   RealResult out,
-                                  double (*dist_func)(const native::Data *,
-                                                      const native::Data *)) {
+                                  double (*dist_func)(const char *,
+                                                      const char *, uint32_t)) {
   if (vec1.is_null() || vec2.is_null()) {
     out.set_null();
     return;
@@ -535,69 +582,56 @@ static void svector_distance_impl(CustomArgWith<SVectorParams> vec1,
     return;
   }
 
-  const unsigned char *floats1 = data1.data() + sizeof(vef_storage_ref_t);
-  const unsigned char *floats2 = data2.data() + sizeof(vef_storage_ref_t);
+  // Resolved SVECTOR params are validated by svector_validate_dimension on both
+  // the get_params and resolve_params paths, so the dimension is always in
+  // range here (mirrors the assert in svector_compare).
+  assert(count1 > 0 && count1 <= native::MAX_VECTOR_DIMENSION);
 
-  native::Length native_len = native::length(count1);
-
-  // Allocate aligned buffers for native representations
-  native::AlignedBuffer<VECTOR_STACK_BUFFER_SIZE> buffer1(native_len.length,
-                                                          native_len.alignment);
-  native::AlignedBuffer<VECTOR_STACK_BUFFER_SIZE> buffer2(native_len.length,
-                                                          native_len.alignment);
-  if (!buffer1.is_initialized() || !buffer2.is_initialized()) {
-    out.error("buffer allocation failed");
-    return;
-  }
-
-  if (native::from_encoded(floats1, floats_len, buffer1.get(),
-                           buffer1.size())) {
-    out.error("malformed vector");
-    return;
-  }
-  if (native::from_encoded(floats2, floats_len, buffer2.get(),
-                           buffer2.size())) {
-    out.error("malformed vector");
-    return;
-  }
-
-  const native::Data *v1 = static_cast<const native::Data *>(buffer1.get());
-  const native::Data *v2 = static_cast<const native::Data *>(buffer2.get());
-  assert(v1->dim == v2->dim);
-
-  out.set(dist_func(v1, v2));
+  out.set(dist_func(
+      reinterpret_cast<const char *>(data1.data() + sizeof(vef_storage_ref_t)),
+      reinterpret_cast<const char *>(data2.data() + sizeof(vef_storage_ref_t)),
+      static_cast<uint32_t>(count1)));
 }
 
 // Calculate L1 distance between two vectors
 void svector_distance_l1(CustomArgWith<SVectorParams> vec1,
                          CustomArgWith<SVectorParams> vec2, RealResult out) {
-  svector_distance_impl(vec1, vec2, out, native::dist_l1);
+  svector_distance_impl(vec1, vec2, out, vector_distance_manhattan);
 }
 
 // Calculate L2 distance between two vectors
 void svector_distance_l2(CustomArgWith<SVectorParams> vec1,
                          CustomArgWith<SVectorParams> vec2, RealResult out) {
-  svector_distance_impl(vec1, vec2, out, native::dist_l2);
+  svector_distance_impl(vec1, vec2, out, svector_euclidean);
 }
 
-// Squared L2 distance (skips sqrt; cheaper for comparisons inside HNSW)
+// Squared L2 distance (skips sqrt; cheaper for comparisons inside index algo)
 void svector_distance_l2_squared(CustomArgWith<SVectorParams> vec1,
                                  CustomArgWith<SVectorParams> vec2,
                                  RealResult out) {
-  svector_distance_impl(vec1, vec2, out, native::dist_squared_l2);
+  svector_distance_impl(vec1, vec2, out, vector_distance_euclidean_squared);
 }
 
 // Calculate cosine distance between two vectors
 void svector_distance_cosine(CustomArgWith<SVectorParams> vec1,
                              CustomArgWith<SVectorParams> vec2,
                              RealResult out) {
-  svector_distance_impl(vec1, vec2, out, native::dist_cosine);
+  svector_distance_impl(vec1, vec2, out, svector_cosine);
 }
 
 // Calculate inner product between two vectors
 void svector_inner_product(CustomArgWith<SVectorParams> vec1,
                            CustomArgWith<SVectorParams> vec2, RealResult out) {
-  svector_distance_impl(vec1, vec2, out, native::dist_inner_product);
+  svector_distance_impl(vec1, vec2, out, vector_distance_dot);
+}
+
+static void on_init_hook() {
+    init_vector_distance_functions();
+    // The SDK has no logger, and vef_registration_t::error_msg is for failures
+    // only.  mysqld redirects stderr into the error log
+    char desc[192];
+    vector_distance_dispatch_description(desc, sizeof(desc));
+    fprintf(stderr, "vsql_vector: SVECTOR distance kernels:%s\n", desc);
 }
 
 // Upper bound on SVECTOR's persisted byte size: storage-ref header plus
@@ -794,6 +828,7 @@ long long read_ef_search() {
 
 VEF_GENERATE_ENTRY_POINTS(
     make_extension()
+        .on_init<&on_init_hook>()
         .with(STORAGE)
         .with(COLUMN_STORE)
         .with(HNSW_INDEX_CAPABILITY)

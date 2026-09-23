@@ -1,0 +1,332 @@
+#
+# Test coverage for SVECTOR L2_DISTANCE().
+#
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+#
+# 0) Prepare playground.
+#
+CREATE TABLE t1 (id INT PRIMARY KEY, v1 SVECTOR(1), v2 SVECTOR(2)) ENGINE=InnoDB;
+INSERT INTO t1 VALUES (0, '[0]', '[0, 0]'),
+(1, '[1]', '[1, 0]'),
+(2, '[1]', '[0, 1]'),
+(3, '[2]', '[1, 1]'),
+(4, '[2]', '[2, 0]'),
+(99, NULL, NULL);
+# SVECTOR columns are strictly dimensioned: a shorter value is rejected on
+# insert, so unlike VECTOR there is no stored value whose length differs
+# from the column definition.
+INSERT INTO t1 VALUES (98, '[1]', '[2]');
+ERROR HY000: Incorrect SVECTOR value: '[2]' for column 'v2' at row 1
+#
+# 1) Test how different number and types of arguments are handled.
+#
+# 1.1) Arity. The VDF takes exactly two arguments; there is no metric
+#      argument to get wrong.
+#
+SELECT L2_DISTANCE();
+ERROR HY000: Cannot initialize function 'l2_distance': wrong number of arguments (expected 2, got 0)
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1]'));
+ERROR HY000: Cannot initialize function 'l2_distance': wrong number of arguments (expected 2, got 1)
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1]'), SVECTOR::FROM_STRING('[2]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1]'), SVECTOR::FROM_STRING('[2]'))
+1
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1]'), SVECTOR::FROM_STRING('[2]'), 'EUCLIDEAN');
+ERROR HY000: Cannot initialize function 'l2_distance': wrong number of arguments (expected 2, got 3)
+#
+# 1.2) Argument types.
+#
+# A string constant is accepted when the other argument pins the
+# dimension, but two bare constants leave it undetermined.
+SELECT L2_DISTANCE('[1]', SVECTOR::FROM_STRING('[2]'));
+L2_DISTANCE('[1]', SVECTOR::FROM_STRING('[2]'))
+1
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1]'), '[2]');
+L2_DISTANCE(SVECTOR::FROM_STRING('[1]'), '[2]')
+1
+SELECT L2_DISTANCE('[0, 0]', v2) FROM t1 WHERE id = 4;
+L2_DISTANCE('[0, 0]', v2)
+2
+SELECT L2_DISTANCE(v2, '[0, 0]') FROM t1 WHERE id = 4;
+L2_DISTANCE(v2, '[0, 0]')
+2
+SELECT L2_DISTANCE('[1]', '[2]');
+ERROR HY000: Cannot initialize function 'l2_distance': cannot determine type parameters for vsql_vector.SVECTOR in argument 1
+# Anything that is neither an SVECTOR nor a string constant is rejected.
+SELECT L2_DISTANCE(id, SVECTOR::FROM_STRING('[2]')) FROM t1 WHERE id = 0;
+ERROR HY000: Cannot initialize function 'l2_distance': argument 1 must be a custom type or string constant
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0]'), id) FROM t1 WHERE id = 1;
+ERROR HY000: Cannot initialize function 'l2_distance': argument 2 must be a custom type or string constant
+# Binary strings are not a valid SVECTOR source (unlike VECTOR).
+SELECT L2_DISTANCE(X'0000803F', SVECTOR::FROM_STRING('[2]'));
+ERROR HY000: Cannot initialize function 'l2_distance': argument 1 must be a custom type or string constant
+#
+# 1.3) NULL arguments and nullability in metadata for result.
+#
+SELECT L2_DISTANCE(NULL, SVECTOR::FROM_STRING('[1, 0]'));
+L2_DISTANCE(NULL, SVECTOR::FROM_STRING('[1, 0]'))
+NULL
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 1]'), NULL);
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 1]'), NULL)
+NULL
+SELECT L2_DISTANCE(v2, SVECTOR::FROM_STRING('[1, 0]')) FROM t1 WHERE id = 99;
+L2_DISTANCE(v2, SVECTOR::FROM_STRING('[1, 0]'))
+NULL
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 1]'), v2) FROM t1 WHERE id = 99;
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 1]'), v2)
+NULL
+# The result metadata should indicate that it is nullable.
+CREATE TABLE tt SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 0]'),
+SVECTOR::FROM_STRING('[0, 1]')) AS d;
+SHOW CREATE TABLE tt;
+Table	Create Table
+tt	CREATE TABLE `tt` (
+  `d` double DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE tt;
+#
+# 2) Test vector arguments dimension mismatch.
+#
+# Unlike VECTOR, the mismatch is caught while resolving the function --
+# the dimension is part of the type -- so it never reaches the kernel.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1]'), SVECTOR::FROM_STRING('[1, 0]'));
+ERROR HY000: Cannot initialize function 'l2_distance': conflicting type parameters for vsql_vector.SVECTOR in arguments 1 and 2
+SELECT L2_DISTANCE(v2, SVECTOR::FROM_STRING('[1]')) FROM t1 WHERE id = 1;
+ERROR HY000: Cannot initialize function 'l2_distance': conflicting type parameters for vsql_vector.SVECTOR in arguments 1 and 2
+SELECT L2_DISTANCE(v1, v2) FROM t1 WHERE id = 1;
+ERROR HY000: Cannot initialize function 'l2_distance': conflicting type parameters for vsql_vector.SVECTOR in arguments 1 and 2
+# A string constant inherits the dimension of the other argument, so a
+# constant of the wrong length fails to convert instead -- a value error
+# rather than a type-parameter conflict.
+SELECT L2_DISTANCE(v2, '[1]') FROM t1 WHERE id = 1;
+ERROR HY000: Incorrect SVECTOR value: '[1]'
+#
+# 3) Some basic tests for different (from syntax PoV) variants of
+#    arguments.
+#
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[1, 0]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[1, 0]'))
+1
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), v2) FROM t1 WHERE id = 1;
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), v2)
+1
+SELECT L2_DISTANCE(a.v2, b.v2) FROM t1 AS a, t1 AS b WHERE a.id = 0 AND b.id = 4;
+L2_DISTANCE(a.v2, b.v2)
+2
+SELECT L2_DISTANCE(v2, SVECTOR::FROM_STRING('[0, 2]')) FROM t1 WHERE id = 0;
+L2_DISTANCE(v2, SVECTOR::FROM_STRING('[0, 2]'))
+2
+# Non-trivial (artificial) combinations.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING(CONCAT('[0', ', ', '1]')),
+SVECTOR::FROM_STRING('[0, 2]'));
+L2_DISTANCE(SVECTOR::FROM_STRING(CONCAT('[0', ', ', '1]')),
+SVECTOR::FROM_STRING('[0, 2]'))
+1
+#
+# 4) Basic test for different vector values.
+#
+# Identical / collinear vectors.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 1]'), SVECTOR::FROM_STRING('[1, 1]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 1]'), SVECTOR::FROM_STRING('[1, 1]'))
+0
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 0]'), SVECTOR::FROM_STRING('[1, 0]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 0]'), SVECTOR::FROM_STRING('[1, 0]'))
+0
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 1]'), SVECTOR::FROM_STRING('[2.5, 2.5]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 1]'), SVECTOR::FROM_STRING('[2.5, 2.5]'))
+2.1213203435596424
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 2, 3, 4, 5]'),
+SVECTOR::FROM_STRING('[1, 2, 3, 4, 5]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 2, 3, 4, 5]'),
+SVECTOR::FROM_STRING('[1, 2, 3, 4, 5]'))
+0
+# Orthogonal vectors.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 0]'), SVECTOR::FROM_STRING('[0, 1]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 0]'), SVECTOR::FROM_STRING('[0, 1]'))
+1.4142135623730951
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 1, 0]'), SVECTOR::FROM_STRING('[-1, 0, -1]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 1, 0]'), SVECTOR::FROM_STRING('[-1, 0, -1]'))
+1.7320508075688772
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 0, 3, 0, 5]'),
+SVECTOR::FROM_STRING('[0, 2, 0, 4, 0]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 0, 3, 0, 5]'),
+SVECTOR::FROM_STRING('[0, 2, 0, 4, 0]'))
+7.416198487095663
+# Anti-parallel vectors.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[-1, -1]'), SVECTOR::FROM_STRING('[2, 2]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[-1, -1]'), SVECTOR::FROM_STRING('[2, 2]'))
+4.242640687119285
+# Distance from origin.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[1, 0]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[1, 0]'))
+1
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[3, 4]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[3, 4]'))
+5
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[5, 12]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[5, 12]'))
+13
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0, 0, 0]'), SVECTOR::FROM_STRING('[1, 1, 1, 1]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0, 0, 0]'), SVECTOR::FROM_STRING('[1, 1, 1, 1]'))
+2
+# Mixed-sign and larger vectors.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 2, 3]'), SVECTOR::FROM_STRING('[4, 5, 6]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 2, 3]'), SVECTOR::FROM_STRING('[4, 5, 6]'))
+5.196152422706632
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 7, 3, 16, 5]'),
+SVECTOR::FROM_STRING('[1, 2, 3, 4, 5]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1, 7, 3, 16, 5]'),
+SVECTOR::FROM_STRING('[1, 2, 3, 4, 5]'))
+13
+# Zero vector (behavior differs per metric; cosine is undefined and
+# returns 1, its maximum distance, rather than NULL).
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[2, 2]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[2, 2]'))
+2.8284271247461903
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[0, 0]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[0, 0]'))
+0
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0]'), SVECTOR::FROM_STRING('[0]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0]'), SVECTOR::FROM_STRING('[0]'))
+0
+# Symmetry: f(a, b) = f(b, a).
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1, 2, 3]'), SVECTOR::FROM_STRING('[4, 5, 6]')) =
+L2_DISTANCE(SVECTOR::FROM_STRING('[4, 5, 6]'), SVECTOR::FROM_STRING('[1, 2, 3]'))
+AS symmetric;
+symmetric
+1
+#
+# 5) Wide-tier SIMD coverage (dims >= 16 dispatches to the wide kernel).
+#
+# 16-dim: fills one AVX-512 register / two AVX2 / four SSE4.2 -- no tail.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0]'),
+SVECTOR::FROM_STRING('[0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0]'),
+SVECTOR::FROM_STRING('[0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1]'))
+4
+# 20-dim: SSE4.2 5x4 (no tail); AVX2 2x8 + 4-elem tail;
+#         AVX-512 1x16 + 4-elem tail.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0]'),
+SVECTOR::FROM_STRING('[0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0]'),
+SVECTOR::FROM_STRING('[0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1]'))
+4.47213595499958
+#
+# 6) Special float32 values.
+#
+# Elements outside the float32 range are rejected while parsing.
+SELECT SVECTOR::FROM_STRING('[1e40]');
+ERROR HY000: error encountered during SVECTOR::from_string inference: svector_from_string: parse error
+# NaN and the infinities, by contrast, are accepted and stored verbatim.
+SELECT VECTOR_HEX(SVECTOR::FROM_STRING('[nan]')) AS nan_hex,
+VECTOR_HEX(SVECTOR::FROM_STRING('[inf]')) AS inf_hex,
+VECTOR_HEX(SVECTOR::FROM_STRING('[-inf]')) AS neg_inf_hex;
+nan_hex	inf_hex	neg_inf_hex
+00000000000000000000C07F	00000000000000000000807F	0000000000000000000080FF
+# They propagate into the result instead of raising an error.  Printing
+# cannot show that: the client protocol renders NaN and +-Inf alike as 0,
+# and a bound test alone does not separate them either, because MySQL's
+# real comparator ranks NaN above every finite value.  Classify instead
+# by self-equality plus a bound, reading the value out of a derived table
+# -- a NaN does not survive materialisation and arrives as NULL, which is
+# itself the signal:
+#   (NULL, NULL) NaN     (1, 1) +Inf     (1, 0) finite
+SELECT d = d AS self_equal, d >= 1e300 AS at_or_above_bound
+FROM (SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[nan]'),
+SVECTOR::FROM_STRING('[0]')) AS d) AS nan_case;
+self_equal	at_or_above_bound
+NULL	NULL
+SELECT d = d AS self_equal, d >= 1e300 AS at_or_above_bound
+FROM (SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[inf]'),
+SVECTOR::FROM_STRING('[0]')) AS d) AS inf_case;
+self_equal	at_or_above_bound
+1	1
+#
+# 7) Values near the float32 maximum.
+#
+# Squaring 2e38 overflows float32, but the kernels detect the non-finite
+# reduction and recompute in double, so the result stays finite.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[2e38, 0]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[0, 0]'), SVECTOR::FROM_STRING('[2e38, 0]'))
+1.9999999360571385e38
+# Same value in a 16-dim vector, i.e. through the wide kernel.
+SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[2e38,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'),
+SVECTOR::FROM_STRING('[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'));
+L2_DISTANCE(SVECTOR::FROM_STRING('[2e38,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'),
+SVECTOR::FROM_STRING('[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'))
+1.9999999360571385e38
+# Anti-parallel pair whose element-wise difference (4e38) itself overflows
+# float32.  Even the double-precision fallback forms each difference in
+# float32 first (euclidean_scalar: "const double d = av - bv"), so
+# L2_DISTANCE saturates to +Inf here.  L1_DISTANCE casts before
+# subtracting and INNER_PRODUCT multiplies rather than subtracts, so both
+# stay finite; COSINE_DISTANCE never differences its inputs at all.
+# Same (self_equal, at_or_above_bound) encoding as section 6.
+SELECT d = d AS self_equal, d >= 1e300 AS at_or_above_bound
+FROM (SELECT L2_DISTANCE(SVECTOR::FROM_STRING('[-2e38, 1]'),
+SVECTOR::FROM_STRING('[2e38, -1]')) AS d) AS overflow_case;
+self_equal	at_or_above_bound
+1	1
+#
+# 8) Prepared statements.
+#
+PREPARE s1 FROM 'SELECT L2_DISTANCE(v1, SVECTOR::FROM_STRING("[2]")) FROM t1 WHERE id = 4';
+EXECUTE s1;
+L2_DISTANCE(v1, SVECTOR::FROM_STRING("[2]"))
+0
+EXECUTE s1;
+L2_DISTANCE(v1, SVECTOR::FROM_STRING("[2]"))
+0
+DEALLOCATE PREPARE s1;
+PREPARE s2 FROM 'SELECT L2_DISTANCE(v1, SVECTOR::FROM_STRING(?)) FROM t1 WHERE id = 4';
+SET @vec = '[2]';
+EXECUTE s2 USING @vec;
+L2_DISTANCE(v1, SVECTOR::FROM_STRING(?))
+0
+DEALLOCATE PREPARE s2;
+#
+# 9) Distance in query contexts.
+#
+# ORDER BY distance: nearest-neighbour pattern.
+SELECT id FROM t1 WHERE id IN (0,1,2,3,4)
+ORDER BY L2_DISTANCE(v2, SVECTOR::FROM_STRING('[1, 0]')), id;
+id
+1
+0
+3
+4
+2
+# ORDER BY distance DESC: farthest-neighbour pattern.
+SELECT id FROM t1 WHERE id IN (0,1,2,3,4)
+ORDER BY L2_DISTANCE(v2, SVECTOR::FROM_STRING('[1, 0]')) DESC, id;
+id
+2
+0
+3
+4
+1
+# WHERE: range query filtering by distance.
+SELECT id FROM t1
+WHERE id IN (0,1,2,3,4) AND L2_DISTANCE(v2, SVECTOR::FROM_STRING('[1, 0]')) < 1.5
+ORDER BY id;
+id
+0
+1
+2
+3
+4
+# Derived table with distance.
+SELECT id FROM
+(SELECT id, L2_DISTANCE(v2, SVECTOR::FROM_STRING('[1, 0]')) AS d
+FROM t1 WHERE id IN (0,1,2,3,4)) AS sq
+WHERE d IS NOT NULL ORDER BY d, id;
+id
+1
+0
+3
+4
+2
+DROP TABLE t1;
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

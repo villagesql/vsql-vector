@@ -1,0 +1,100 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+# === dim 16: wide path, no SIMD tail ===
+CREATE TABLE simd16 (
+id INT PRIMARY KEY,
+v1 SVECTOR(16) NOT NULL,
+v2 SVECTOR(16) NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO simd16 VALUES
+(1, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]',
+'[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]'),
+(2, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]',
+'[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]'),
+(3, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]',
+'[2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32]'),
+(4, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]',
+'[-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12,-13,-14,-15,-16]'),
+(5, '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]',
+'[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]');
+SELECT id, L1_DISTANCE(v1, v2)     AS l1,
+L2_DISTANCE(v1, v2)     AS l2,
+COSINE_DISTANCE(v1, v2) AS cos_dist,
+INNER_PRODUCT(v1, v2)   AS ip
+FROM simd16 ORDER BY id;
+id	l1	l2	cos_dist	ip
+1	0	0	0	1496
+2	16	4	0.0010196800857239507	1632
+3	136	38.67815921162743	0	2992
+4	272	77.35631842325486	2	-1496
+5	16	4	1	0
+# === dim 17: one scalar-tail element on every SIMD tier ===
+CREATE TABLE simd17 (
+id INT PRIMARY KEY,
+v1 SVECTOR(17) NOT NULL,
+v2 SVECTOR(17) NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO simd17 VALUES
+(1, '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]',
+'[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]'),
+(2, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]',
+'[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'),
+(3, '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]',
+'[-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12,-13,-14,-15,-16,-17]');
+SELECT id, L1_DISTANCE(v1, v2)     AS l1,
+L2_DISTANCE(v1, v2)     AS l2,
+COSINE_DISTANCE(v1, v2) AS cos_dist,
+INNER_PRODUCT(v1, v2)   AS ip
+FROM simd17 ORDER BY id;
+id	l1	l2	cos_dist	ip
+1	17	4.123105625617661	0	34
+2	153	42.24926034855522	1	0
+3	306	84.49852069711044	2	-1785
+# === dim 3072 (MAX_VECTOR_DIMENSION): many SIMD iterations ===
+CREATE TABLE simd_max (
+id INT PRIMARY KEY,
+v1 SVECTOR(3072) NOT NULL,
+v2 SVECTOR(3072) NOT NULL
+) ENGINE=InnoDB;
+SET @ones  = CONCAT('[', REPEAT('1,', 3071), '1]');
+SET @twos  = CONCAT('[', REPEAT('2,', 3071), '2]');
+SET @zeros = CONCAT('[', REPEAT('0,', 3071), '0]');
+INSERT INTO simd_max VALUES (1, @ones, @ones), (2, @ones, @twos),
+(3, @ones, @zeros);
+SELECT id, L1_DISTANCE(v1, v2)     AS l1,
+L2_DISTANCE(v1, v2)     AS l2,
+COSINE_DISTANCE(v1, v2) AS cos_dist,
+INNER_PRODUCT(v1, v2)   AS ip
+FROM simd_max ORDER BY id;
+id	l1	l2	cos_dist	ip
+1	0	0	0	3072
+2	3072	55.42562584220407	0	6144
+3	3072	55.42562584220407	1	0
+# === VECTOR_NORM shares the dot kernel ===
+SELECT VECTOR_NORM(v1) AS n16 FROM simd16 WHERE id = 1;
+n16
+38.67815921162743
+SELECT VECTOR_NORM(v1) AS n17 FROM simd17 WHERE id = 1;
+n17
+4.123105625617661
+SELECT VECTOR_NORM(v1) AS n3072 FROM simd_max WHERE id = 1;
+n3072
+55.42562584220407
+SELECT VECTOR_NORM(SVECTOR::FROM_STRING('[2e38, 0]')) AS n_big;
+n_big
+1.9999999360571385e38
+SELECT VECTOR_NORM(SVECTOR::FROM_STRING('[2e38,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'))
+AS n_big_wide;
+n_big_wide
+1.9999999360571385e38
+# === dimension mismatch across the narrow/wide boundary ===
+SELECT L1_DISTANCE(a.v1, b.v1) FROM simd16 a, simd17 b
+WHERE a.id = 1 AND b.id = 1;
+ERROR HY000: Cannot initialize function 'l1_distance': conflicting type parameters for vsql_vector.SVECTOR in arguments 1 and 2
+DROP TABLE simd16;
+DROP TABLE simd17;
+DROP TABLE simd_max;
+# SVECTOR SIMD distance test completed
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;
