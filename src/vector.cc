@@ -52,6 +52,7 @@ using vsql::RealResult;
 using vsql::ResolvedTypeParams;
 using vsql::Span;
 using vsql::StringResult;
+using vsql::preview_index_builder::FunctionKind;
 using vsql::preview_index_builder::Index;
 using vsql::preview_index_builder::IndexProfileCapability;
 using vsql::preview_index_builder::IndexTypeCapability;
@@ -763,7 +764,8 @@ static const auto HNSW_L1_PROFILE =
     make_index_profile(kHNSWProfileL1)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function<HNSW_L1_FN>(DISTANCE_PROFILE_FN_ID)
+        .with_function<HNSW_L1_FN>(DISTANCE_PROFILE_FN_ID,
+                                   FunctionKind::Order)
         .with_helper<HNSW_L1_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .build();
@@ -772,7 +774,8 @@ static const auto HNSW_L2_PROFILE =
     make_index_profile(kHNSWProfileL2)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function<HNSW_L2_FN>(DISTANCE_PROFILE_FN_ID)
+        .with_function<HNSW_L2_FN>(DISTANCE_PROFILE_FN_ID,
+                                   FunctionKind::Order)
         .with_helper<HNSW_L2_SQUARED_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .default_for_type(true)
@@ -782,7 +785,8 @@ static const auto HNSW_COSINE_PROFILE =
     make_index_profile(kHNSWProfileCosine)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function<HNSW_COSINE_FN>(DISTANCE_PROFILE_FN_ID)
+        .with_function<HNSW_COSINE_FN>(DISTANCE_PROFILE_FN_ID,
+                                   FunctionKind::Order)
         .with_helper<HNSW_COSINE_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .build();
@@ -791,7 +795,8 @@ static const auto HNSW_IP_PROFILE =
     make_index_profile(kHNSWProfileInnerProduct)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function<HNSW_IP_FN>(DISTANCE_PROFILE_FN_ID)
+        .with_function<HNSW_IP_FN>(DISTANCE_PROFILE_FN_ID,
+                                   FunctionKind::Order)
         .with_helper<HNSW_IP_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::DESC)
         .build();
