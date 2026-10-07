@@ -732,12 +732,39 @@ static constexpr auto HNSW_L2_SQUARED_FN =
         .deterministic()
         .build();
 
+// Internal helpers for profiles whose helper is the same implementation as the
+// SQL-visible distance function: with_helper() accepts only
+// make_index_function() descriptors.
+static constexpr auto HNSW_L1_HELPER_FN =
+    make_index_function<&svector_distance_l1>(kHNSWFuncL1Distance)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+static constexpr auto HNSW_COSINE_HELPER_FN =
+    make_index_function<&svector_distance_cosine>(kHNSWFuncCosineDistance)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
+static constexpr auto HNSW_IP_HELPER_FN =
+    make_index_function<&svector_inner_product>(kHNSWFuncInnerProduct)
+        .returns(vsql::REAL)
+        .param(SVECTOR)
+        .param(SVECTOR)
+        .deterministic()
+        .build();
+
 static const auto HNSW_L1_PROFILE =
     make_index_profile(kHNSWProfileL1)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
         .with_function<HNSW_L1_FN>(DISTANCE_PROFILE_FN_ID)
-        .with_helper<HNSW_L1_FN>(DISTANCE_HELPER_FN_ID)
+        .with_helper<HNSW_L1_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .build();
 
@@ -756,7 +783,7 @@ static const auto HNSW_COSINE_PROFILE =
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
         .with_function<HNSW_COSINE_FN>(DISTANCE_PROFILE_FN_ID)
-        .with_helper<HNSW_COSINE_FN>(DISTANCE_HELPER_FN_ID)
+        .with_helper<HNSW_COSINE_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .build();
 
@@ -765,7 +792,7 @@ static const auto HNSW_IP_PROFILE =
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
         .with_function<HNSW_IP_FN>(DISTANCE_PROFILE_FN_ID)
-        .with_helper<HNSW_IP_FN>(DISTANCE_HELPER_FN_ID)
+        .with_helper<HNSW_IP_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::DESC)
         .build();
 
