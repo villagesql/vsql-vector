@@ -862,7 +862,8 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
   if (GraphOperations<IndexGraph>(graph).search_knn(query, k, ef_search, nodes))
     return true;
 
-  auto *c = new Cursor(std::move(graph), std::move(nodes));
+  auto *c =
+      new Cursor(std::move(graph), std::move(nodes), scan_desc.needs_trx_ref());
   *cursor = c;
   *eof = c->eof();
   return false;
@@ -874,15 +875,29 @@ bool position(Index::Cursor cursor, Index::CursorOp op, bool *eof,
   return false;
 }
 
-bool fetch(Index::Cursor cursor, Column::Ref *col_refs,
+bool fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
+           IndexScanKey::KeyPartRef *key_column_refs,
            IndexScanKey::KeyPartData * /*key_columns*/,
-           IndexScanKey::KeyPartData * /*pkey_columns*/, char * /*err*/,
-           uint32_t /*err_len*/) {
-  const Node *node = static_cast<Cursor *>(cursor)->current();
+           IndexScanKey::KeyPartData * /*pkey_columns*/,
+           Segment::TrxRef *trx_ref, char * /*err*/, uint32_t /*err_len*/) {
+  const auto *c = static_cast<Cursor *>(cursor);
+  const Node *node = c->current();
   assert(node != nullptr);
 
-  // vid is the vector's own stable column reference.
-  col_refs[VECTOR_KEY_POS] = static_cast<Column::Ref>(node->vid.value);
+  // The index entry is identified by the node's NID.
+  *key_ref = static_cast<IndexScanKey::KeyPartRef>(node->nid.column_ref());
+
+  // The index declares HAS_COLUMN_REF, so the key column is reported as a
+  // reference (key_columns is left unset): the vector's VID, which is its own
+  // stable column reference.
+  key_column_refs[VECTOR_KEY_POS] =
+      static_cast<IndexScanKey::KeyPartRef>(node->vid.value);
+
+  *trx_ref = 0;
+  if (c->needs_trx_ref()) {
+    // TODO(villagesql-indexing): resolve the transaction that last wrote this
+    // entry.
+  }
   return false;
 }
 

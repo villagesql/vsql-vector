@@ -605,9 +605,13 @@ public:
   // parameter; this fixed floor is a placeholder.
   static constexpr uint32_t DEFAULT_EF_SEARCH = 40;
 
-  Cursor(IndexGraph graph, std::vector<Node> nodes)
+  Cursor(IndexGraph graph, std::vector<Node> nodes, bool needs_trx_ref)
       : m_graph(std::move(graph)), m_nodes(std::move(nodes)),
-        m_pos(m_nodes.empty() ? EOF_POS : 0) {}
+        m_needs_trx_ref(needs_trx_ref), m_pos(m_nodes.empty() ? EOF_POS : 0) {}
+
+  // Whether the scan that created this cursor requires fetch() to report each
+  // entry's trx_ref (see IndexScanDesc::needs_trx_ref()).
+  bool needs_trx_ref() const { return m_needs_trx_ref; }
 
   // Node at the current position, or nullptr at eof().
   const Node *current() const {
@@ -637,6 +641,7 @@ private:
 
   IndexGraph m_graph;
   std::vector<Node> m_nodes;
+  bool m_needs_trx_ref;
   size_t m_pos;
 };
 
