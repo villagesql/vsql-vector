@@ -1,13 +1,8 @@
 # SHOW CREATE TABLE rendering for custom (extended) indexes: the index type,
 # the per-key-part profile, and the WITH parameters.
-#
-# villagesql_custom_index_proceed bypasses the "not yet implemented" guard in
-# PT_custom_index_type::do_contextualize()
---source include/have_debug.inc
 
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
-SET SESSION debug='+d,villagesql_custom_index_proceed';
 
 --echo # --- A default profile is omitted; a non-default one is rendered ---
 # hnsw_l2 is the default for SVECTOR, so naming it explicitly renders the same
@@ -78,7 +73,6 @@ if ($SCT != $SCT_)
 --echo # ... and here
 DROP TABLE rt;
 
-SET SESSION debug='-d,villagesql_custom_index_proceed';
 UNINSTALL EXTENSION vsql_vector;
 SET PERSIST vsql_allow_preview_extensions = OFF;
 RESET PERSIST vsql_allow_preview_extensions;

@@ -1,6 +1,5 @@
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
-SET SESSION debug='+d,villagesql_custom_index_proceed';
 # --- A default profile is omitted; a non-default one is rendered ---
 CREATE TABLE t1 (
 id INT PRIMARY KEY,
@@ -123,7 +122,6 @@ rt	k2	0	b	vsql_vector	0.0.1	hnsw_cosine
 rt	k3	0	c	vsql_vector	0.0.1	hnsw_inner_product
 # ... and here
 DROP TABLE rt;
-SET SESSION debug='-d,villagesql_custom_index_proceed';
 UNINSTALL EXTENSION vsql_vector;
 SET PERSIST vsql_allow_preview_extensions = OFF;
 RESET PERSIST vsql_allow_preview_extensions;
