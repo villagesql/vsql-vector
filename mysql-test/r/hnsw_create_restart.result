@@ -1,6 +1,5 @@
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
-SET SESSION debug='+d,villagesql_custom_index_proceed';
 # --- Initial state: empty ---
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
@@ -97,7 +96,6 @@ t1	idx_d	0	d	vsql_vector	0.0.1	hnsw_l1
 t1	idx_e	0	e	vsql_vector	0.0.1	hnsw_l2
 # --- Restart server: verify HNSW indexes and metadata survive a restart before any index is dropped ---
 # restart
-SET SESSION debug='+d,villagesql_custom_index_proceed';
 SHOW CREATE TABLE t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -276,7 +274,6 @@ DROP TABLE t2;
 db_name	table_name	index_name	extension_name	extension_version	index_type_name	index_type_parameters
 table_name	index_name	key_position	column_name	extension_name	extension_version	profile_name
 # HNSW create/drop index lifecycle test completed
-SET SESSION debug='-d,villagesql_custom_index_proceed';
 UNINSTALL EXTENSION vsql_vector;
 SET PERSIST vsql_allow_preview_extensions = OFF;
 RESET PERSIST vsql_allow_preview_extensions;
