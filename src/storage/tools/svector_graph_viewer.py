@@ -14,6 +14,10 @@ without touching the shell. See README.md ("Live browser view").
 Example:
   graph_view                         # from the build dir (the CMake symlink), then open the page
 
+The page also has a Storage view: one storage page at a time (root page or
+data page, via `svector_page_dump --page-json`) with a square per record slot
+and links to the previous/next page and back to the root.
+
 The page has a Browse button to pick any .ibd file on this machine and a box
 for the root page number.
 """
@@ -130,6 +134,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(200, "application/json", json.dumps(res))
         elif url.path == "/graph.dot":
             self._graph(urllib.parse.parse_qs(url.query))
+        elif url.path == "/page.json":
+            self._page(urllib.parse.parse_qs(url.query))
         else:
             self._send(404, "text/plain", "not found")
 
@@ -178,6 +184,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(500, "text/plain", svg.stderr.strip() or "dot failed")
         self._send(200, "application/json",
                    json.dumps({"dot": dot, "info": info, "svg": svg.stdout}))
+
+    def _page(self, q):
+        """One storage page as the tool's JSON (page 0 means the root)."""
+        ibd = self._valid_ibd(q.get("ibd", [""])[0])
+        if not ibd:
+            return self._send(400, "text/plain",
+                              "Choose an existing .ibd file (use Browse)")
+        try:
+            root = int(q.get("root", [""])[0])
+            page = int(q.get("page", ["0"])[0] or 0)
+        except ValueError:
+            return self._send(400, "text/plain",
+                              "root page and page must be numbers")
+        if not 1 <= root < 2**32 or not 0 <= page < 2**32:
+            return self._send(400, "text/plain", "page number out of range")
+        cmd = [self.cfg.tool, ibd, str(root), "-i", "--page-json",
+               str(page or root)]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return self._send(500, "text/plain", "could not run tool: %s" % e)
+        if res.returncode != 0:
+            msg = res.stderr.strip() or "tool exited with %d" % res.returncode
+            return self._send(500, "text/plain", msg)
+        self._send(200, "application/json", res.stdout)
 
     def log_message(self, fmt, *args):
         pass  # Keep the terminal quiet; errors surface in the page.
