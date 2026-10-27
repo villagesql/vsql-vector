@@ -87,10 +87,21 @@ add_executable(svector_page_dump
     src/storage/tools/data_page_parser.cc
     src/storage/tools/hnsw_layout.cc
     src/storage/tools/hnsw_graph.cc
+    src/storage/tools/hnsw_dot.cc
 )
 
 target_include_directories(svector_page_dump PRIVATE
     ${VillageSQLExtensionFramework_INCLUDE_DIR}
+)
+
+# Live browser viewer for the tool's DOT output: symlinked next to the tool so
+# it finds svector_page_dump by default (the script resolves the link to find
+# its HTML page in the source tree).
+add_custom_target(svector_graph_viewer ALL
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/storage/tools/svector_graph_viewer.py
+        $<TARGET_FILE_DIR:svector_page_dump>/graph_view
+    COMMENT "Linking graph_view next to svector_page_dump"
 )
 
 # Standalone unit tests. These have no dependency on the VillageSQL SDK.
@@ -114,6 +125,18 @@ add_executable(graph_ops_test
 target_compile_options(graph_ops_test PRIVATE -UNDEBUG)
 
 add_test(NAME graph_ops_test COMMAND graph_ops_test)
+
+# DOT export of the HNSW graph (page dump tool). Pure model + writer driven by
+# a fake record fetcher, so it needs neither the SDK nor an .ibd file.
+add_executable(hnsw_dot_test
+    unittest/hnsw_dot_test.cc
+    src/storage/tools/hnsw_dot.cc
+    src/storage/tools/hnsw_layout.cc
+)
+
+target_compile_options(hnsw_dot_test PRIVATE -UNDEBUG)
+
+add_test(NAME hnsw_dot_test COMMAND hnsw_dot_test)
 
 # Storage-layer test. Unlike the header-only graph/layer tests, it drives the
 # real column-storage sources against an in-memory fake storage backend, so it
