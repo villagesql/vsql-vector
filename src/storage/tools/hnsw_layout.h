@@ -70,6 +70,10 @@ struct HnswColumnRef {
 // slot field decoded here and does not need to be masked off first.
 HnswColumnRef hnsw_decode_ref(uint64_t value);
 
+// Inverse of hnsw_decode_ref: packs a data page and slot into a NID/VID
+// value (without the incoming flag).
+uint64_t hnsw_encode_ref(uint32_t page_ref, uint16_t slot_index);
+
 // Formats value (a NID or VID) as "Page #<p>, Slot #<s>" for display.
 std::string format_hnsw_ref(uint64_t value);
 

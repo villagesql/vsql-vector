@@ -140,6 +140,11 @@ HnswColumnRef hnsw_decode_ref(uint64_t value) {
   return ref;
 }
 
+uint64_t hnsw_encode_ref(uint32_t page_ref, uint16_t slot_index) {
+  return static_cast<uint64_t>(page_ref) |
+         ((static_cast<uint64_t>(slot_index) & SLOT_INDEX_MASK) << 32);
+}
+
 std::string format_hnsw_ref(uint64_t value) {
   HnswColumnRef ref = hnsw_decode_ref(value);
   std::ostringstream out;

@@ -23,10 +23,13 @@
 
 #include "hnsw_graph.h"
 
+#include <sstream>
 #include <unordered_set>
 #include <vector>
 
+#include "../root_page.h"
 #include "data_page_parser.h"
+#include "hnsw_dot.h"
 
 namespace svector {
 namespace tool {
@@ -214,33 +217,80 @@ void print_level_list(PageReader &reader, uint8_t level, uint32_t M,
 
 } // namespace
 
-void render_hnsw_graph(PageReader &reader, const HnswIndexMetadata &index_meta,
-                       uint16_t level0_column_size, uint32_t max_nodes,
-                       bool verbose, GraphStyle style, std::ostream &out) {
+namespace {
+
+enum class Preflight { Ok, Empty, Error };
+
+// Checks that index_meta can seed a graph walk and infers M from the level-0
+// column size, shared by every graph renderer. Anything but Ok leaves the
+// reason (newline-terminated) in msg.
+Preflight graph_preflight(const HnswIndexMetadata &index_meta,
+                          uint16_t level0_column_size, uint32_t &M,
+                          std::ostream &msg) {
   if (index_meta.is_overflow() || index_meta.level != 0) {
-    out << "--graph requires the level-0 primary NeighbourEntry store's "
+    msg << "--graph requires the level-0 primary NeighbourEntry store's "
            "root page (its metadata carries the graph's entry point); this "
            "root page is "
         << (index_meta.is_overflow() ? "an overflow store" : "level ")
         << (index_meta.is_overflow() ? "" : std::to_string(index_meta.level))
         << ".\n";
-    return;
+    return Preflight::Error;
   }
 
   if (index_meta.entry_points.empty() || index_meta.entry_points[0] == 0) {
-    out << "Graph is empty (no entry point set).\n";
-    return;
+    msg << "Graph is empty (no entry point set).\n";
+    return Preflight::Empty;
   }
 
   uint32_t max_n0 = hnsw_max_neighbours(level0_column_size,
                                         /*has_lower_level=*/false);
   if (max_n0 == 0 || max_n0 % 2 != 0) {
-    out << "Could not infer M from level-0 column size (" << level0_column_size
+    msg << "Could not infer M from level-0 column size (" << level0_column_size
         << " bytes); refusing to guess a possibly wrong record layout for "
            "other levels.\n";
+    return Preflight::Error;
+  }
+  M = max_n0 / 2;
+  return Preflight::Ok;
+}
+
+// Outgoing neighbour slots of a decoded record as (nid ref, vid): empty and
+// incoming-flagged slots are other nodes' edges, so they are dropped.
+std::vector<std::pair<uint64_t, uint64_t>>
+outgoing_neighbours(const DataPageParser::RecordStatus &rec) {
+  std::vector<std::pair<uint64_t, uint64_t>> out;
+  for (const auto &neighbour : rec.neighbours) {
+    if (neighbour.first == 0 || (neighbour.first & HNSW_NID_INCOMING_BIT))
+      continue;
+    out.push_back({neighbour.first & HNSW_NID_REF_MASK, neighbour.second});
+  }
+  return out;
+}
+
+// Strips the "  (...)\n" wrapping fetch_record() puts around its message.
+std::string unwrap_message(std::string msg) {
+  size_t b = msg.find_first_not_of(' ');
+  size_t e = msg.find_last_not_of(" \n");
+  if (b == std::string::npos || e == std::string::npos)
+    return "";
+  msg = msg.substr(b, e - b + 1);
+  if (msg.size() >= 2 && msg.front() == '(' && msg.back() == ')')
+    msg = msg.substr(1, msg.size() - 2);
+  return msg;
+}
+
+} // namespace
+
+void render_hnsw_graph(PageReader &reader, const HnswIndexMetadata &index_meta,
+                       uint16_t level0_column_size, uint32_t max_nodes,
+                       bool verbose, GraphStyle style, std::ostream &out) {
+  uint32_t M = 0;
+  std::ostringstream msg;
+  if (graph_preflight(index_meta, level0_column_size, M, msg) !=
+      Preflight::Ok) {
+    out << msg.str();
     return;
   }
-  uint32_t M = max_n0 / 2;
 
   uint8_t level = index_meta.entry_level;
   uint64_t entry_ref = index_meta.entry_points[0] & HNSW_NID_REF_MASK;
@@ -283,6 +333,91 @@ void render_hnsw_graph(PageReader &reader, const HnswIndexMetadata &index_meta,
     entry_ref = lower_ref;
     --level;
   }
+}
+
+bool render_hnsw_graph_dot(PageReader &reader,
+                           const HnswIndexMetadata &index_meta,
+                           const HnswRootInfo &root, uint32_t max_nodes,
+                           int level_filter, bool find_unreachable,
+                           std::ostream &out, std::ostream &err) {
+  uint32_t M = 0;
+  std::ostringstream msg;
+  Preflight pre = graph_preflight(index_meta, root.column_size, M, msg);
+  if (pre == Preflight::Error) {
+    err << msg.str();
+    return false;
+  }
+  if (pre == Preflight::Empty) {
+    out << "digraph hnsw {\n  label=\"Graph is empty (no entry point "
+           "set)\";\n}\n";
+    return true;
+  }
+
+  HnswRecordFetcher fetch = [&](uint64_t nid_ref, uint8_t level,
+                                HnswNodeRecord &node, std::string &error) {
+    DataPageParser::RecordStatus rec;
+    std::ostringstream fetch_msg;
+    if (!fetch_record(reader, nid_ref, level, M, "", "", fetch_msg, rec)) {
+      error = unwrap_message(fetch_msg.str());
+      return false;
+    }
+    node.owner_vid = rec.owner_vid;
+    node.is_deleted = rec.is_deleted;
+    node.lower_level_nid = rec.lower_level_nid;
+    node.neighbours = outgoing_neighbours(rec);
+    return true;
+  };
+
+  HnswGraphModel model =
+      collect_hnsw_graph(index_meta.entry_points[0] & HNSW_NID_REF_MASK,
+                         index_meta.entry_level, M, max_nodes, fetch);
+
+  if (find_unreachable) {
+    // Enumerate every live level-0 record independently of the entry-point
+    // walk, by following the store's own all-pages list from its root page.
+    std::vector<std::pair<uint64_t, HnswNodeRecord>> live;
+    std::unordered_set<uint32_t> seen_pages;
+    std::string scan_error;
+    uint32_t page_num = root.all_slot_head;
+    while (page_num != RootPage::NULL_FREE_PAGE_REF &&
+           seen_pages.insert(page_num).second) {
+      auto page_data = reader.read_page(page_num);
+      DataPageParser::DataPageInfo info;
+      std::string error;
+      if (!page_data) {
+        scan_error = "error reading page " + std::to_string(page_num) + ": " +
+                     reader.get_error();
+        break;
+      }
+      if (!DataPageParser::parse(*page_data, root.column_size, info, error,
+                                 HnswRecordKind::Neighbour,
+                                 /*has_lower_level=*/false)) {
+        scan_error =
+            "error decoding page " + std::to_string(page_num) + ": " + error;
+        break;
+      }
+      for (size_t slot = 0; slot < info.records.size(); ++slot) {
+        const auto &rec = info.records[slot];
+        if (rec.is_free)
+          continue;
+        HnswNodeRecord node;
+        node.owner_vid = rec.owner_vid;
+        node.is_deleted = rec.is_deleted;
+        node.neighbours = outgoing_neighbours(rec);
+        live.emplace_back(
+            hnsw_encode_ref(page_num, static_cast<uint16_t>(slot)),
+            std::move(node));
+      }
+      page_num = info.fil_page_next;
+    }
+    if (!scan_error.empty())
+      model.notes.push_back("Unreachable-node analysis skipped: " + scan_error);
+    else
+      add_unreachable_level0(model, live);
+  }
+
+  write_hnsw_dot(model, level_filter, out);
+  return true;
 }
 
 } // namespace tool
