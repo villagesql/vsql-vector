@@ -57,6 +57,12 @@ svector_page_dump <ibd_file> <root_page_num> [options]
 - `--graph-style tree|list`: How `-g`/`--graph` renders each level -- `tree`
   (default) draws nested tree art; `list` prints one flat adjacency line per
   node instead (see "Show the HNSW Graph" below)
+- `--graph-format text|dot`: `text` (default) is the ASCII output above; `dot`
+  writes the graph to stdout as a Graphviz digraph and nothing else (see
+  "Draw the HNSW Graph with Graphviz" below)
+- `--graph-level N`: With `--graph-format dot`, draw only level N
+- `--graph-unreachable`: With `--graph-format dot`, also draw level-0 records
+  that exist but cannot be reached from the entry point
 - `-h, --help`: Show help message
 
 ## Examples
@@ -195,6 +201,99 @@ Every node reachable from the level's entry point is listed exactly once
 no `...`/`(seen above)` marker since a node is never re-expanded once
 listed.
 
+### 8. Draw the HNSW Graph with Graphviz
+
+```bash
+./svector_page_dump table.ibd 4 -i -g --graph-format dot --max-nodes 200 > g.dot
+dot -Tsvg g.dot -o g.svg                 # hierarchical layout from the entry node
+sfdp -Tsvg g.dot -o g.svg                # better for large, dense levels
+./svector_page_dump table.ibd 4 -i -g --graph-format dot --graph-level 0 \
+    --graph-unreachable --max-nodes 500 | dot -Tsvg -o level0.svg
+```
+
+Uses the same walk as `--graph-style list`: every level is walked from the
+entry point via lower-level links, sharing one `--max-nodes` budget. The
+output is one DOT digraph with one cluster per level; edges never cross
+levels.
+
+- **Nodes** are circles labelled `NID` over `(VID)`, both `page:slot` as in the
+  ASCII output (`12:5` is the NID, the node's record in this level; `(11:5)`
+  is its VID, the vertex's identity across levels). A double ring marks each
+  level's entry node.
+- **Edges** are the node's stored outgoing neighbour slots, one arrow each.
+  A bold blue double-headed arrow is a reciprocal pair (drawn once); an
+  orange single arrow is one-way, i.e. the target does not list the source.
+  A dashed grey arrow points at a node whose adjacency was not read
+  (truncated or unresolved), so reciprocity is unknown rather than assumed.
+- **Node states**: dashed grey = truncated by `--max-nodes`; dashed red =
+  unresolved (referenced but not a live record, reason in the tooltip); light
+  red fill + `deleted` = delete-marked but still allocated and linked; orange
+  fill + `unreachable` = see below.
+- A truncated diagram says `PARTIAL GRAPH` in its header and marks the cut
+  nodes; it never looks complete.
+
+#### Unreachable vs. deleted nodes
+
+The entry-point walk only sees what is reachable, so by itself it cannot say
+whether a node that disappeared was deleted or just lost its inbound edges.
+`--graph-unreachable` answers that for **level 0** by enumerating every live
+record in the level-0 store through its all-pages list (independent of the
+walk) and drawing those the walk did not reach, with their outgoing edges.
+Compare dumps taken before and after a delete:
+
+- node gone from the store -> it is not listed at all (deleted);
+- node still allocated but orange `unreachable` -> still stored, but nothing
+  reachable links to it (a connectivity break);
+- node still linked but marked `deleted` -> delete-marked, not yet purged;
+- a neighbour that is not a live record -> dashed red `unresolved` (dangling).
+
+Limits: the check covers level 0 only (other levels' root pages are not known
+from the level-0 root); it is skipped, with a note in the diagram, if the walk
+was truncated, because unvisited nodes then cannot be told from unreachable
+ones; and unreachable nodes drawn are capped at `--max-nodes` (the header
+gives the true count). Incoming-flagged neighbour slots and overflow chains
+are other nodes' edges into this one, not outgoing edges, so they are not
+drawn.
+
+### 9. Live browser view
+
+```bash
+cd <build dir>   # the build symlinks graph_view (this script) next to the tool
+./graph_view   # or: --tool /path/to/svector_page_dump
+# then open http://127.0.0.1:8765/
+```
+
+Start it with no options. The page has a **Browse** button that opens a file
+browser over the machine's disk (sub-directories and `.ibd` files only; it
+opens in `$SVECTOR_DATA_DIR` or your home directory, or set `--start-dir`),
+plus a root page box. The chosen file and each file's root page are remembered
+in the browser.
+
+The page keeps the last N distinct results (default 50, set with "keep")
+in the browser's local storage, so they survive a reload. The History
+drop-down lists each with its time, file:root, node count and change summary
+versus the previous result (`+added −gone ~changed`); pick one to view that
+snapshot (outlined in amber, with its own change list) and "Back to latest" to
+return. The `‹` `›` buttons beside the list (or the Left/Right arrow keys when
+no field is focused) step to the older/newer result; `3 / 10` shows the
+position. Auto-refresh keeps recording but never pulls the view off a
+snapshot, and a refresh that finds an identical graph only updates the
+time. "Clear" forgets them all.
+
+A small Python (stdlib only) server that re-runs the tool with
+`--graph-format dot` on every **Refresh** and redraws the graph in the browser
+(rendered by a local Graphviz `dot`, which must be on `PATH` or given with
+`--dot`; no internet is needed). Controls: level filter, max nodes, show-unreachable, auto-refresh
+every 5 s, zoom. After each refresh the page lists nodes that disappeared,
+appeared or changed state (e.g. `L0 12:4: ok -> unreachable`), which is the
+quickest way to see what a `DELETE` did. Only validated numbers, the
+unreachable flag and the path of an existing `.ibd` file reach the
+tool's command line, and requests with a foreign `Host` header are refused; the server listens on
+127.0.0.1 only. Tool errors are shown in the page.
+
+Run `FLUSH TABLES`/checkpoint first if the `.ibd` on disk lags behind the
+server's buffer pool.
+
 ## Finding Root Page Number
 
 The root page number is stored in the table's metadata. You can find it by:
@@ -230,6 +329,9 @@ The tool consists of:
   mode, independent of the HNSW index sources
 - `hnsw_graph.{h,cc}`: Walks and renders the HNSW graph as ASCII tree art for
   `-g`/`--graph`, following NID links level by level via `hnsw_layout.h`
+- `hnsw_dot.{h,cc}`: SDK-free graph model, breadth-first collector and
+  Graphviz DOT writer for `--graph-format dot` (unit-tested by
+  `unittest/hnsw_dot_test.cc`); `hnsw_graph.cc` feeds it real records
 - `svector_page_dump.cc`: Main driver program
 
 All components use the format definitions from `../root_page.h` and `../data_page.h` to stay in sync with the server implementation. `hnsw_layout.{h,cc}` must be kept in sync by hand with `../../index/hnsw/storage.h`/`hnsw.h` the same way, since it does not link against them.

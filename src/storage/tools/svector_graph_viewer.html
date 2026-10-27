@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVECTOR HNSW Graph</title>
+<style>
+  :root {
+    --bg: #eef1f6; --bar: #ffffff; --fg: #1b2330; --muted: #5b6676;
+    --line: #d5dbe5; --accent: #1f5fbf; --warn-bg: #fff1d6; --warn-fg: #7a4b00;
+    --err: #b00020; --chip: #e3e9f3;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11151c; --bar: #1a2029; --fg: #e6e9ef; --muted: #98a2b3;
+            --line: #2c3544; --accent: #6b9cf0; --warn-bg: #3a2c0d;
+            --warn-fg: #f3c56b; --err: #ff7b8f; --chip: #252d3a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column;
+         background: var(--bg); color: var(--fg);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { background: var(--bar); border-bottom: 1px solid var(--line);
+           padding: 10px 16px; display: flex; flex-wrap: wrap;
+           gap: 10px 20px; align-items: center; }
+  h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+  .grp { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  input[type=number] { width: 5.2em; padding: 3px 6px; border: 1px solid var(--line);
+         border-radius: 5px; background: var(--bg); color: var(--fg); font: inherit; }
+  button { font: inherit; border-radius: 6px; padding: 6px 16px; cursor: pointer; }
+  #refresh { background: var(--accent); color: #fff; border: 0; font-weight: 600; }
+  #refresh:disabled { opacity: .6; cursor: progress; }
+  input[type=text] { padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px;
+           background: var(--bg); color: var(--fg); font: inherit; max-width: 100%; }
+  select { max-width: 30em; padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px;
+           background: var(--bg); color: var(--fg); font: inherit; }
+  #live, #clearhist { background: transparent; color: var(--fg); border: 1px solid var(--line); padding: 4px 10px; }
+  #live { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  #live[hidden] { display: none; }
+  #older, #newer { background: transparent; color: var(--fg); border: 1px solid var(--line);
+                   padding: 2px 12px; font-size: 18px; line-height: 1.2; }
+  #older:disabled, #newer:disabled { opacity: .35; cursor: default; }
+  #pos { color: var(--muted); font-size: 13px; min-width: 3.5em; }
+  #keep { width: 3.6em; }
+  .snap #view { box-shadow: 0 0 0 3px var(--warn-fg); }
+  #browse { background: transparent; color: var(--fg); border: 1px solid var(--line); padding: 4px 12px; }
+  #picker { margin: 10px 16px 0; background: var(--bar); border: 1px solid var(--line);
+            border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.12); }
+  #picker[hidden] { display: none; }
+  #picker .top { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--line); }
+  #picker .top input { flex: 1; min-width: 0; font-family: ui-monospace, monospace; font-size: 13px; }
+  #picker .top button { padding: 4px 12px; background: transparent; color: var(--fg);
+            border: 1px solid var(--line); }
+  #list { max-height: 260px; overflow-y: auto; margin: 0; padding: 4px; list-style: none; }
+  #list li { display: flex; justify-content: space-between; gap: 12px; padding: 5px 10px;
+             border-radius: 5px; cursor: pointer; }
+  #list li:hover, #list li:focus-visible { background: var(--chip); }
+  #list li.file { font-weight: 600; color: var(--accent); }
+  #list li small { color: var(--muted); font-weight: 400; }
+  #list .empty { color: var(--muted); cursor: default; }
+  #pickerr { padding: 4px 12px 8px; color: var(--err); font-size: 13px; }
+  #pickerr:empty { display: none; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #status { margin-left: auto; color: var(--muted); font-size: 13px; }
+  #status.err { color: var(--err); }
+
+  #chips { display: flex; flex-wrap: wrap; gap: 6px 8px; padding: 10px 16px 0; }
+  #chips:empty { display: none; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 3px 11px; font-size: 12.5px; }
+  .chip.warn { background: var(--warn-bg); color: var(--warn-fg); font-weight: 600; }
+
+  #diff { margin: 10px 16px 0; padding: 8px 12px; border-left: 3px solid var(--accent);
+          background: var(--bar); border-radius: 0 6px 6px 0; font-size: 13px;
+          white-space: pre-wrap; color: var(--muted); }
+  #diff:empty { display: none; }
+  #err { margin: 10px 16px 0; padding: 10px 12px; border-left: 3px solid var(--err);
+         background: var(--bar); color: var(--err); white-space: pre-wrap;
+         font: 12.5px ui-monospace, monospace; }
+  #err:empty { display: none; }
+
+  main { flex: 1; min-height: 0; padding: 12px 16px 0; display: flex; }
+  #view { flex: 1; overflow: auto; background: #fff; color: #000;
+          border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+          box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  #view svg { display: block; margin: 0 auto; }
+
+  footer { padding: 10px 16px 12px; display: flex; flex-wrap: wrap; gap: 6px 22px;
+           color: var(--muted); font-size: 12.5px; }
+  footer span { display: inline-flex; align-items: center; gap: 7px; }
+  .sw { display: inline-block; width: 24px; border-top: 2px solid; }
+  .sw.rec { border-color: #1f5fbf; border-top-width: 4px; }
+  .sw.one { border-color: #d95f02; }
+  .sw.unk { border-color: #777; border-top-style: dashed; }
+  .dot { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid #3b4658; }
+  .dot.ring { box-shadow: 0 0 0 2px var(--bar), 0 0 0 3.5px #3b4658; margin: 0 3px; }
+  .dot.unr { background: #ffd8a8; border-color: #c88a3a; }
+  .dot.del { background: #f2b8b5; border-color: #b0605a; }
+  .dot.unres { border-style: dashed; border-color: #c00000; background: #fff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SVECTOR HNSW Graph</h1>
+  <div class="grp">
+    <label>File <input type="text" id="ibd" size="44" spellcheck="false"
+      placeholder="/path/to/table.ibd"></label>
+    <button id="browse">Browse&hellip;</button>
+    <label>Root page <input type="number" id="root" min="1" placeholder="e.g. 6"></label>
+  </div>
+  <div class="grp">
+    <button id="refresh">Refresh</button>
+    <label><input type="checkbox" id="auto"> auto-refresh (5 s)</label>
+  </div>
+  <div class="grp">
+    <button id="older" title="Older result (Left arrow key)" aria-label="Older result">&lsaquo;</button>
+    <label>History <select id="hist" aria-label="Previous results"></select></label>
+    <button id="newer" title="Newer result (Right arrow key)" aria-label="Newer result">&rsaquo;</button>
+    <span id="pos" aria-live="polite"></span>
+    <button id="live" hidden>Back to latest</button>
+    <label>keep <input type="number" id="keep" min="1" max="50" value="50"></label>
+    <button id="clearhist" title="Forget all saved results">Clear</button>
+  </div>
+  <div class="grp">
+    <label>Level <input type="number" id="level" min="0" placeholder="all"></label>
+    <label>Max nodes <input type="number" id="maxn" min="1"></label>
+    <label><input type="checkbox" id="unr" checked> Unreachable (level 0)</label>
+    <label>Zoom <input type="range" id="zoom" min="30" max="300" value="100"></label>
+  </div>
+  <span id="status"></span>
+</header>
+<div id="picker" hidden>
+  <div class="top">
+    <button id="up" title="Parent directory">&uarr; Up</button>
+    <input type="text" id="dir" spellcheck="false" aria-label="Directory">
+    <button id="go">Go</button>
+    <button id="closepick">Close</button>
+  </div>
+  <ul id="list"></ul>
+  <div id="pickerr"></div>
+</div>
+<div id="chips"></div>
+<div id="diff"></div>
+<div id="err"></div>
+<main><div id="view"></div></main>
+<footer>
+  <span><i class="sw rec"></i>reciprocal (both list each other)</span>
+  <span><i class="sw one"></i>one-way (target does not link back)</span>
+  <span><i class="sw unk"></i>reciprocity unknown</span>
+  <span><i class="dot ring"></i>level entry node</span>
+  <span><i class="dot unr"></i>unreachable from entry</span>
+  <span><i class="dot del"></i>delete-marked</span>
+  <span><i class="dot unres"></i>unresolved</span>
+  <span>node label: NID page:slot, (VID page:slot)</span>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const DEFAULTS = __DEFAULTS__;
+$("maxn").value = DEFAULTS.maxNodes;
+
+// Remembered per browser: last file, and the root page used with each file.
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+};
+
+function restoreRoot() {
+  const f = $("ibd").value.trim();
+  $("root").value = store.get("root:" + f) || "";
+}
+
+// --- file browser: lists directories and .ibd files from the server's disk
+let parentDir = "/";
+async function browse(path) {
+  $("pickerr").textContent = "";
+  try {
+    const r = await fetch("browse?" + new URLSearchParams({ path }));
+    if (!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    parentDir = d.parent;
+    $("dir").value = d.path;
+    store.set("dir", d.path);
+    const items = [];
+    const li = (cls, name, extra, fn) => {
+      const e = document.createElement("li");
+      e.className = cls; e.tabIndex = 0;
+      e.append(name);
+      if (extra) { const sm = document.createElement("small"); sm.textContent = extra; e.append(sm); }
+      e.onclick = fn;
+      e.onkeydown = ev => { if (ev.key === "Enter") fn(); };
+      return e;
+    };
+    const join = n => d.path.replace(/\/$/, "") + "/" + n;
+    for (const n of d.dirs) items.push(li("dir", "\u{1F4C1} " + n, "", () => browse(join(n))));
+    for (const f of d.files)
+      items.push(li("file", f.name, (f.size / 1048576).toFixed(1) + " MB", () => choose(join(f.name))));
+    if (!items.length) {
+      const e = document.createElement("li");
+      e.className = "empty"; e.textContent = "No sub-directories or .ibd files here";
+      items.push(e);
+    }
+    $("list").replaceChildren(...items);
+    if (d.error) $("pickerr").textContent = d.error;
+  } catch (e) {
+    $("pickerr").textContent = String(e.message || e);
+  }
+}
+function choose(path) {
+  $("ibd").value = path;
+  $("picker").hidden = true;
+  restoreRoot();
+
+  if ($("root").value) refresh(); else $("root").focus();
+}
+$("browse").onclick = () => {
+  $("picker").hidden = !$("picker").hidden;
+  if (!$("picker").hidden) {
+    const cur = $("ibd").value.trim();
+    browse(cur ? cur.replace(/\/[^/]*$/, "") || "/" : store.get("dir") || DEFAULTS.startDir);
+  }
+};
+$("up").onclick = () => browse(parentDir);
+$("go").onclick = () => browse($("dir").value);
+$("dir").onkeydown = e => { if (e.key === "Enter") browse($("dir").value); };
+$("closepick").onclick = () => { $("picker").hidden = true; };
+
+let timer = null, busy = false;
+
+// node id -> state ("ok" | "unreachable" | "unresolved" | "truncated"),
+// read from the DOT the tool wrote.
+function parseNodes(dot) {
+  const m = new Map();
+  for (const line of dot.split("\n")) {
+    const r = /^\s*"(L\d+_\d+_\d+)" \[label="([^"]*)"/.exec(line);
+    if (!r) continue;
+    const st = /\\n(unreachable|unresolved|truncated)$/.exec(r[2]);
+    m.set(r[1], st ? st[1] : "ok");
+  }
+  return m;
+}
+const pretty = id => id.replace(/^L(\d+)_(\d+)_(\d+)$/, "L$1 $2:$3");
+
+function diffText(a, b) {
+  const out = [];
+  const gone = [...a.keys()].filter(k => !b.has(k));
+  const added = [...b.keys()].filter(k => !a.has(k));
+  const changed = [...b.keys()].filter(k => a.has(k) && a.get(k) !== b.get(k));
+  if (gone.length) out.push("Gone from the graph: " + gone.map(pretty).join(", "));
+  if (added.length) out.push("New: " + added.map(pretty).join(", "));
+  for (const k of changed) out.push(pretty(k) + ": " + a.get(k) + " → " + b.get(k));
+  return out.length ? "Since last refresh\n" + out.join("\n") : "Since last refresh: no change";
+}
+
+// The tool's graph-label lines, minus the legend text the footer replaces.
+function showInfo(info) {
+  const box = $("chips");
+  box.replaceChildren();
+  for (const line of info) {
+    if (/^(Node label|Edge):/.test(line)) continue;
+    const c = document.createElement("span");
+    c.className = "chip" + (/PARTIAL|skipped|not walked|no lower-level/.test(line) ? " warn" : "");
+    c.textContent = line.replace(/^HNSW graph: /, "");
+    box.append(c);
+  }
+}
+
+// --- history: the last N distinct results, kept in the browser ----------
+let history = [];      // oldest first
+let viewing = null;    // a history entry shown instead of the latest, or null
+
+function loadHistory() {
+  try { history = JSON.parse(store.get("history") || "[]"); } catch (e) { history = []; }
+  const k = parseInt(store.get("keep") || "50", 10);
+  $("keep").value = k >= 1 && k <= 50 ? k : 50;
+}
+function trimHistory() {
+  const n = Math.max(1, Math.min(50, parseInt($("keep").value, 10) || 50));
+  history = history.slice(-n);
+  store.set("keep", String(n));
+}
+function saveHistory() {
+  // Storage is limited (a few MB); drop the oldest results until it fits.
+  for (let h = history.slice(); h.length; h.shift()) {
+    try { localStorage.setItem("history", JSON.stringify(h)); return; } catch (e) {}
+  }
+}
+const baseName = f => f.replace(/^.*\//, "");
+
+// The entry's change summary versus the previous result with the same settings.
+function previousOf(e) {
+  const i = history.indexOf(e);
+  for (let k = i - 1; k >= 0; k--) if (history[k].key === e.key) return history[k];
+  return null;
+}
+function changeCounts(e) {
+  const p = previousOf(e);
+  if (!p) return "first";
+  const a = parseNodes(p.dot), b = parseNodes(e.dot);
+  const gone = [...a.keys()].filter(k => !b.has(k)).length;
+  const add = [...b.keys()].filter(k => !a.has(k)).length;
+  const chg = [...b.keys()].filter(k => a.has(k) && a.get(k) !== b.get(k)).length;
+  return gone + add + chg === 0 ? "no change" : `+${add} \u2212${gone} ~${chg}`;
+}
+function fillHistory() {
+  const sel = $("hist");
+  sel.replaceChildren(...history.map((e, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = `${new Date(e.t).toLocaleTimeString()}  ${baseName(e.ibd)}:${e.root}  ` +
+      `${parseNodes(e.dot).size} nodes  ${changeCounts(e)}`;
+    return o;
+  }).reverse());
+  const cur = viewing || history[history.length - 1];
+  const i = history.indexOf(cur);
+  if (i >= 0) sel.value = String(i);
+  $("live").hidden = viewing === null;
+  $("older").disabled = i <= 0;
+  $("newer").disabled = i < 0 || i >= history.length - 1;
+  $("pos").textContent = history.length ? `${i + 1} / ${history.length}` : "";
+  document.body.classList.toggle("snap", viewing !== null);
+}
+
+// Draws entry e and its change list against the previous comparable result.
+async function show(e) {
+  const svg = new DOMParser().parseFromString(e.svg, "image/svg+xml").documentElement;
+  const view = $("view"), sx = view.scrollLeft, sy = view.scrollTop;
+  svg.dataset.w = parseFloat(svg.getAttribute("width"));
+  svg.dataset.h = parseFloat(svg.getAttribute("height"));
+  view.replaceChildren(svg);
+  applyZoom();
+  view.scrollLeft = sx; view.scrollTop = sy;
+  const p = previousOf(e);
+  $("diff").textContent = p ? diffText(parseNodes(p.dot), parseNodes(e.dot)) : "";
+  showInfo(e.info);
+}
+
+async function goTo(i) {
+  const e = history[i];
+  if (!e) return;
+  viewing = e === history[history.length - 1] ? null : e;
+  try { await show(e); } catch (err) { $("err").textContent = String(err); }
+  $("status").className = "";
+  $("status").textContent = viewing ? "snapshot from " + new Date(e.t).toLocaleString() : "latest";
+  fillHistory();
+}
+$("hist").onchange = () => goTo(parseInt($("hist").value, 10));
+// Left = older, right = newer; ignored while typing in a field.
+const step = d => goTo(history.indexOf(viewing || history[history.length - 1]) + d);
+$("older").onclick = () => step(-1);
+$("newer").onclick = () => step(1);
+document.addEventListener("keydown", ev => {
+  if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+  const t = ev.target.tagName;
+  if (t === "INPUT" || t === "SELECT" || t === "TEXTAREA") return;
+  if (ev.key === "ArrowLeft") { step(-1); ev.preventDefault(); }
+  else if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
+});
+$("live").onclick = () => { viewing = null; refresh(true); };
+$("clearhist").onclick = () => { history = []; viewing = null; saveHistory(); store.set("history", "[]"); fillHistory(); };
+$("keep").onchange = () => { trimHistory(); saveHistory(); fillHistory(); };
+
+async function refresh(manual = true) {
+  if (busy) return;
+  busy = true;
+  $("refresh").disabled = true;
+  const st = $("status");
+  st.className = ""; st.textContent = "loading…";
+  if (!$("ibd").value.trim() || !$("root").value) {
+    st.className = "err";
+    st.textContent = "choose a file and enter its root page";
+    busy = false; $("refresh").disabled = false;
+    return;
+  }
+  store.set("ibd", $("ibd").value.trim());
+  store.set("root:" + $("ibd").value.trim(), $("root").value);
+  const p = new URLSearchParams({
+    ibd: $("ibd").value.trim(), root: $("root").value, max_nodes: $("maxn").value, level: $("level").value,
+    unreachable: $("unr").checked ? "1" : "0" });
+  try {
+    const resp = await fetch("graph.dot?" + p);
+    const body = await resp.text();
+    if (!resp.ok) throw new Error(body);
+    const j = JSON.parse(body);
+    const e = {
+      t: Date.now(), ibd: $("ibd").value.trim(), root: $("root").value,
+      key: p.toString(), dot: j.dot, info: j.info, svg: j.svg || null,
+    };
+    // Same graph as the newest result with these settings: only note the time.
+    const last = history.findLast(h => h.key === e.key);
+    const same = last && last.dot === e.dot;
+    if (same) { last.t = e.t; } else { history.push(e); }
+    trimHistory();
+    saveHistory();
+    // A background auto-refresh must not pull the view away from a snapshot.
+    if (viewing === null || manual) { viewing = null; await show(same ? last : e); }
+    fillHistory();
+    $("err").textContent = "";
+    st.textContent = "updated " + new Date().toLocaleTimeString() + (same ? " (no change)" : "");
+  } catch (e) {
+    $("err").textContent = String(e.message || e);
+    st.className = "err"; st.textContent = "failed";
+  }
+  busy = false;
+  $("refresh").disabled = false;
+}
+
+function applyZoom() {
+  const svg = $("view").querySelector("svg");
+  if (!svg) return;
+  const z = $("zoom").value / 100;
+  svg.setAttribute("width", svg.dataset.w * z + "pt");
+  svg.setAttribute("height", svg.dataset.h * z + "pt");
+}
+
+$("refresh").onclick = () => refresh(true);
+$("zoom").oninput = applyZoom;
+$("ibd").onchange = () => { restoreRoot(); if ($("root").value) refresh(); };
+$("root").onchange = () => { refresh(); };
+for (const id of ["level", "maxn", "unr"]) $(id).onchange = () => { refresh(); };
+$("auto").onchange = () => {
+  clearInterval(timer);
+  if ($("auto").checked) timer = setInterval(() => refresh(false), 5000);
+};
+loadHistory();
+fillHistory();
+$("ibd").value = store.get("ibd") || "";
+restoreRoot();
+if ($("ibd").value && $("root").value) refresh();
+else { $("status").textContent = "Browse for an .ibd file and enter its root page"; }
+</script>
+</body>
+</html>
