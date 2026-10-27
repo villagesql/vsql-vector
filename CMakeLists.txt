@@ -88,6 +88,7 @@ add_executable(svector_page_dump
     src/storage/tools/hnsw_layout.cc
     src/storage/tools/hnsw_graph.cc
     src/storage/tools/hnsw_dot.cc
+    src/storage/tools/storage_json.cc
 )
 
 target_include_directories(svector_page_dump PRIVATE
@@ -137,6 +138,23 @@ add_executable(hnsw_dot_test
 target_compile_options(hnsw_dot_test PRIVATE -UNDEBUG)
 
 add_test(NAME hnsw_dot_test COMMAND hnsw_dot_test)
+
+# JSON page export (graph viewer's storage view), driven by hand-built parsed
+# page structs. Only the parser headers are needed, but they pull in the
+# column page layouts, so the SDK include dir is added like for the tool.
+add_executable(storage_json_test
+    unittest/storage_json_test.cc
+    src/storage/tools/storage_json.cc
+    src/storage/tools/hnsw_layout.cc
+)
+
+target_include_directories(storage_json_test PRIVATE
+    ${VillageSQLExtensionFramework_INCLUDE_DIR}
+)
+
+target_compile_options(storage_json_test PRIVATE -UNDEBUG)
+
+add_test(NAME storage_json_test COMMAND storage_json_test)
 
 # Storage-layer test. Unlike the header-only graph/layer tests, it drives the
 # real column-storage sources against an in-memory fake storage backend, so it
