@@ -63,6 +63,9 @@ svector_page_dump <ibd_file> <root_page_num> [options]
 - `--graph-level N`: With `--graph-format dot`, draw only level N
 - `--graph-unreachable`: With `--graph-format dot`, also draw level-0 records
   that exist but cannot be reached from the entry point
+- `--page-json N`: Write page N (the root page itself, or a data page of the
+  store) as one JSON object on stdout and nothing else. Use with `-i` for HNSW
+  stores. This feeds the live viewer's Storage view (see section 9)
 - `-h, --help`: Show help message
 
 ## Examples
@@ -291,6 +294,33 @@ unreachable flag and the path of an existing `.ibd` file reach the
 tool's command line, and requests with a foreign `Host` header are refused; the server listens on
 127.0.0.1 only. Tool errors are shown in the page.
 
+#### Storage view
+
+The **Storage** button next to the title switches from the graph to the
+storage pages of the same file and root page (the tool's `--page-json`). It
+shows one page at a time: the root page first, then any data page.
+
+- Each record slot is a small square: green `A` = allocated, red `D` =
+  delete-marked, dashed `F` = free. The tiny number is the slot, and the
+  line under the mark is the record's VID (`page:slot`); a plain SVECTOR
+  column has no VID, so its squares show only the slot. Click a square for
+  its details: transaction id, lower-level NID, outgoing neighbours (click
+  one to jump to its page and slot) and the overflow NID.
+- **Root page** view: column size, page counts, the all-pages list head and
+  tail, the pages that still have free slots, and the store's other root
+  pages, each named by its store (e.g. `HNSW-L1`, `HNSW-L0-OV`); click one to
+  open it as the new root. The other roots do not point back, so the viewer
+  remembers (per file, in the browser) where you opened them from and shows
+  "Primary root page" on them. Every root page shows both "Primary root
+  page" and "Level root page" (the level's primary store: an overflow root's
+  points to its same-level store); where one is the page itself it is a
+  disabled button.
+- **Data page** view: links to the root page, the previous/next page in the
+  all-pages list and in the free-page list, and the slot counts.
+- **Back** returns to the page you came from, **Root** goes to the root page,
+  `Go` jumps to any page number, and the Left/Right arrow keys step to the
+  previous/next page. Refresh and auto-refresh reload the page on screen.
+
 Run `FLUSH TABLES`/checkpoint first if the `.ibd` on disk lags behind the
 server's buffer pool.
 
@@ -332,6 +362,8 @@ The tool consists of:
 - `hnsw_dot.{h,cc}`: SDK-free graph model, breadth-first collector and
   Graphviz DOT writer for `--graph-format dot` (unit-tested by
   `unittest/hnsw_dot_test.cc`); `hnsw_graph.cc` feeds it real records
+- `storage_json.{h,cc}`: JSON writer for `--page-json` (unit-tested by
+  `unittest/storage_json_test.cc`)
 - `svector_page_dump.cc`: Main driver program
 
 All components use the format definitions from `../root_page.h` and `../data_page.h` to stay in sync with the server implementation. `hnsw_layout.{h,cc}` must be kept in sync by hand with `../../index/hnsw/storage.h`/`hnsw.h` the same way, since it does not link against them.
