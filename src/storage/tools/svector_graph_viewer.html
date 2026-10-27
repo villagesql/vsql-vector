@@ -9,12 +9,14 @@
     --bg: #eef1f6; --bar: #ffffff; --fg: #1b2330; --muted: #5b6676;
     --line: #d5dbe5; --accent: #1f5fbf; --warn-bg: #fff1d6; --warn-fg: #7a4b00;
     --err: #b00020; --chip: #e3e9f3;
+    --a-bg: #d7efd7; --a-bd: #4c9a4c; --d-bg: #f6c9c6; --d-bd: #b0605a;
     color-scheme: light dark;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #11151c; --bar: #1a2029; --fg: #e6e9ef; --muted: #98a2b3;
             --line: #2c3544; --accent: #6b9cf0; --warn-bg: #3a2c0d;
-            --warn-fg: #f3c56b; --err: #ff7b8f; --chip: #252d3a; }
+            --warn-fg: #f3c56b; --err: #ff7b8f; --chip: #252d3a;
+            --a-bg: #1f3a24; --a-bd: #5fb76a; --d-bg: #4a2523; --d-bd: #d27a74; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; height: 100vh; display: flex; flex-direction: column;
@@ -97,11 +99,53 @@
   .dot.unr { background: #ffd8a8; border-color: #c88a3a; }
   .dot.del { background: #f2b8b5; border-color: #b0605a; }
   .dot.unres { border-style: dashed; border-color: #c00000; background: #fff; }
+
+  .mode-store .graphonly, body:not(.mode-store) .storeonly { display: none !important; }
+  .seg button { background: transparent; color: var(--fg); border: 1px solid var(--line);
+                padding: 4px 14px; border-radius: 0; }
+  .seg button:first-child { border-radius: 6px 0 0 6px; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+  .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+  #store { flex: 1; overflow: auto; background: var(--bar); border: 1px solid var(--line);
+           border-radius: 8px; padding: 12px 16px; }
+  .nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .nav button, .lnk { background: transparent; color: var(--accent); border: 1px solid var(--line);
+                      padding: 3px 10px; border-radius: 6px; font: inherit; cursor: pointer; }
+  .nav button:disabled { color: var(--muted); opacity: .5; cursor: default; }
+  .nav input { width: 6em; }
+  #store h2 { font-size: 15px; margin: 0 0 8px; }
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 12px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+  .cells { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 12px; }
+  .cell { position: relative; width: 58px; height: 46px; padding: 0; border-radius: 5px;
+          border: 1.5px solid; font: 11px/1.15 ui-monospace, monospace; color: var(--fg);
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          cursor: pointer; }
+  .cell b { font: 700 13px/1 system-ui, sans-serif; }
+  .cell i { position: absolute; top: 1px; left: 3px; font-style: normal; font-size: 8.5px; color: var(--muted); }
+  .cell.A { background: var(--a-bg); border-color: var(--a-bd); }
+  .cell.D { background: var(--d-bg); border-color: var(--d-bd); }
+  .cell.F { background: transparent; border-color: var(--line); border-style: dashed; color: var(--muted); }
+  .cell.sel { outline: 3px solid var(--accent); outline-offset: 1px; }
+  .detail { border-left: 3px solid var(--accent); padding: 6px 12px; background: var(--bg);
+            border-radius: 0 6px 6px 0; }
+  .detail:empty { display: none; }
+  .detail .lnk { padding: 0 6px; font: 12.5px ui-monospace, monospace; }
+  .mono { font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .sq { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid; }
+  .sq.A { background: var(--a-bg); border-color: var(--a-bd); }
+  .sq.D { background: var(--d-bg); border-color: var(--d-bd); }
+  .sq.F { border-color: var(--line); border-style: dashed; }
 </style>
 </head>
 <body>
 <header>
   <h1>SVECTOR HNSW Graph</h1>
+  <div class="grp seg" role="group" aria-label="View">
+    <button id="mgraph" class="on">Graph</button><button id="mstore">Storage</button>
+  </div>
   <div class="grp">
     <label>File <input type="text" id="ibd" size="44" spellcheck="false"
       placeholder="/path/to/table.ibd"></label>
@@ -112,7 +156,7 @@
     <button id="refresh">Refresh</button>
     <label><input type="checkbox" id="auto"> auto-refresh (5 s)</label>
   </div>
-  <div class="grp">
+  <div class="grp graphonly">
     <button id="older" title="Older result (Left arrow key)" aria-label="Older result">&lsaquo;</button>
     <label>History <select id="hist" aria-label="Previous results"></select></label>
     <button id="newer" title="Newer result (Right arrow key)" aria-label="Newer result">&rsaquo;</button>
@@ -121,7 +165,7 @@
     <label>keep <input type="number" id="keep" min="1" max="50" value="50"></label>
     <button id="clearhist" title="Forget all saved results">Clear</button>
   </div>
-  <div class="grp">
+  <div class="grp graphonly">
     <label>Level <input type="number" id="level" min="0" placeholder="all"></label>
     <label>Max nodes <input type="number" id="maxn" min="1"></label>
     <label><input type="checkbox" id="unr" checked> Unreachable (level 0)</label>
@@ -139,11 +183,17 @@
   <ul id="list"></ul>
   <div id="pickerr"></div>
 </div>
-<div id="chips"></div>
-<div id="diff"></div>
+<div id="chips" class="graphonly"></div>
+<div id="diff" class="graphonly"></div>
 <div id="err"></div>
-<main><div id="view"></div></main>
-<footer>
+<main><div id="view" class="graphonly"></div><div id="store" class="storeonly"></div></main>
+<footer class="storeonly">
+  <span><i class="sq A"></i>A allocated</span>
+  <span><i class="sq D"></i>D delete-marked</span>
+  <span><i class="sq F"></i>F free slot</span>
+  <span>square: slot number (top left), mark, VID page:slot</span>
+</footer>
+<footer class="graphonly">
   <span><i class="sw rec"></i>reciprocal (both list each other)</span>
   <span><i class="sw one"></i>one-way (target does not link back)</span>
   <span><i class="sw unk"></i>reciprocity unknown</span>
@@ -353,6 +403,13 @@ document.addEventListener("keydown", ev => {
   if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
   const t = ev.target.tagName;
   if (t === "INPUT" || t === "SELECT" || t === "TEXTAREA") return;
+  if (mode === "storage") {
+    // Left/right = previous/next page in the all-pages list.
+    const to = lastPage && lastPage.kind === "data" &&
+               (ev.key === "ArrowLeft" ? lastPage.prev : ev.key === "ArrowRight" ? lastPage.next : null);
+    if (to !== null && to !== false && to !== undefined) { gotoPage(to); ev.preventDefault(); }
+    return;
+  }
   if (ev.key === "ArrowLeft") { step(-1); ev.preventDefault(); }
   else if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
 });
@@ -374,6 +431,11 @@ async function refresh(manual = true) {
   }
   store.set("ibd", $("ibd").value.trim());
   store.set("root:" + $("ibd").value.trim(), $("root").value);
+  if (mode === "storage") {
+    await loadPage();
+    busy = false; $("refresh").disabled = false;
+    return;
+  }
   const p = new URLSearchParams({
     ibd: $("ibd").value.trim(), root: $("root").value, max_nodes: $("maxn").value, level: $("level").value,
     unreachable: $("unr").checked ? "1" : "0" });
@@ -405,6 +467,201 @@ async function refresh(manual = true) {
   $("refresh").disabled = false;
 }
 
+// --- storage view: one root or data page at a time ------------------------
+let mode = store.get("mode") === "storage" ? "storage" : "graph";
+let curPage = null;    // page shown; null = the root page
+let curSlot = null;    // selected record slot on it
+let pageStack = [];    // pages left by navigating, for Back
+let pageKey = "";      // file:root the navigation state belongs to
+let lastPage = null;   // the page object on screen
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+// A button that goes to a page (null = no such page: shown disabled).
+function pageBtn(label, page, slot = null) {
+  const b = el("button", "lnk", label);
+  if (page === null) b.disabled = true;
+  else b.onclick = () => gotoPage(page, slot);
+  return b;
+}
+function gotoPage(page, slot = null) {
+  if (page === curPage && slot !== null) { curSlot = slot; renderPage(lastPage); return; }
+  pageStack.push({ page: curPage, slot: curSlot });
+  curPage = page; curSlot = slot;
+  refresh(true);
+}
+function fact(dl, name, ...nodes) {
+  dl.append(el("dt", "", name));
+  const dd = el("dd");
+  dd.append(...nodes);
+  dl.append(dd);
+}
+const refPage = r => r === null ? null : parseInt(r.split(":")[0], 10);
+const refSlot = r => parseInt(r.split(":")[1], 10);
+
+function navBar(p) {
+  const nav = el("div", "nav");
+  const back = el("button", "", "\u2190 Back");
+  back.disabled = pageStack.length === 0;
+  back.onclick = () => {
+    const prev = pageStack.pop();
+    curPage = prev.page; curSlot = prev.slot;
+    refresh(true);
+  };
+  const root = el("button", "", "\u2302 Root");
+  root.disabled = curPage === null;
+  root.onclick = () => gotoPage(null);
+  nav.append(back, root);
+  if (p.kind === "data") {
+    nav.append(pageBtn("\u2039 Prev #" + (p.prev ?? "\u2013"), p.prev),
+               pageBtn("Next #" + (p.next ?? "\u2013") + " \u203a", p.next));
+  }
+  const jump = el("input"); jump.type = "number"; jump.min = "1";
+  jump.placeholder = "page #"; jump.setAttribute("aria-label", "Go to page");
+  const go = () => { if (jump.value) gotoPage(parseInt(jump.value, 10)); };
+  jump.onkeydown = ev => { if (ev.key === "Enter") go(); };
+  const gob = el("button", "", "Go"); gob.onclick = go;
+  nav.append(jump, gob);
+  return nav;
+}
+
+function renderRoot(p, box) {
+  const idx = p.index;
+  box.append(el("h2", "", `Root page #${p.page}` + (idx ? ` \u2014 ${idx.name} (${idx.overflow ? "overflow" : "primary"}, level ${idx.level})` : "")));
+  const dl = el("dl", "facts");
+  fact(dl, "Record column", el("span", "", `${p.column_size} bytes`));
+  fact(dl, "Data pages", el("span", "", `${p.total_data_pages} total, ${p.total_free_pages} with free slots`));
+  fact(dl, "All-pages list", el("span", "", "head"), pageBtn("#" + (p.all_head ?? "\u2013"), p.all_head),
+       el("span", "", "tail"), pageBtn("#" + (p.all_tail ?? "\u2013"), p.all_tail));
+  fact(dl, "Pages with free slots",
+       ...(p.free_pages.length ? p.free_pages.map(n => pageBtn("#" + n, n)) : [el("span", "", "none")]));
+  // Other roots do not point back, so remember here, per file, which root they
+  // were opened from (and which stores they belong to) to link back later.
+  const f = $("ibd").value.trim();
+  const key = (k, n) => `${k}:${f}:${n}`;
+  const names = new Map(p.other_roots.map(o => [o.page, o.name]));
+  if (idx) names.set(p.page, idx.name);
+  for (const o of p.other_roots) {
+    store.set(key("parent", o.page), String(p.page));
+    store.set(key("rname", o.page), o.name);
+    const base = o.name.replace(/-OV$/, "");
+    const mate = o.name !== base && [...names].find(([, nm]) => nm === base);
+    if (mate) store.set(key("primary", o.page), String(mate[0]));
+  }
+  store.set(key("rname", p.page), idx ? idx.name : "");
+  const openRoot = n => {
+    const b = el("button", "lnk", `#${n} ${store.get(key("rname", n)) || ""}`.trim());
+    b.title = "Open this root page";
+    b.onclick = () => { $("root").value = String(n); refresh(true); };
+    if (Number(n) === p.page) { b.disabled = true; b.title = "This page"; }
+    return b;
+  };
+  // Both rows on every root page, even when they are this very page: the
+  // primary root owns the other roots; a level's root is its primary store
+  // (an overflow store's is the primary store of the same level).
+  const parent = store.get(key("parent", p.page)) || (p.other_roots.length ? p.page : null);
+  const level = idx && idx.overflow ? store.get(key("primary", p.page)) : p.page;
+  if (parent) fact(dl, "Primary root page", openRoot(parent));
+  if (level) fact(dl, "Level root page", openRoot(level));
+  if (p.other_roots.length)
+    fact(dl, "Other root pages", ...p.other_roots.map(o => openRoot(o.page)));
+  box.append(dl);
+}
+
+function renderData(p, box) {
+  box.append(el("h2", "", `Data page #${p.page}`));
+  const dl = el("dl", "facts");
+  fact(dl, "Root page", pageBtn("#" + p.root, p.root));
+  fact(dl, "All-pages list", el("span", "", "prev"), pageBtn("#" + (p.prev ?? "\u2013"), p.prev),
+       el("span", "", "next"), pageBtn("#" + (p.next ?? "\u2013"), p.next));
+  fact(dl, "Free-page list", el("span", "", "prev"), pageBtn("#" + (p.free_prev ?? "\u2013"), p.free_prev),
+       el("span", "", "next"), pageBtn("#" + (p.free_next ?? "\u2013"), p.free_next),
+       el("span", "", p.free_slot_number === null ? "(not in the free list)" : `(free slot ${p.free_slot_number})`));
+  const active = p.allocated - p.deleted;
+  fact(dl, "Slots", el("span", "", `${p.max} total: ${active} allocated, ${p.deleted} deleted, ${p.free} free`));
+  box.append(dl);
+
+  const cells = el("div", "cells");
+  for (const r of p.records) {
+    const c = el("button", "cell " + r.s);
+    c.append(el("i", "", String(r.i)), el("b", "", r.s), el("span", "", r.vid || (r.s === "F" ? "" : "\u2013")));
+    c.title = `slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s] + (r.vid ? `, VID ${r.vid}` : "");
+    if (r.i === curSlot) c.classList.add("sel");
+    c.onclick = () => { curSlot = r.i; renderPage(p); };
+    cells.append(c);
+  }
+  box.append(cells);
+
+  const r = curSlot === null ? null : p.records[curSlot];
+  const d = el("div", "detail");
+  if (r) {
+    d.append(el("div", "", `Slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s]));
+    if (r.s !== "F") {
+      d.append(el("div", "mono", `trx ${r.trx}` + (r.vid ? `   VID ${r.vid}` : "") + (r.lower ? `   lower-level NID ${r.lower}` : "")));
+      if (r.neighbours) {
+        const row = el("div", "mono", `neighbours (${r.neighbours.length}): `);
+        if (!r.neighbours.length) row.append("none");
+        for (const n of r.neighbours) {
+          const b = el("button", "lnk", n.nid + (n.incoming ? " \u2190" : ""));
+          b.title = `NID ${n.nid}, VID ${n.vid}` + (n.incoming ? " (incoming)" : "");
+          b.onclick = () => gotoPage(refPage(n.nid), refSlot(n.nid));
+          row.append(b, " ");
+        }
+        d.append(row);
+      }
+      if (r.incoming) d.append(el("div", "mono", `incoming (${r.incoming.length}): ` + (r.incoming.join(", ") || "none")));
+      if (r.overflow !== undefined) d.append(el("div", "mono", "overflow NID: " + (r.overflow || "none")));
+      if (p.record_kind === "vector") d.append(el("div", "", "Plain SVECTOR column: records have no VID."));
+    }
+  }
+  box.append(d);
+}
+
+function renderPage(p) {
+  lastPage = p;
+  const box = $("store");
+  box.replaceChildren(navBar(p));
+  if (p.kind === "root") renderRoot(p, box); else renderData(p, box);
+  const sel = box.querySelector(".cell.sel");
+  if (sel) sel.scrollIntoView({ block: "nearest" });
+}
+
+async function loadPage() {
+  const key = $("ibd").value.trim() + ":" + $("root").value;
+  if (key !== pageKey) { pageKey = key; curPage = null; curSlot = null; pageStack = []; }
+  const st = $("status");
+  const q = new URLSearchParams({ ibd: $("ibd").value.trim(), root: $("root").value,
+                                  page: curPage === null ? "0" : String(curPage) });
+  try {
+    const resp = await fetch("page.json?" + q);
+    const body = await resp.text();
+    if (!resp.ok) throw new Error(body);
+    renderPage(JSON.parse(body));
+    $("err").textContent = "";
+    st.className = "";
+    st.textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("err").textContent = String(e.message || e);
+    st.className = "err"; st.textContent = "failed";
+  }
+}
+
+function setMode(m) {
+  mode = m;
+  store.set("mode", m);
+  document.body.classList.toggle("mode-store", m === "storage");
+  $("mgraph").classList.toggle("on", m === "graph");
+  $("mstore").classList.toggle("on", m === "storage");
+  document.title = m === "storage" ? "SVECTOR Storage" : "SVECTOR HNSW Graph";
+  if ($("ibd").value.trim() && $("root").value) refresh(true);
+}
+$("mgraph").onclick = () => setMode("graph");
+$("mstore").onclick = () => setMode("storage");
+
 function applyZoom() {
   const svg = $("view").querySelector("svg");
   if (!svg) return;
@@ -426,8 +683,9 @@ loadHistory();
 fillHistory();
 $("ibd").value = store.get("ibd") || "";
 restoreRoot();
-if ($("ibd").value && $("root").value) refresh();
-else { $("status").textContent = "Browse for an .ibd file and enter its root page"; }
+setMode(mode);
+if (!$("ibd").value || !$("root").value)
+  $("status").textContent = "Browse for an .ibd file and enter its root page";
 </script>
 </body>
 </html>

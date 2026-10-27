@@ -35,18 +35,21 @@
 //   -d, --data-page N   Show specific data page number
 //   -a, --all-pages     Show all data pages (traverse from root)
 //   -i, --index         Treat the root page as an HNSW index root page
+//   --page-json N       Write page N as JSON (used by the graph viewer)
 //   -h, --help          Show this help message
 
 #include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "data_page_parser.h"
 #include "hnsw_graph.h"
 #include "hnsw_layout.h"
 #include "page_reader.h"
 #include "root_page_parser.h"
+#include "storage_json.h"
 
 namespace svector {
 namespace tool {
@@ -93,6 +96,13 @@ class SvectorPageDump {
        return 1;
      }
 
+     if (has_page_json_ && (show_graph_ || graph_dot_ ||
+                            has_specific_data_page_ || show_all_pages_)) {
+       std::cerr << "Error: --page-json cannot be combined with -g/--graph, "
+                    "-d/--data-page or -a/--all-pages\n";
+       return 1;
+     }
+
      if (ibd_file_.empty() || root_page_num_ == 0) {
        std::cerr << "Error: IBD file and root page number are required\n\n";
        print_usage(argv[0]);
@@ -120,9 +130,9 @@ class SvectorPageDump {
        return 1;
      }
 
-     // Display root page. Skipped for DOT output, which must be a clean
-     // graph on stdout.
-     if (!graph_dot_) {
+     // Display root page. Skipped for DOT and JSON output, which must be
+     // clean on stdout.
+     if (!graph_dot_ && !has_page_json_) {
        std::cout << "IBD File: " << ibd_file_ << "\n";
        std::cout << "Root Page Number: " << root_page_num_ << "\n\n";
        RootPageParser::display(root_info, verbose_, is_index_);
@@ -145,6 +155,48 @@ class SvectorPageDump {
        }
        // If decoding failed, RootPageParser::display() already warned; fall
        // through and decode data pages as plain SVECTOR vectors.
+     }
+
+     // One page as JSON for the graph viewer's storage view: the root page
+     // itself, or any other page decoded as a data page of this store.
+     if (has_page_json_) {
+       if (page_json_ == root_page_num_) {
+         // Name each other root by its own StorageMeta so the viewer can
+         // tell the stores (levels, overflow) apart.
+         std::vector<std::string> other_names;
+         for (uint32_t ref : root_info.other_root_page_refs) {
+           std::string name;
+           auto other_data = reader.read_page(ref);
+           RootPageParser::RootPageInfo other_info;
+           HnswIndexMetadata other_meta;
+           std::string other_error;
+           if (other_data &&
+               RootPageParser::parse(*other_data, other_info, other_error) &&
+               parse_hnsw_index_metadata(other_info.storage_metadata_raw,
+                                         other_meta, other_error))
+             name = other_meta.name;
+           other_names.push_back(name);
+         }
+         write_root_page_json(root_page_num_, root_info,
+                              have_index_meta ? &index_meta : nullptr,
+                              other_names, std::cout);
+         return 0;
+       }
+       auto page_data = reader.read_page(page_json_);
+       if (!page_data) {
+         std::cerr << "Error reading page " << page_json_ << ": "
+                   << reader.get_error() << "\n";
+         return 1;
+       }
+       DataPageParser::DataPageInfo page_info;
+       if (!DataPageParser::parse(*page_data, root_info.column_size, page_info,
+                                  error, record_kind_, has_lower_level_)) {
+         std::cerr << "Error parsing page " << page_json_ << ": " << error
+                   << "\n";
+         return 1;
+       }
+       write_data_page_json(page_json_, page_info, std::cout);
+       return 0;
      }
 
      // Show the HNSW graph if requested
@@ -317,6 +369,13 @@ class SvectorPageDump {
         }
       } else if (arg == "--graph-unreachable") {
         graph_unreachable_ = true;
+      } else if (arg == "--page-json") {
+        if (i + 1 >= argc) {
+          std::cerr << "Error: " << arg << " requires a page number\n";
+          return false;
+        }
+        page_json_ = std::stoul(argv[++i]);
+        has_page_json_ = true;
       } else if (arg == "-d" || arg == "--data-page") {
         if (i + 1 >= argc) {
           std::cerr << "Error: " << arg << " requires a page number\n";
@@ -408,6 +467,12 @@ class SvectorPageDump {
     std::cout << "                        records the entry point cannot "
                  "reach (skipped if the\n";
     std::cout << "                        walk is cut off by --max-nodes)\n";
+    std::cout
+        << "  --page-json N         Write page N (the root page or a data "
+           "page of this\n";
+    std::cout << "                        store) as one JSON object on stdout "
+                 "and nothing\n";
+    std::cout << "                        else; use with -i for HNSW stores\n";
     std::cout << "  -h, --help            Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << "  # Show root page only\n";
@@ -494,6 +559,9 @@ class SvectorPageDump {
   bool graph_dot_ = false;
   int graph_level_ = -1;
   bool graph_unreachable_ = false;
+  // Set by --page-json N: write page N as JSON (see storage_json.h).
+  bool has_page_json_ = false;
+  uint32_t page_json_ = 0;
 };
 
 }  // namespace tool
