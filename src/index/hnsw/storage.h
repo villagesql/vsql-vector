@@ -528,10 +528,11 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref mctx,
 bool position(Index::Cursor cursor, Index::CursorOp op, bool *eof, char *err,
               uint32_t err_len);
 
-bool fetch(Index::Cursor cursor, Column::Ref *col_refs,
+bool fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
+           IndexScanKey::KeyPartRef *key_column_refs,
            IndexScanKey::KeyPartData *key_columns,
-           IndexScanKey::KeyPartData *pkey_columns, char *err,
-           uint32_t err_len);
+           IndexScanKey::KeyPartData *pkey_columns, Segment::TrxRef *trx_ref,
+           char *err, uint32_t err_len);
 
 bool save(Index::Cursor cursor, char *err, uint32_t err_len);
 
