@@ -679,7 +679,8 @@ static constexpr auto HNSW_INDEX_TYPE =
             .end<&svector::hnsw::end>()
 
         .global()
-            .capabilities(Index::Support::KNN | Index::Support::APPROXIMATE)
+            .capabilities(Index::Support::KNN | Index::Support::APPROXIMATE |
+                          Index::Support::MVCC_VISIBILITY)
             .storage_props(Index::Storage::HAS_COLUMN_REF |
                            Index::Storage::REF_LOOKUP)
             .options<svector::hnsw::Options, &svector::hnsw::Options::parse>()
