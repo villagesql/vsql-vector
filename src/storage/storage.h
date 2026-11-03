@@ -102,8 +102,8 @@ struct ColumnStore {
   // (caller intends to modify the record), SHARED otherwise.
   bool fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
              Column::Data &col_data, Column::Data &rowid_prefix,
-             Segment::TrxRef &trx_ref, bool &delete_marked, char *error_msg,
-             uint32_t error_msg_len);
+             Segment::TrxRef &trx_ref, Segment::TrxRef &delete_trx_ref,
+             char *error_msg, uint32_t error_msg_len);
 
   // Overwrites one or more fixed-size chunks of the record's column data,
   // leaving the rest of the record (including trx_ref) untouched.
@@ -213,7 +213,7 @@ class ColumnStorage {
 
    static bool select(Ctx *storage, MtrCtx::Ref mctx, Column::Ref col_ref,
                       Column::Data *col_data, Column::Data *rowid_prefix,
-                      Segment::TrxRef *trx_ref, bool *delete_marked,
+                      Segment::TrxRef *trx_ref, Segment::TrxRef *delete_trx_ref,
                       char *error_msg, uint32_t error_msg_len);
 
    static bool mark_delete(Ctx *storage, MtrCtx::Ref mctx,
