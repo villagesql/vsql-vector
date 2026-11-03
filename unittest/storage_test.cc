@@ -190,6 +190,9 @@ void fake_page_write_integer(vef_storage_block_ref_t block,
   case VEF_STORAGE_PAGE_INT_4BYTES:
     be_write(p, value, 4);
     break;
+  case VEF_STORAGE_PAGE_INT_6BYTES:
+    be_write(p, value, 6);
+    break;
   case VEF_STORAGE_PAGE_INT_8BYTES:
     be_write(p, value, 8);
     break;

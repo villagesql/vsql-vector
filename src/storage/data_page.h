@@ -57,7 +57,7 @@ struct DataPage {
 
 public:
   // Transaction reference size in bytes stored with each record
-  static constexpr Page::Offset TRX_REF_SIZE = 8;
+  static constexpr Page::Offset TRX_REF_SIZE = Page::TRX_ID_SIZE;
 
   // Minimum free percentage threshold for adding page to free list
   static constexpr uint8_t MIN_FREE_PERCENT_FOR_FREE_LIST = 20;
