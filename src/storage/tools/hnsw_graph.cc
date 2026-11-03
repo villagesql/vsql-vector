@@ -364,6 +364,7 @@ bool render_hnsw_graph_dot(PageReader &reader,
     node.owner_vid = rec.owner_vid;
     node.is_deleted = rec.is_deleted;
     node.trx_ref = rec.trx_ref;
+    node.delete_trx_ref = rec.delete_trx_ref;
     node.lower_level_nid = rec.lower_level_nid;
     node.neighbours = outgoing_neighbours(rec);
     return true;
@@ -405,6 +406,7 @@ bool render_hnsw_graph_dot(PageReader &reader,
         node.owner_vid = rec.owner_vid;
         node.is_deleted = rec.is_deleted;
         node.trx_ref = rec.trx_ref;
+        node.delete_trx_ref = rec.delete_trx_ref;
         node.neighbours = outgoing_neighbours(rec);
         live.emplace_back(
             hnsw_encode_ref(page_num, static_cast<uint16_t>(slot)),
