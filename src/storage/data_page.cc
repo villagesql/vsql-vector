@@ -37,8 +37,8 @@ using vsql::preview_storage::Error;
 inline uint32_t bits_to_bytes_ceil(uint32_t bits) { return (bits + 7) >> 3; }
 
 void DataPage::init(Space::Ref space_ref, uint16_t col_len) {
-  // Calculate record size: transaction ref + column data
-  m_rec_size = TRX_REF_SIZE + col_len;
+  // Calculate record size: trx ref + delete trx ref + column data
+  m_rec_size = REC_HEADER_SIZE + col_len;
 
   // Calculate maximum number of records that can fit in the page
   // This requires an iterative approach since bitmap size depends on num_recs
@@ -511,8 +511,11 @@ void DataPage::insert(Page &data_page, MtrCtx::Ref mtr, Segment::TrxRef trx_ref,
   Page::Offset rec_offset = get_record_offset(slot_index);
   data_page.write_trx_id(rec_offset, trx_ref, mtr);
 
+  // The slot may hold a stale delete trx ref from a purged record.
+  data_page.clear_trx_id(rec_offset + DELETE_TRX_REF_OFF, mtr);
+
   // Step 4: Write column data (validated at function entry)
-  Page::Offset col_data_offset = rec_offset + TRX_REF_SIZE;
+  Page::Offset col_data_offset = rec_offset + REC_HEADER_SIZE;
   data_page.write_string(col_data_offset, col_data.data, col_data.length, mtr);
 
   // Step 5: Mark record as allocated
@@ -552,9 +555,12 @@ bool DataPage::purge(Page &data_page, MtrCtx::Ref mtr, uint16_t slot_index,
     return false;
   }
 
-  // Step 3: Verify that the transaction reference matches
+  // Step 3: Verify that the transaction reference matches. A delete marked
+  // record is purged by its deleting transaction; an unmarked one is an
+  // insert being rolled back, purged by its inserting transaction.
   Page::Offset rec_offset = get_record_offset(slot_index);
-  Segment::TrxRef stored_trx_ref = data_page.read_trx_id(rec_offset);
+  Segment::TrxRef stored_trx_ref = data_page.read_trx_id(
+      delete_marked ? rec_offset + DELETE_TRX_REF_OFF : rec_offset);
 
   if (stored_trx_ref != trx_ref) {
     // Transaction reference mismatch - do not purge
@@ -568,6 +574,10 @@ bool DataPage::purge(Page &data_page, MtrCtx::Ref mtr, uint16_t slot_index,
     // Rollback path: purging a non-deleted slot.
   }
   set_record_free(data_page, slot_index, mtr);
+
+  // Empty both transaction refs of the freed slot.
+  data_page.clear_trx_id(rec_offset, mtr);
+  data_page.clear_trx_id(rec_offset + DELETE_TRX_REF_OFF, mtr);
 
   // Step 5: Increment the number of free records
   uint16_t num_free_recs = data_page.read_integer_2(NUM_FREE_RECS_OFF);

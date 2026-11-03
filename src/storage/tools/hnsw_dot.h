@@ -49,6 +49,8 @@ struct HnswNodeRecord {
   bool is_deleted = false;
   // Transaction id (decimal) that last wrote the record.
   uint64_t trx_ref = 0;
+  // Deleting transaction id; 0 unless is_deleted.
+  uint64_t delete_trx_ref = 0;
   // Lower-level NID ref of the same vertex; 0 when absent.
   uint64_t lower_level_nid = 0;
   // Outgoing slots only, as (nid ref, vid): incoming-flagged and empty slots
@@ -75,6 +77,7 @@ struct HnswGraphNode {
   HnswNodeState state = HnswNodeState::Expanded;
   bool is_deleted = false;
   uint64_t trx_ref = 0;  // Valid once the record was read (has_vid nodes).
+  uint64_t delete_trx_ref = 0; // Deleting trx; 0 unless is_deleted.
   bool is_entry = false; // The level's local entry node.
   std::string error;     // Why state == Unresolved.
 };
