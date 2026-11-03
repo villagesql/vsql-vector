@@ -572,8 +572,9 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
 
 bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
                         Column::Data &col_data, Column::Data &rowid_prefix,
-                        Segment::TrxRef &trx_ref, bool &delete_marked,
-                        char *error_msg, uint32_t error_msg_len) {
+                        Segment::TrxRef &trx_ref,
+                        Segment::TrxRef &delete_trx_ref, char *error_msg,
+                        uint32_t error_msg_len) {
   // Step 1: Decode column reference to get page and slot
   Page::Ref data_page_ref;
   uint16_t slot_index;
@@ -594,6 +595,7 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
   }
 
   // Step 4: Get record status (delete_marked and is_free)
+  bool delete_marked = false;
   bool is_free = true;
   std::tie(delete_marked, is_free) =
       m_data.get_record_status(data_page, slot_index);
@@ -608,6 +610,14 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
   // Step 5: Read transaction reference from record
   Page::Offset rec_offset = m_data.get_record_offset(slot_index);
   trx_ref = data_page.read_trx_id(rec_offset);
+
+  // Report the deleting transaction, or EMPTY_TRX_ID if the record is not
+  // delete marked.
+  delete_trx_ref = Page::EMPTY_TRX_ID;
+  if (delete_marked) {
+    delete_trx_ref =
+        data_page.read_trx_id(rec_offset + DataPage::DELETE_TRX_REF_OFF);
+  }
 
   // Step 6: Set column data pointer to the column data in the page
   Page::Offset col_data_offset = rec_offset + DataPage::REC_HEADER_SIZE;
@@ -937,11 +947,12 @@ bool ColumnStorage::insert(Ctx *storage, MtrCtx::Ref mctx,
 
 bool ColumnStorage::select(Ctx *storage, MtrCtx::Ref mctx, Column::Ref col_ref,
                            Column::Data *col_data, Column::Data *rowid_prefix,
-                           Segment::TrxRef *trx_ref, bool *delete_marked,
-                           char *error_msg, uint32_t error_msg_len) {
+                           Segment::TrxRef *trx_ref,
+                           Segment::TrxRef *delete_trx_ref, char *error_msg,
+                           uint32_t error_msg_len) {
   return storage->user()->m_stores[0].fetch(
       mctx, col_ref, /*for_update=*/false, *col_data, *rowid_prefix, *trx_ref,
-      *delete_marked, error_msg, error_msg_len);
+      *delete_trx_ref, error_msg, error_msg_len);
 }
 
 bool ColumnStorage::mark_delete(Ctx *storage, MtrCtx::Ref mctx,
