@@ -146,7 +146,7 @@ void test_single_level_edges() {
 
   std::string out = dot(m);
   assert_valid_dot(out);
-  assert(has(out, "label=\"12:5\\n(11:5)\" peripheries=2"));
+  assert(has(out, "label=\"12:5\\n(11:5)\\ntrx 0\" peripheries=2"));
   assert(count(out, "dir=both") == 1); // A<->B drawn once, double-headed.
   assert(has(out, "\"L0_12_5\" -> \"L0_12_4\" [dir=both"));
   assert(!has(out, "\"L0_12_4\" -> \"L0_12_5\""));
@@ -306,7 +306,7 @@ void test_unreachable_nodes() {
   std::string out = dot(m);
   assert_valid_dot(out);
   assert(has(out, "2 not reachable from the entry point"));
-  assert(has(out, "label=\"12:3\\n(11:3)\\nunreachable\""));
+  assert(has(out, "label=\"12:3\\n(11:3)\\ntrx 0\\nunreachable\""));
   assert(has(out, "\\ndeleted"));
   assert(has(out, "\"L0_12_3\" -> \"L0_12_5\" [color=\"#d95f02\"]"));
   assert(count(out, "dir=both") == 2); // A<->B and O1<->O2, each drawn once.
