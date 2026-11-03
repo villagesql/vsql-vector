@@ -43,6 +43,7 @@ class DataPageParser {
     bool is_free;
     bool is_deleted;
     uint64_t trx_ref;
+    uint64_t delete_trx_ref;        // 0 unless delete marked
     std::vector<float> vector_data; // Decoded vector (assuming float32);
                                     // valid when index_kind == None
 

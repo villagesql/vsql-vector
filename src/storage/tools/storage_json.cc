@@ -155,7 +155,7 @@ void write_data_page_json(uint32_t page_num,
     out << "{\"i\":" << i << ",\"s\":\""
         << (rec.is_free ? 'F' : (rec.is_deleted ? 'D' : 'A')) << "\"";
     if (!rec.is_free) {
-      out << ",\"trx\":" << rec.trx_ref;
+      out << ",\"trx\":" << rec.trx_ref << ",\"dtrx\":" << rec.delete_trx_ref;
       if (info.index_kind == HnswRecordKind::Neighbour) {
         out << ",\"vid\":";
         write_ref(out, rec.owner_vid);
