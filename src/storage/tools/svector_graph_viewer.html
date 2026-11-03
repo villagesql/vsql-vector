@@ -45,7 +45,7 @@
   #older:disabled, #newer:disabled { opacity: .35; cursor: default; }
   #pos { color: var(--muted); font-size: 13px; min-width: 3.5em; }
   #keep { width: 3.6em; }
-  .snap #view { box-shadow: 0 0 0 3px var(--warn-fg); }
+  .snap #view, .snap #store { box-shadow: 0 0 0 3px var(--warn-fg); }
   #browse { background: transparent; color: var(--fg); border: 1px solid var(--line); padding: 4px 12px; }
   #picker { margin: 10px 16px 0; background: var(--bar); border: 1px solid var(--line);
             border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.12); }
@@ -119,7 +119,7 @@
   .facts dt { color: var(--muted); }
   .facts dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
   .cells { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 12px; }
-  .cell { position: relative; min-width: 58px; height: 58px; padding: 0 3px; border-radius: 5px;
+  .cell { position: relative; min-width: 58px; height: 68px; padding: 0 3px; border-radius: 5px;
           border: 1.5px solid; font: 11px/1.15 ui-monospace, monospace; color: var(--fg);
           display: flex; flex-direction: column; align-items: center; justify-content: center;
           cursor: pointer; }
@@ -157,7 +157,7 @@
     <button id="refresh">Refresh</button>
     <label><input type="checkbox" id="auto"> auto-refresh (5 s)</label>
   </div>
-  <div class="grp graphonly">
+  <div class="grp">
     <button id="older" title="Older result (Left arrow key)" aria-label="Older result">&lsaquo;</button>
     <label>History <select id="hist" aria-label="Previous results"></select></label>
     <button id="newer" title="Newer result (Right arrow key)" aria-label="Newer result">&rsaquo;</button>
@@ -185,14 +185,14 @@
   <div id="pickerr"></div>
 </div>
 <div id="chips" class="graphonly"></div>
-<div id="diff" class="graphonly"></div>
+<div id="diff"></div>
 <div id="err"></div>
 <main><div id="view" class="graphonly"></div><div id="store" class="storeonly"></div></main>
 <footer class="storeonly">
   <span><i class="sq A"></i>A allocated</span>
   <span><i class="sq D"></i>D delete-marked</span>
   <span><i class="sq F"></i>F free slot</span>
-  <span>square: slot number (top left), mark, VID page:slot, trx id</span>
+  <span>square: slot number (top left), mark, VID page:slot, trx id, delete trx id (if delete-marked)</span>
 </footer>
 <footer class="graphonly">
   <span><i class="sw rec"></i>reciprocal (both list each other)</span>
@@ -317,63 +317,103 @@ function showInfo(info) {
 }
 
 // --- history: the last N distinct results, kept in the browser ----------
-let history = [];      // oldest first
-let viewing = null;    // a history entry shown instead of the latest, or null
+// One list per view: graph results, and storage page snapshots.
+const HS = {
+  graph:   { list: [], viewing: null, ls: "history" },    // oldest first
+  storage: { list: [], viewing: null, ls: "shistory" },
+};
+const H = () => HS[mode];   // viewing: an entry shown instead of the latest
 
 function loadHistory() {
-  try { history = JSON.parse(store.get("history") || "[]"); } catch (e) { history = []; }
+  for (const h of Object.values(HS)) {
+    try { h.list = JSON.parse(store.get(h.ls) || "[]"); } catch (e) { h.list = []; }
+  }
   const k = parseInt(store.get("keep") || "50", 10);
   $("keep").value = k >= 1 && k <= 50 ? k : 50;
 }
 function trimHistory() {
   const n = Math.max(1, Math.min(50, parseInt($("keep").value, 10) || 50));
-  history = history.slice(-n);
+  for (const h of Object.values(HS)) h.list = h.list.slice(-n);
   store.set("keep", String(n));
 }
-function saveHistory() {
+function saveHistory(h = H()) {
   // Storage is limited (a few MB); drop the oldest results until it fits.
-  for (let h = history.slice(); h.length; h.shift()) {
-    try { localStorage.setItem("history", JSON.stringify(h)); return; } catch (e) {}
+  for (let l = h.list.slice(); l.length; l.shift()) {
+    try { localStorage.setItem(h.ls, JSON.stringify(l)); return; } catch (e) {}
   }
 }
 const baseName = f => f.replace(/^.*\//, "");
 
 // The entry's change summary versus the previous result with the same settings.
 function previousOf(e) {
-  const i = history.indexOf(e);
-  for (let k = i - 1; k >= 0; k--) if (history[k].key === e.key) return history[k];
+  const l = H().list, i = l.indexOf(e);
+  for (let k = i - 1; k >= 0; k--) if (l[k].key === e.key) return l[k];
   return null;
+}
+// Storage snapshots: one line per slot whose record differs.
+function slotDesc(r) {
+  if (!r) return "–";
+  if (r.s === "F") return "free";
+  return r.s + ` trx ${r.trx}` + (r.s === "D" ? ` del ${r.dtrx}` : "") + (r.vid ? ` VID ${r.vid}` : "");
+}
+function storageDiff(a, b) {
+  if (a === b) return [];
+  const pa = JSON.parse(a), pb = JSON.parse(b);
+  if (pa.kind !== "data" || pb.kind !== "data") return ["root page changed"];
+  const out = [];
+  const n = Math.max(pa.records.length, pb.records.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa.records[i], y = pb.records[i];
+    if (JSON.stringify(x) === JSON.stringify(y)) continue;
+    const dx = slotDesc(x), dy = slotDesc(y);
+    out.push(`slot ${i}: ` + (dx === dy ? "links changed" : `${dx} → ${dy}`));
+  }
+  return out.length ? out : ["page header changed"];
 }
 function changeCounts(e) {
   const p = previousOf(e);
   if (!p) return "first";
+  if (mode === "storage") {
+    const n = storageDiff(p.json, e.json).length;
+    return n === 0 ? "no change" : `${n} change${n > 1 ? "s" : ""}`;
+  }
   const a = parseNodes(p.dot), b = parseNodes(e.dot);
   const gone = [...a.keys()].filter(k => !b.has(k)).length;
   const add = [...b.keys()].filter(k => !a.has(k)).length;
   const chg = [...b.keys()].filter(k => a.has(k) && a.get(k) !== b.get(k)).length;
-  return gone + add + chg === 0 ? "no change" : `+${add} \u2212${gone} ~${chg}`;
+  return gone + add + chg === 0 ? "no change" : `+${add} −${gone} ~${chg}`;
 }
 function fillHistory() {
+  const h = H(), l = h.list;
   const sel = $("hist");
-  sel.replaceChildren(...history.map((e, i) => {
+  sel.replaceChildren(...l.map((e, i) => {
     const o = document.createElement("option");
     o.value = String(i);
+    const what = mode === "storage" ? (e.page === null ? "root page" : "page " + e.page)
+                                    : `${parseNodes(e.dot).size} nodes`;
     o.textContent = `${new Date(e.t).toLocaleTimeString()}  ${baseName(e.ibd)}:${e.root}  ` +
-      `${parseNodes(e.dot).size} nodes  ${changeCounts(e)}`;
+      `${what}  ${changeCounts(e)}`;
     return o;
   }).reverse());
-  const cur = viewing || history[history.length - 1];
-  const i = history.indexOf(cur);
+  const cur = h.viewing || l[l.length - 1];
+  const i = l.indexOf(cur);
   if (i >= 0) sel.value = String(i);
-  $("live").hidden = viewing === null;
+  $("live").hidden = h.viewing === null;
   $("older").disabled = i <= 0;
-  $("newer").disabled = i < 0 || i >= history.length - 1;
-  $("pos").textContent = history.length ? `${i + 1} / ${history.length}` : "";
-  document.body.classList.toggle("snap", viewing !== null);
+  $("newer").disabled = i < 0 || i >= l.length - 1;
+  $("pos").textContent = l.length ? `${i + 1} / ${l.length}` : "";
+  document.body.classList.toggle("snap", h.viewing !== null);
 }
 
 // Draws entry e and its change list against the previous comparable result.
 async function show(e) {
+  if (mode === "storage") {
+    curPage = e.page;
+    renderPage(JSON.parse(e.json));
+    const p = previousOf(e);
+    $("diff").textContent = p ? (d => d.length ? "Since last refresh\n" + d.join("\n") : "Since last refresh: no change")(storageDiff(p.json, e.json)) : "";
+    return;
+  }
   const svg = new DOMParser().parseFromString(e.svg, "image/svg+xml").documentElement;
   const view = $("view"), sx = view.scrollLeft, sy = view.scrollTop;
   svg.dataset.w = parseFloat(svg.getAttribute("width"));
@@ -387,17 +427,17 @@ async function show(e) {
 }
 
 async function goTo(i) {
-  const e = history[i];
+  const h = H(), e = h.list[i];
   if (!e) return;
-  viewing = e === history[history.length - 1] ? null : e;
+  h.viewing = e === h.list[h.list.length - 1] ? null : e;
   try { await show(e); } catch (err) { $("err").textContent = String(err); }
   $("status").className = "";
-  $("status").textContent = viewing ? "snapshot from " + new Date(e.t).toLocaleString() : "latest";
+  $("status").textContent = h.viewing ? "snapshot from " + new Date(e.t).toLocaleString() : "latest";
   fillHistory();
 }
 $("hist").onchange = () => goTo(parseInt($("hist").value, 10));
 // Left = older, right = newer; ignored while typing in a field.
-const step = d => goTo(history.indexOf(viewing || history[history.length - 1]) + d);
+const step = d => { const h = H(); goTo(h.list.indexOf(h.viewing || h.list[h.list.length - 1]) + d); };
 $("older").onclick = () => step(-1);
 $("newer").onclick = () => step(1);
 document.addEventListener("keydown", ev => {
@@ -414,9 +454,9 @@ document.addEventListener("keydown", ev => {
   if (ev.key === "ArrowLeft") { step(-1); ev.preventDefault(); }
   else if (ev.key === "ArrowRight") { step(1); ev.preventDefault(); }
 });
-$("live").onclick = () => { viewing = null; refresh(true); };
-$("clearhist").onclick = () => { history = []; viewing = null; saveHistory(); store.set("history", "[]"); fillHistory(); };
-$("keep").onchange = () => { trimHistory(); saveHistory(); fillHistory(); };
+$("live").onclick = () => { H().viewing = null; refresh(true); };
+$("clearhist").onclick = () => { const h = H(); h.list = []; h.viewing = null; saveHistory(h); store.set(h.ls, "[]"); fillHistory(); };
+$("keep").onchange = () => { trimHistory(); saveHistory(HS.graph); saveHistory(HS.storage); fillHistory(); };
 
 async function refresh(manual = true) {
   if (busy) return;
@@ -433,7 +473,7 @@ async function refresh(manual = true) {
   store.set("ibd", $("ibd").value.trim());
   store.set("root:" + $("ibd").value.trim(), $("root").value);
   if (mode === "storage") {
-    await loadPage();
+    await loadPage(manual);
     busy = false; $("refresh").disabled = false;
     return;
   }
@@ -450,13 +490,14 @@ async function refresh(manual = true) {
       key: p.toString(), dot: j.dot, info: j.info, svg: j.svg || null,
     };
     // Same graph as the newest result with these settings: only note the time.
-    const last = history.findLast(h => h.key === e.key);
+    const g = HS.graph;
+    const last = g.list.findLast(h => h.key === e.key);
     const same = last && last.dot === e.dot;
-    if (same) { last.t = e.t; } else { history.push(e); }
+    if (same) { last.t = e.t; } else { g.list.push(e); }
     trimHistory();
-    saveHistory();
+    saveHistory(g);
     // A background auto-refresh must not pull the view away from a snapshot.
-    if (viewing === null || manual) { viewing = null; await show(same ? last : e); }
+    if (g.viewing === null || manual) { g.viewing = null; await show(same ? last : e); }
     fillHistory();
     $("err").textContent = "";
     st.textContent = "updated " + new Date().toLocaleTimeString() + (same ? " (no change)" : "");
@@ -590,8 +631,9 @@ function renderData(p, box) {
   for (const r of p.records) {
     const c = el("button", "cell " + r.s);
     c.append(el("i", "", String(r.i)), el("b", "", r.s), el("span", "", r.vid || (r.s === "F" ? "" : "\u2013")),
-             el("u", "", r.s === "F" ? "" : `trx ${r.trx}`));
-    c.title = `slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s] + (r.vid ? `, VID ${r.vid}` : "") + (r.s === "F" ? "" : `, trx ${r.trx}` + (r.dtrx ? `, delete trx ${r.dtrx}` : ""));
+             el("u", "", r.s === "F" ? "" : `trx ${r.trx}`),
+             el("u", "", r.s === "D" ? `del ${r.dtrx}` : ""));
+    c.title = `slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s] + (r.vid ? `, VID ${r.vid}` : "") + (r.s === "F" ? "" : `, trx ${r.trx}` + (r.s === "D" ? `, delete trx ${r.dtrx}` : ""));
     if (r.i === curSlot) c.classList.add("sel");
     c.onclick = () => { curSlot = r.i; renderPage(p); };
     cells.append(c);
@@ -603,7 +645,7 @@ function renderData(p, box) {
   if (r) {
     d.append(el("div", "", `Slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s]));
     if (r.s !== "F") {
-      d.append(el("div", "mono", `trx ${r.trx}` + (r.dtrx ? `   delete trx ${r.dtrx}` : "") + (r.vid ? `   VID ${r.vid}` : "") + (r.lower ? `   lower-level NID ${r.lower}` : "")));
+      d.append(el("div", "mono", `trx ${r.trx}` + (r.s === "D" ? `   delete trx ${r.dtrx}` : "") + (r.vid ? `   VID ${r.vid}` : "") + (r.lower ? `   lower-level NID ${r.lower}` : "")));
       if (r.neighbours) {
         const row = el("div", "mono", `neighbours (${r.neighbours.length}): `);
         if (!r.neighbours.length) row.append("none");
@@ -632,7 +674,7 @@ function renderPage(p) {
   if (sel) sel.scrollIntoView({ block: "nearest" });
 }
 
-async function loadPage() {
+async function loadPage(manual = true) {
   const key = $("ibd").value.trim() + ":" + $("root").value;
   if (key !== pageKey) { pageKey = key; curPage = null; curSlot = null; pageStack = []; }
   const st = $("status");
@@ -642,7 +684,17 @@ async function loadPage() {
     const resp = await fetch("page.json?" + q);
     const body = await resp.text();
     if (!resp.ok) throw new Error(body);
-    renderPage(JSON.parse(body));
+    const e = { t: Date.now(), ibd: $("ibd").value.trim(), root: $("root").value, page: curPage,
+                key: key + ":" + curPage, json: body };
+    const g = HS.storage;
+    const last = g.list.findLast(h => h.key === e.key);
+    const same = last && last.json === e.json;
+    if (same) { last.t = e.t; } else { g.list.push(e); }
+    trimHistory();
+    saveHistory(g);
+    // A background auto-refresh must not pull the view away from a snapshot.
+    if (g.viewing === null || manual) { g.viewing = null; await show(same ? last : e); }
+    fillHistory();
     $("err").textContent = "";
     st.className = "";
     st.textContent = "updated " + new Date().toLocaleTimeString();
@@ -659,6 +711,7 @@ function setMode(m) {
   $("mgraph").classList.toggle("on", m === "graph");
   $("mstore").classList.toggle("on", m === "storage");
   document.title = m === "storage" ? "SVECTOR Storage" : "SVECTOR HNSW Graph";
+  fillHistory();
   if ($("ibd").value.trim() && $("root").value) refresh(true);
 }
 $("mgraph").onclick = () => setMode("graph");

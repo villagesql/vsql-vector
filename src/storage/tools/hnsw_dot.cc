@@ -170,9 +170,7 @@ void write_node(const HnswLevelGraph &g, const HnswGraphNode &node,
     break;
   }
   if (node.is_deleted) {
-    label += "\\ndeleted";
-    if (node.delete_trx_ref != 0)
-      label += " trx " + std::to_string(node.delete_trx_ref);
+    label += "\\ndel " + std::to_string(node.delete_trx_ref);
     if (node.state == HnswNodeState::Expanded)
       attrs = " style=filled fillcolor=\"#f2b8b5\"";
   }

@@ -307,7 +307,7 @@ void test_unreachable_nodes() {
   assert_valid_dot(out);
   assert(has(out, "2 not reachable from the entry point"));
   assert(has(out, "label=\"12:3\\n(11:3)\\ntrx 0\\nunreachable\""));
-  assert(has(out, "\\ndeleted"));
+  assert(has(out, "\\ndel 0"));
   assert(has(out, "\"L0_12_3\" -> \"L0_12_5\" [color=\"#d95f02\"]"));
   assert(count(out, "dir=both") == 2); // A<->B and O1<->O2, each drawn once.
 }
