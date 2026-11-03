@@ -509,7 +509,7 @@ void DataPage::insert(Page &data_page, MtrCtx::Ref mtr, Segment::TrxRef trx_ref,
 
   // Step 3: Calculate the record offset and write transaction reference
   Page::Offset rec_offset = get_record_offset(slot_index);
-  data_page.write_integer_8(rec_offset, trx_ref, mtr);
+  data_page.write_trx_id(rec_offset, trx_ref, mtr);
 
   // Step 4: Write column data (validated at function entry)
   Page::Offset col_data_offset = rec_offset + TRX_REF_SIZE;
@@ -554,7 +554,7 @@ bool DataPage::purge(Page &data_page, MtrCtx::Ref mtr, uint16_t slot_index,
 
   // Step 3: Verify that the transaction reference matches
   Page::Offset rec_offset = get_record_offset(slot_index);
-  Segment::TrxRef stored_trx_ref = data_page.read_integer_8(rec_offset);
+  Segment::TrxRef stored_trx_ref = data_page.read_trx_id(rec_offset);
 
   if (stored_trx_ref != trx_ref) {
     // Transaction reference mismatch - do not purge
