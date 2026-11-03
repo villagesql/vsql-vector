@@ -607,7 +607,7 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
 
   // Step 5: Read transaction reference from record
   Page::Offset rec_offset = m_data.get_record_offset(slot_index);
-  trx_ref = data_page.read_integer_8(rec_offset);
+  trx_ref = data_page.read_trx_id(rec_offset);
 
   // Step 6: Set column data pointer to the column data in the page
   Page::Offset col_data_offset = rec_offset + DataPage::TRX_REF_SIZE;
@@ -762,7 +762,7 @@ bool ColumnStore::mark_delete(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
 
   // Step 4: Mark or unmark the record as deleted based on delete_mark parameter
   Page::Offset rec_offset = m_data.get_record_offset(slot_index);
-  Segment::TrxRef old_trx_ref = data_page.read_integer_8(rec_offset);
+  Segment::TrxRef old_trx_ref = data_page.read_trx_id(rec_offset);
   bool trx_id_match = (old_trx_ref == trx_ref);
 
   if (delete_mark) {
@@ -773,7 +773,7 @@ bool ColumnStore::mark_delete(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
 
   // Step 5: Update the transaction reference
   if (!trx_id_match) {
-    data_page.write_integer_8(rec_offset, trx_ref, mtr);
+    data_page.write_trx_id(rec_offset, trx_ref, mtr);
   }
 
   return false;
