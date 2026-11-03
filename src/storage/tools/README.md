@@ -221,7 +221,7 @@ levels.
 
 - **Nodes** are circles labelled `NID` over `(VID)`, both `page:slot` as in the
   ASCII output (`12:5` is the NID, the node's record in this level; `(11:5)`
-  is its VID, the vertex's identity across levels). A double ring marks each
+  is its VID, the vertex's identity across levels). A third line, `trx N`, is the record's transaction id in decimal. A double ring marks each
   level's entry node.
 - **Edges** are the node's stored outgoing neighbour slots, one arrow each.
   A bold blue double-headed arrow is a reciprocal pair (drawn once); an

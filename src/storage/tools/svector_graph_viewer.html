@@ -119,10 +119,11 @@
   .facts dt { color: var(--muted); }
   .facts dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
   .cells { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 12px; }
-  .cell { position: relative; width: 58px; height: 46px; padding: 0; border-radius: 5px;
+  .cell { position: relative; min-width: 58px; height: 58px; padding: 0 3px; border-radius: 5px;
           border: 1.5px solid; font: 11px/1.15 ui-monospace, monospace; color: var(--fg);
           display: flex; flex-direction: column; align-items: center; justify-content: center;
           cursor: pointer; }
+  .cell u { text-decoration: none; font-size: 9.5px; color: var(--muted); }
   .cell b { font: 700 13px/1 system-ui, sans-serif; }
   .cell i { position: absolute; top: 1px; left: 3px; font-style: normal; font-size: 8.5px; color: var(--muted); }
   .cell.A { background: var(--a-bg); border-color: var(--a-bd); }
@@ -191,7 +192,7 @@
   <span><i class="sq A"></i>A allocated</span>
   <span><i class="sq D"></i>D delete-marked</span>
   <span><i class="sq F"></i>F free slot</span>
-  <span>square: slot number (top left), mark, VID page:slot</span>
+  <span>square: slot number (top left), mark, VID page:slot, trx id</span>
 </footer>
 <footer class="graphonly">
   <span><i class="sw rec"></i>reciprocal (both list each other)</span>
@@ -588,8 +589,9 @@ function renderData(p, box) {
   const cells = el("div", "cells");
   for (const r of p.records) {
     const c = el("button", "cell " + r.s);
-    c.append(el("i", "", String(r.i)), el("b", "", r.s), el("span", "", r.vid || (r.s === "F" ? "" : "\u2013")));
-    c.title = `slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s] + (r.vid ? `, VID ${r.vid}` : "");
+    c.append(el("i", "", String(r.i)), el("b", "", r.s), el("span", "", r.vid || (r.s === "F" ? "" : "\u2013")),
+             el("u", "", r.s === "F" ? "" : `trx ${r.trx}`));
+    c.title = `slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s] + (r.vid ? `, VID ${r.vid}` : "") + (r.s === "F" ? "" : `, trx ${r.trx}`);
     if (r.i === curSlot) c.classList.add("sel");
     c.onclick = () => { curSlot = r.i; renderPage(p); };
     cells.append(c);

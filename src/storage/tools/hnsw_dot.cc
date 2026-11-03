@@ -109,6 +109,7 @@ void walk_level(HnswGraphModel &model, HnswLevelGraph &g, uint64_t entry_ref,
     g.nodes[qi].vid = rec.owner_vid;
     g.nodes[qi].has_vid = true;
     g.nodes[qi].is_deleted = rec.is_deleted;
+    g.nodes[qi].trx_ref = rec.trx_ref;
 
     if (qi == 0 && g.level > 0 && rec.lower_level_nid != 0) {
       lower_ref = rec.lower_level_nid & HNSW_NID_REF_MASK;
@@ -146,6 +147,9 @@ void write_node(const HnswLevelGraph &g, const HnswGraphNode &node,
   std::string label = dot_escape(ref_text(node.nid));
   if (node.has_vid)
     label += "\\n(" + dot_escape(ref_text(node.vid)) + ")";
+  if (node.state == HnswNodeState::Expanded ||
+      node.state == HnswNodeState::Unreachable)
+    label += "\\ntrx " + std::to_string(node.trx_ref);
   std::string attrs;
   switch (node.state) {
   case HnswNodeState::Expanded:
@@ -320,6 +324,7 @@ bool add_unreachable_level0(
     size_t i = ensure_node(g, entry.first, entry.second.owner_vid, true, added);
     g.nodes[i].state = HnswNodeState::Unreachable;
     g.nodes[i].is_deleted = entry.second.is_deleted;
+    g.nodes[i].trx_ref = entry.second.trx_ref;
     added_records.push_back(&entry);
   }
   model.has_allocated_count = true;
@@ -361,8 +366,9 @@ void write_hnsw_dot(const HnswGraphModel &model, int level_filter,
       label_line("HNSW graph: M=" + std::to_string(model.M) + ", entry level " +
                  std::to_string((int)model.entry_level) + ", up to " +
                  std::to_string(model.max_nodes) + " nodes");
-  label += label_line("Node label: NID page:slot, then (VID page:slot); "
-                      "double ring = level entry node");
+  label += label_line(
+      "Node label: NID page:slot, then (VID page:slot), then trx id; "
+      "double ring = level entry node");
   label += label_line("Edge: blue bold double arrow = reciprocal; orange "
                       "arrow = one-way; dashed grey = reciprocity unknown");
   if (level_filter >= 0)
