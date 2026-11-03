@@ -110,6 +110,7 @@ void walk_level(HnswGraphModel &model, HnswLevelGraph &g, uint64_t entry_ref,
     g.nodes[qi].has_vid = true;
     g.nodes[qi].is_deleted = rec.is_deleted;
     g.nodes[qi].trx_ref = rec.trx_ref;
+    g.nodes[qi].delete_trx_ref = rec.delete_trx_ref;
 
     if (qi == 0 && g.level > 0 && rec.lower_level_nid != 0) {
       lower_ref = rec.lower_level_nid & HNSW_NID_REF_MASK;
@@ -170,6 +171,8 @@ void write_node(const HnswLevelGraph &g, const HnswGraphNode &node,
   }
   if (node.is_deleted) {
     label += "\\ndeleted";
+    if (node.delete_trx_ref != 0)
+      label += " trx " + std::to_string(node.delete_trx_ref);
     if (node.state == HnswNodeState::Expanded)
       attrs = " style=filled fillcolor=\"#f2b8b5\"";
   }
@@ -325,6 +328,7 @@ bool add_unreachable_level0(
     g.nodes[i].state = HnswNodeState::Unreachable;
     g.nodes[i].is_deleted = entry.second.is_deleted;
     g.nodes[i].trx_ref = entry.second.trx_ref;
+    g.nodes[i].delete_trx_ref = entry.second.delete_trx_ref;
     added_records.push_back(&entry);
   }
   model.has_allocated_count = true;

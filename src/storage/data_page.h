@@ -50,14 +50,23 @@ struct DataPage {
   // [Number of free records] [Free bitmap : Delete Mark and Free bit]
   // |-----------2-----------|-----------1 + (M * 2) / 8------------|
   //
-  // [M Records : Transaction Ref, Column Data] [Left Over] [Page Trailer]
-  // |-------M * (8 + Fixed column size)-------|-----L-----|-----8-------|
+  // [M Records : Trx ID, Delete Trx ID, Column Data] [Left Over] [Trailer]
+  // |------M * (6 + 6 + Fixed column size)---------|-----L-----|---8---|
   //
   // Left over space L is less than one record size.
 
 public:
   // Transaction reference size in bytes stored with each record
   static constexpr Page::Offset TRX_REF_SIZE = Page::TRX_ID_SIZE;
+
+  // Delete transaction reference, stored right after the transaction
+  // reference. Zero (empty) unless the record is delete marked.
+  static constexpr Page::Offset DELETE_TRX_REF_OFF = TRX_REF_SIZE;
+  static constexpr Page::Offset DELETE_TRX_REF_SIZE = Page::TRX_ID_SIZE;
+
+  // Per-record header (trx ref + delete trx ref); column data follows it.
+  static constexpr Page::Offset REC_HEADER_SIZE =
+      TRX_REF_SIZE + DELETE_TRX_REF_SIZE;
 
   // Minimum free percentage threshold for adding page to free list
   static constexpr uint8_t MIN_FREE_PERCENT_FOR_FREE_LIST = 20;
@@ -223,7 +232,9 @@ public:
 
   // Purge a record from the data page (physically remove it).
   // The page must be X latched.
-  // Only purges if the record's stored trx_ref matches the input trx_ref.
+  // Only purges if the input trx_ref matches the record's stored delete trx
+  // ref when the record is delete marked, or its insert trx ref otherwise
+  // (rollback of an insert).
   // Sets purged to true if the record was purged, false otherwise.
   // Returns false on success, true on error.
   bool purge(Page &data_page, MtrCtx::Ref mtr, uint16_t slot_index,

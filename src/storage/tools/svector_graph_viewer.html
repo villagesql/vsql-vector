@@ -591,7 +591,7 @@ function renderData(p, box) {
     const c = el("button", "cell " + r.s);
     c.append(el("i", "", String(r.i)), el("b", "", r.s), el("span", "", r.vid || (r.s === "F" ? "" : "\u2013")),
              el("u", "", r.s === "F" ? "" : `trx ${r.trx}`));
-    c.title = `slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s] + (r.vid ? `, VID ${r.vid}` : "") + (r.s === "F" ? "" : `, trx ${r.trx}`);
+    c.title = `slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s] + (r.vid ? `, VID ${r.vid}` : "") + (r.s === "F" ? "" : `, trx ${r.trx}` + (r.dtrx ? `, delete trx ${r.dtrx}` : ""));
     if (r.i === curSlot) c.classList.add("sel");
     c.onclick = () => { curSlot = r.i; renderPage(p); };
     cells.append(c);
@@ -603,7 +603,7 @@ function renderData(p, box) {
   if (r) {
     d.append(el("div", "", `Slot ${r.i}: ` + { A: "allocated", D: "delete-marked", F: "free" }[r.s]));
     if (r.s !== "F") {
-      d.append(el("div", "mono", `trx ${r.trx}` + (r.vid ? `   VID ${r.vid}` : "") + (r.lower ? `   lower-level NID ${r.lower}` : "")));
+      d.append(el("div", "mono", `trx ${r.trx}` + (r.dtrx ? `   delete trx ${r.dtrx}` : "") + (r.vid ? `   VID ${r.vid}` : "") + (r.lower ? `   lower-level NID ${r.lower}` : "")));
       if (r.neighbours) {
         const row = el("div", "mono", `neighbours (${r.neighbours.length}): `);
         if (!r.neighbours.length) row.append("none");
