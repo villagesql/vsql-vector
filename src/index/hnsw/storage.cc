@@ -400,9 +400,9 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
   Column::Data col_data;
   Column::Data rowid_prefix;
   Segment::TrxRef trx_ref;
-  bool delete_marked = false;
+  Segment::TrxRef delete_trx_ref;
   if (m_store.fetch(mtr, id.column_ref(), for_update, col_data, rowid_prefix,
-                    trx_ref, delete_marked, err, err_len))
+                    trx_ref, delete_trx_ref, err, err_len))
     return true;
 
   const auto *base = reinterpret_cast<const std::byte *>(col_data.data);
@@ -469,9 +469,9 @@ bool LevelStore::fetch(MtrCtx::Ref mtr, NID id, bool for_update,
   Column::Data col_data;
   Column::Data rowid_prefix;
   Segment::TrxRef trx_ref;
-  bool delete_marked = false;
+  Segment::TrxRef delete_trx_ref;
   if (m_overflow.fetch(mtr, id.column_ref(), for_update, col_data, rowid_prefix,
-                       trx_ref, delete_marked, err, err_len))
+                       trx_ref, delete_trx_ref, err, err_len))
     return true;
 
   const auto *base = reinterpret_cast<const std::byte *>(col_data.data);
