@@ -532,7 +532,13 @@ bool fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
            IndexScanKey::KeyPartRef *key_column_refs,
            IndexScanKey::KeyPartData *key_columns,
            IndexScanKey::KeyPartData *pkey_columns, Segment::TrxRef *trx_ref,
-           bool *delete_mark, char *err, uint32_t err_len);
+           char *err, uint32_t err_len);
+
+// Called after the server locks the clustered record; true if the entry is
+// still current (exists, created by trx_ref, not delete-marked). The result is
+// written to *valid; returns false on success, true on error (see err).
+bool validate(Index::Cursor cursor, Segment::TrxRef trx_ref, bool *valid,
+              char *err, uint32_t err_len);
 
 bool save(Index::Cursor cursor, char *err, uint32_t err_len);
 

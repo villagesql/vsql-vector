@@ -674,6 +674,7 @@ static constexpr auto HNSW_INDEX_TYPE =
             .begin<&svector::hnsw::begin>()
             .position<&svector::hnsw::position>()
             .fetch<&svector::hnsw::fetch>()
+            .validate<&svector::hnsw::validate>()
             .save<&svector::hnsw::save>()
             .restore<&svector::hnsw::restore>()
             .end<&svector::hnsw::end>()
