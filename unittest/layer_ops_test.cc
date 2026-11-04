@@ -87,7 +87,7 @@ struct LineGraph {
   }
 
   bool distance(const NodeData &a, const Node &b, DistanceType &out,
-                TrxRef &b_trx_ref) {
+                TrxRef &b_trx_ref, TrxRef &b_delete_trx_ref) {
     ++distance_calls;
     ++query_distance_calls;
     if (fail_distance) {
@@ -98,6 +98,7 @@ struct LineGraph {
     }
     out = std::abs(a.value - b.value);
     b_trx_ref = TrxRef{};
+    b_delete_trx_ref = TrxRef{};
     return false;
   }
 
@@ -115,7 +116,8 @@ struct LineGraph {
     return false;
   }
 
-  bool is_visible(const Node &node, TrxRef /*trx_ref*/, bool &out) {
+  bool is_visible(const Node &node, TrxRef /*trx_ref*/,
+                  TrxRef /*delete_trx_ref*/, bool &out) {
     if (fail_is_visible) {
       return true;
     }
@@ -134,8 +136,8 @@ template <typename Graph> struct VisibilityPolicy {
   using Node = typename Graph::Node;
   using TrxRef = typename Graph::TrxRef;
   static bool is_visible(Graph &graph, const Node &node, TrxRef trx_ref,
-                         bool &out) {
-    return graph.is_visible(node, trx_ref, out);
+                         TrxRef delete_trx_ref, bool &out) {
+    return graph.is_visible(node, trx_ref, delete_trx_ref, out);
   }
 };
 
@@ -144,7 +146,7 @@ template <typename Graph> struct VisibilityPolicy {
 template <typename Graph> struct AlwaysVisiblePolicy {
   using Node = typename Graph::Node;
   using TrxRef = typename Graph::TrxRef;
-  static bool is_visible(Graph &, const Node &, TrxRef, bool &out) {
+  static bool is_visible(Graph &, const Node &, TrxRef, TrxRef, bool &out) {
     out = true;
     return false;
   }

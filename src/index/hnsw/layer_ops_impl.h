@@ -307,7 +307,8 @@ bool LayerOperations<Graph, Policy>::evaluate_distances(
             return m_graph.distance(query, candidate.node, candidate.distance);
           } else {
             return m_graph.distance(query, candidate.node, candidate.distance,
-                                    candidate.trx_ref);
+                                    candidate.trx_ref,
+                                    candidate.delete_trx_ref);
           }
         },
         m_query);
@@ -352,7 +353,7 @@ bool LayerOperations<Graph, Policy>::seed_impl(
     // the result set.
     bool visible = false;
     if (PolicyType::is_visible(m_graph, candidate.node, candidate.trx_ref,
-                               visible)) {
+                               candidate.delete_trx_ref, visible)) {
       return true;
     }
     if (visible) {
@@ -390,7 +391,7 @@ bool LayerOperations<Graph, Policy>::expand(const Node &node, uint32_t ef) {
       // count against ef.
       bool visible = false;
       if (Policy<Graph>::is_visible(m_graph, candidate.node, candidate.trx_ref,
-                                    visible)) {
+                                    candidate.delete_trx_ref, visible)) {
         return true;
       }
       if (visible) {
