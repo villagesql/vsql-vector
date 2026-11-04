@@ -230,6 +230,14 @@ public:
   void insert(Page &data_page, MtrCtx::Ref mtr, Segment::TrxRef trx_ref,
               Column::Data col_data, Column::Ref &col_ref);
 
+  // Reports whether purge() with the same trx_ref would remove the record:
+  // purgeable is false if the slot is free, or if the stored trx ref (the
+  // delete trx ref when delete marked, else the insert trx ref) differs from
+  // trx_ref. Neither is an error. The page must be latched (S or X).
+  // Returns false on success, true on error (slot index out of range).
+  bool is_purgeable(Page &data_page, uint16_t slot_index,
+                    Segment::TrxRef trx_ref, bool &purgeable) const;
+
   // Purge a record from the data page (physically remove it).
   // The page must be X latched.
   // Only purges if the input trx_ref matches the record's stored delete trx
