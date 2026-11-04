@@ -87,7 +87,7 @@ bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
   out.data.length = static_cast<uint32_t>(buf.size());
   return m_index.get_key_data(VECTOR_KEY_POS,
                               static_cast<IndexScanKey::KeyPartRef>(vid.value),
-                              &out.data, &out.trx_ref);
+                              &out.data, &out.trx_ref, &out.delete_trx_ref);
 }
 
 bool IndexGraph::distance(const NodeData &a, const NodeData &b,
@@ -113,7 +113,7 @@ bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
 }
 
 bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out,
-                          TrxRef &b_trx_ref) {
+                          TrxRef &b_trx_ref, TrxRef &b_delete_trx_ref) {
   // a is the caller's own vector -- the one being inserted or queried for,
   // which is not in the graph and so has no vid to resolve. Only b needs a
   // buffer, and it takes the second one so the roles of the two never shift
@@ -123,6 +123,7 @@ bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out,
     return true;
 
   b_trx_ref = b_data.trx_ref;
+  b_delete_trx_ref = b_data.delete_trx_ref;
 
   return distance(a, b_data, out);
 }
@@ -234,7 +235,20 @@ bool IndexGraph::incoming_neighbours(const Node &node, LevelId level,
   return false;
 }
 
-bool IndexGraph::visible(const Node & /*node*/, TrxRef trx_ref, bool &out) {
+bool IndexGraph::visible(const Node & /*node*/, TrxRef trx_ref,
+                         TrxRef delete_trx_ref, bool &out) {
+  // TODO(villagesql-indexing): Handle visibility for locking read.
+  if (m_read_view == nullptr) {
+    out = true;
+    return false;
+  }
+
+  // A delete visible to this read view hides the node.
+  if (delete_trx_ref != Page::EMPTY_TRX_ID &&
+      m_index.is_trx_visible(m_read_view, delete_trx_ref)) {
+    out = false;
+    return false;
+  }
   out = m_index.is_trx_visible(m_read_view, trx_ref);
   return false;
 }
