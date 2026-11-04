@@ -174,6 +174,13 @@ public:
   bool remove(MtrCtx::Ref mtr, StoreKind kind, NID nid, Segment::TrxRef trx_ref,
               char *err, uint32_t err_len);
 
+  // Reports whether remove() of the m_store record identified by nid with
+  // the same trx_ref would physically remove it. purgeable is false, without
+  // an error, if the record is already gone (purge re-attempted after a
+  // crash) or no longer carries trx_ref (slot reused by another trx).
+  bool is_purgeable(NID nid, Segment::TrxRef trx_ref, bool &purgeable,
+                    char *err, uint32_t err_len);
+
   // Marks or unmarks for deletion the m_store record identified by nid.
   // m_overflow records have no row of their own to be deleted with, so this
   // is never needed for them.
