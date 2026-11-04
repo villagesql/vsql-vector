@@ -758,6 +758,16 @@ bool create(StorageCtx *ctx, const Index &index, Space::Ref space_ref,
   return false;
 }
 
+bool LevelStore::is_purgeable(NID nid, Segment::TrxRef trx_ref, bool &purgeable,
+                              char *err, uint32_t err_len) {
+  MtrCtx mtr_ctx;
+  auto mtr = mtr_ctx.start();
+  bool failed = m_store.is_purgeable(mtr, trx_ref, nid.column_ref(), purgeable,
+                                     err, err_len);
+  mtr_ctx.commit();
+  return failed;
+}
+
 bool drop(StorageCtx *ctx, const Index & /*index*/, Segment::TrxRef trx_ref,
           char *err, uint32_t err_len) {
   return ctx->user()->drop(trx_ref, err, err_len);
@@ -833,6 +843,17 @@ bool purge(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
   if (level_store == nullptr)
     return true;
   assert(kind == StoreKind::Neighbour);
+
+  // Purge can be re-attempted (e.g. after a crash and restart), and the slot
+  // may since have been reused. Only proceed if the record is still there and
+  // carries trx_ref -- the same rule the final record removal applies --
+  // before resolve_owner() (which errors on a free slot) and before the graph
+  // is touched, so a record this purge doesn't own is never unlinked.
+  bool purgeable = false;
+  if (level_store->is_purgeable(nid, trx_ref, purgeable, err, err_len))
+    return true;
+  if (!purgeable)
+    return false;
 
   Node target;
   if (level_store->resolve_owner(nid, target, err, err_len))

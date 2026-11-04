@@ -873,6 +873,35 @@ bool ColumnStore::purge(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
   return false;
 }
 
+bool ColumnStore::is_purgeable(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
+                               Column::Ref col_ref, bool &purgeable,
+                               char *error_msg, uint32_t error_msg_len) {
+  purgeable = false;
+
+  Page::Ref data_page_ref;
+  uint16_t slot_index;
+  DataPage::decode_column_ref(col_ref, data_page_ref, slot_index);
+
+  auto mtr = static_cast<MtrCtx::Ref>(mctx);
+
+  Page data_page;
+  if (data_page.load(m_space_ref, data_page_ref, Page::Latch::SHARED, mtr) !=
+      Error::SUCCESS) {
+    fill_error("is_purgeable: failed to load data page", error_msg,
+               error_msg_len, false);
+    return true;
+  }
+
+  if (m_data.is_purgeable(data_page, slot_index, trx_ref, purgeable)) {
+    char info[64];
+    snprintf(info, sizeof(info), "is_purgeable: invalid slot %u on page %u",
+             slot_index, data_page_ref);
+    fill_error(info, error_msg, error_msg_len, true);
+    return true;
+  }
+  return false;
+}
+
 bool ColumnStore::update_metadata(MtrCtx::Ref mctx, std::string_view metadata,
                                   char *error_msg, uint32_t error_msg_len) {
   auto mtr = static_cast<MtrCtx::Ref>(mctx);

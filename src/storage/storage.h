@@ -123,6 +123,14 @@ struct ColumnStore {
   bool purge(MtrCtx::Ref mctx, Segment::TrxRef trx_ref, Column::Ref col_ref,
              char *error_msg, uint32_t error_msg_len);
 
+  // Reports whether purge() with the same trx_ref would remove the record:
+  // purgeable is false if the slot is already free or its stored trx ref
+  // doesn't match trx_ref (see DataPage::is_purgeable). Neither is an error.
+  // Takes only an S latch and modifies nothing.
+  bool is_purgeable(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
+                    Column::Ref col_ref, bool &purgeable, char *error_msg,
+                    uint32_t error_msg_len);
+
   // Overwrites this store's metadata in the root page in place. metadata
   // must be the same length as the metadata this store was created/loaded
   // with -- every other field in the root page layout is offset relative to
