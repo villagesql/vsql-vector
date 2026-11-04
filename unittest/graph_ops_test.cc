@@ -235,12 +235,13 @@ struct MockGraph {
   }
 
   bool distance(const NodeData &a, const Node &b, DistanceType &out,
-                TrxRef &b_trx_ref) {
+                TrxRef &b_trx_ref, TrxRef &b_delete_trx_ref) {
     if (fail_distance) {
       return true;
     }
     out = std::abs(position.at(a.id) - position.at(b.id));
     b_trx_ref = TrxRef{};
+    b_delete_trx_ref = TrxRef{};
     return false;
   }
 
@@ -272,7 +273,8 @@ struct MockGraph {
     return neighbours(node, level, out);
   }
 
-  bool visible(const Node &node, TrxRef /*trx_ref*/, bool &out) {
+  bool visible(const Node &node, TrxRef /*trx_ref*/, TrxRef /*delete_trx_ref*/,
+               bool &out) {
     if (fail_visible) {
       return true;
     }

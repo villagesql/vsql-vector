@@ -30,15 +30,15 @@ template <typename Graph> struct GraphVisiblePolicy {
   using Node = typename Graph::Node;
   using TrxRef = typename Graph::TrxRef;
   static bool is_visible(Graph &graph, const Node &node, TrxRef trx_ref,
-                         bool &out) {
-    return graph.visible(node, trx_ref, out);
+                         TrxRef delete_trx_ref, bool &out) {
+    return graph.visible(node, trx_ref, delete_trx_ref, out);
   }
 };
 
 template <typename Graph> struct AlwaysVisiblePolicy {
   using Node = typename Graph::Node;
   using TrxRef = typename Graph::TrxRef;
-  static bool is_visible(Graph &, const Node &, TrxRef, bool &out) {
+  static bool is_visible(Graph &, const Node &, TrxRef, TrxRef, bool &out) {
     out = true;
     return false;
   }
