@@ -64,7 +64,7 @@ private:
 //   // Computes the distance between the query and a node and fetches
 //   // the transaction reference of Node data.
 //   bool distance(const NodeData&, const Node&, DistanceType&,
-//                 TrxRef&);
+//                 TrxRef& trx_ref, TrxRef& delete_trx_ref);
 //
 //   // Replaces the contents of 'out' with the neighbours of the node.
 //   // 'level' is the node's own level, as passed to search()/seed() below.
@@ -83,9 +83,10 @@ private:
 //   // value follows the same convention as Graph's methods above: it
 //   // signals failure of the visibility check itself, not the node's
 //   // visibility -- that result is carried in 'out'. trx_ref is the node's
-//   // resolved trx_ref, from the Candidate the distance() call that found
-//   // it filled in.
-//   static bool is_visible(Graph&, const Node&, TrxRef trx_ref, bool& out);
+//   // resolved trx_ref and delete_trx_ref (EMPTY_TRX_ID if not delete
+//   // marked), from the Candidate the distance() call that found it filled in.
+//   static bool is_visible(Graph&, const Node&, TrxRef trx_ref,
+//                          TrxRef delete_trx_ref, bool& out);
 template <typename Graph, template <typename> class Policy>
 class LayerOperations {
 public:
@@ -184,6 +185,7 @@ private:
     Node node;
     Distance distance{};
     TrxRef trx_ref{};
+    TrxRef delete_trx_ref{};
 
     Candidate(Node n) : node(std::move(n)) {}
 
