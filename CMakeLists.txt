@@ -56,6 +56,7 @@ add_library(svector SHARED
     src/storage/data_page.cc
     src/storage/root_page.cc
     src/storage/storage.cc
+    src/storage/vector_distance.cc
     src/native_vector.cc
     src/vector.cc
 )
@@ -65,6 +66,12 @@ target_include_directories(svector PRIVATE
 )
 
 target_compile_options(svector PRIVATE -fPIC)
+
+# Fused multiply-add rounds once instead of twice, which would make the
+# distance kernels return different results on different SIMD tiers and so on
+# different machines (mirrors the server's sql/CMakeLists.txt).
+set_source_files_properties(src/storage/vector_distance.cc
+    PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 # On macOS the linker requires all symbols to be resolved at link time by default,
 # but vef_storage_* symbols are provided by the server at dlopen time.
