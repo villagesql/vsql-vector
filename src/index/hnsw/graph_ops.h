@@ -85,6 +85,7 @@ public:
   using Node = typename Graph::Node;
   using NodeData = typename Graph::NodeData;
   using LevelId = typename Graph::LevelId;
+  using TrxRef = typename Graph::TrxRef;
   using LayerOps = LayerOperations<Graph, AlwaysVisiblePolicy>;
   using ExtendCandidates = typename LayerOps::ExtendCandidates;
   using KeepPrunedConnections = typename LayerOps::KeepPrunedConnections;
@@ -125,8 +126,13 @@ public:
 
   bool remove(const Node &target_node, LevelId target_level);
 
+  // Finds the k nodes nearest to the query, visible to the graph's read
+  // view, nearest first. If trx_refs is non-null it is replaced with the
+  // creator trx_ref of each returned node, in the same order, as seen when
+  // the node was evaluated by the search (for locking reads).
   bool search_knn(const NodeData &query_node_data, uint32_t k,
-                  uint32_t ef_search, std::vector<Node> &nearest_nodes);
+                  uint32_t ef_search, std::vector<Node> &nearest_nodes,
+                  std::vector<TrxRef> *trx_refs = nullptr);
 
 private:
   // Algorithm 1, lines 5-7: ef is fixed at 1 for the greedy descent.

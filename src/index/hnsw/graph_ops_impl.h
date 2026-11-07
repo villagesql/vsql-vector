@@ -456,7 +456,8 @@ bool GraphOperations<Graph>::remove(const Node &target_node,
 template <typename Graph>
 bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
                                         uint32_t k, uint32_t ef_search,
-                                        std::vector<Node> &nearest_nodes) {
+                                        std::vector<Node> &nearest_nodes,
+                                        std::vector<TrxRef> *trx_refs) {
   using LockMode = typename Graph::LockMode;
   using LockGraph = typename Graph::LockGraph;
   using LockLevels = typename Graph::LockLevels;
@@ -482,6 +483,9 @@ bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
   }
   if (candidates.empty()) {
     nearest_nodes.clear();
+    if (trx_refs) {
+      trx_refs->clear();
+    }
     return false;
   }
 
@@ -509,14 +513,18 @@ bool GraphOperations<Graph>::search_knn(const NodeData &query_node_data,
   // layer whose result is returned, so it's the only one filtered for
   // visibility.
   BottomLayerOps bottom_layer(m_graph, query_node_data);
-  if (bottom_layer.search(candidates, LevelId{0}, ef_search)) {
+  // The creator trx_refs are captured here, while each node is evaluated,
+  // since by the time the caller locks them purge could have reclaimed and
+  // reused a node. Only tracked when the caller wants them.
+  if (bottom_layer.search(candidates, LevelId{0}, ef_search,
+                          trx_refs != nullptr)) {
     return true;
   }
 
   // Line 8: return K nearest elements from candidates. consume_simple()
   // truncates the (already ascending-by-distance) search result to the K
   // nearest directly.
-  bottom_layer.consume_simple(k, candidates);
+  bottom_layer.consume_simple(k, candidates, trx_refs);
   nearest_nodes = std::move(candidates);
   return false;
 }

@@ -184,11 +184,11 @@ class IndexGraph {
 public:
   using LevelId = LevelStore::LevelId;
   using TrxRef = Segment::TrxRef;
+  static constexpr TrxRef EMPTY_TRX_ID = Page::EMPTY_TRX_ID;
 
   struct NodeData {
     IndexScanKey::KeyPartData data;
-    TrxRef trx_ref;
-    // Transaction that delete marked the entry, or EMPTY_TRX_ID if none.
+    TrxRef trx_ref = Page::EMPTY_TRX_ID;
     TrxRef delete_trx_ref = Page::EMPTY_TRX_ID;
   };
 
@@ -313,6 +313,10 @@ public:
   // Check if the node data is visible.
   bool visible(const Node &node, TrxRef trx_ref, TrxRef delete_trx_ref,
                bool &out);
+
+  // Whether node's vector record still exists, was created by trx_ref and is
+  // not delete marked. A failed read counts as not current.
+  bool is_entry_current(const Node &node, TrxRef trx_ref);
 
   // Returns the randomly-generated level for the element about to be
   // inserted (Algorithm 1, line 4):
@@ -601,13 +605,28 @@ private:
 // vector.
 class Cursor {
 public:
-  Cursor(IndexGraph graph, std::vector<Node> nodes, bool needs_trx_ref)
+  // trx_refs holds the creator trx_ref of each node, captured by the search,
+  // and must be non-empty (one per node) exactly when the scan needs them
+  // (see IndexScanDesc::needs_trx_ref()).
+  Cursor(IndexGraph graph, std::vector<Node> nodes,
+         std::vector<Segment::TrxRef> trx_refs, bool needs_trx_ref)
       : m_graph(std::move(graph)), m_nodes(std::move(nodes)),
-        m_needs_trx_ref(needs_trx_ref), m_pos(m_nodes.empty() ? EOF_POS : 0) {}
+        m_trx_refs(std::move(trx_refs)), m_needs_trx_ref(needs_trx_ref),
+        m_pos(m_nodes.empty() ? EOF_POS : 0) {
+    assert(m_needs_trx_ref ? m_trx_refs.size() == m_nodes.size()
+                           : m_trx_refs.empty());
+  }
 
   // Whether the scan that created this cursor requires fetch() to report each
   // entry's trx_ref (see IndexScanDesc::needs_trx_ref()).
   bool needs_trx_ref() const { return m_needs_trx_ref; }
+
+  // trx_ref of the node at the current position, as captured by the search.
+  // Only valid when needs_trx_ref() and not at eof().
+  Segment::TrxRef current_trx_ref() const {
+    assert(m_needs_trx_ref && m_pos != EOF_POS);
+    return m_trx_refs[m_pos];
+  }
 
   // Node at the current position, or nullptr at eof().
   const Node *current() const {
@@ -632,11 +651,19 @@ public:
 
   bool eof() const { return m_pos == EOF_POS; }
 
+  // Whether the entry at the current position still exists, was created by
+  // trx_ref and is not delete marked. False at eof().
+  bool validate_current(Segment::TrxRef trx_ref) {
+    const Node *node = current();
+    return node != nullptr && m_graph.is_entry_current(*node, trx_ref);
+  }
+
 private:
   static constexpr size_t EOF_POS = std::numeric_limits<size_t>::max();
 
   IndexGraph m_graph;
   std::vector<Node> m_nodes;
+  std::vector<Segment::TrxRef> m_trx_refs;
   bool m_needs_trx_ref;
   size_t m_pos;
 };

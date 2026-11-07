@@ -47,11 +47,15 @@ struct LineGraph {
   };
   using DistanceType = float;
   using TrxRef = int;
+  static constexpr TrxRef EMPTY_TRX_ID = 0;
   // LineGraph is a single flat graph with no notion of levels; LevelId
   // exists only to satisfy the Graph interface and carries no state.
   struct LevelId {
     bool operator==(const LevelId &) const = default;
   };
+
+  // The creator trx_ref distance() reports for the node with this value.
+  static constexpr TrxRef trx_ref_of(int value) { return value + 100; }
 
   int n = 0;
   bool fail_distance = false;
@@ -97,8 +101,10 @@ struct LineGraph {
       return true;
     }
     out = std::abs(a.value - b.value);
-    b_trx_ref = TrxRef{};
-    b_delete_trx_ref = TrxRef{};
+    // Derived from the node so a test can tell which node's trx_ref came
+    // back; never EMPTY_TRX_ID. Nothing is delete marked.
+    b_trx_ref = trx_ref_of(b.value);
+    b_delete_trx_ref = EMPTY_TRX_ID;
     return false;
   }
 
@@ -480,6 +486,134 @@ void test_consume_simple() {
   assert((got_all == std::vector<int>{10, 9, 12, 7, 19, 0}));
 }
 
+// Checks that trx_refs holds trx_ref_of() of each node in nodes, in order.
+bool trx_refs_match(const std::vector<LineGraph::Node> &nodes,
+                    const std::vector<LineGraph::TrxRef> &trx_refs) {
+  if (nodes.size() != trx_refs.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    if (trx_refs[i] != LineGraph::trx_ref_of(nodes[i].value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void test_track_trx_returns_trx_refs_with_nodes() {
+  LineGraph graph;
+  graph.n = 20;
+  LineGraph::NodeData query{15};
+  svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
+                                                                    query);
+
+  // Entry point 0 is far from the query, so many nodes are admitted to the
+  // result set and then evicted before the final 5 settle: the trx_refs
+  // must follow their nodes through those evictions.
+  std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 5,
+                       /*track_trx=*/true));
+  std::vector<LineGraph::TrxRef> trx_refs;
+  layer.consume_all(candidates, &trx_refs);
+
+  assert(candidates.size() == 5);
+  std::vector<int> sorted_got = values(candidates);
+  std::sort(sorted_got.begin(), sorted_got.end());
+  assert((sorted_got == std::vector<int>{13, 14, 15, 16, 17}));
+  assert(trx_refs_match(candidates, trx_refs));
+}
+
+void test_track_trx_skips_invisible_nodes() {
+  LineGraph graph;
+  graph.n = 20;
+  graph.invisible = {15};
+  LineGraph::NodeData query{15};
+  svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
+                                                                    query);
+
+  std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 6,
+                       /*track_trx=*/true));
+  std::vector<LineGraph::TrxRef> trx_refs;
+  layer.consume_all(candidates, &trx_refs);
+
+  std::vector<int> sorted_got = values(candidates);
+  std::sort(sorted_got.begin(), sorted_got.end());
+  assert((sorted_got == std::vector<int>{12, 13, 14, 16, 17, 18}));
+  assert(trx_refs_match(candidates, trx_refs));
+}
+
+void test_track_trx_consume_simple_truncates_trx_refs() {
+  LineGraph graph;
+  graph.n = 20;
+  LineGraph::NodeData query{10};
+  svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
+                                                                    query);
+
+  std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 6,
+                       /*track_trx=*/true));
+  std::vector<LineGraph::Node> result;
+  std::vector<LineGraph::TrxRef> trx_refs;
+  layer.consume_simple(3, result, &trx_refs);
+
+  // The 3 nearest to 10 are {10, 9 or 11, 9 or 11}; whichever way the tie
+  // falls, trx_refs must have been truncated alongside the nodes.
+  assert(result.size() == 3);
+  assert(values(result)[0] == 10);
+  assert(trx_refs_match(result, trx_refs));
+}
+
+void test_track_trx_empty_result() {
+  LineGraph graph;
+  graph.n = 3;
+  graph.invisible = {0, 1, 2};
+  LineGraph::NodeData query{1};
+  svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
+                                                                    query);
+
+  std::vector<LineGraph::Node> candidates{LineGraph::Node{0}};
+  assert(!layer.search(candidates, LineGraph::LevelId{}, 3,
+                       /*track_trx=*/true));
+  // Pre-fill to check the outputs are replaced, not appended to.
+  std::vector<LineGraph::TrxRef> trx_refs{7, 8};
+  layer.consume_all(candidates, &trx_refs);
+  assert(candidates.empty());
+  assert(trx_refs.empty());
+}
+
+void test_track_trx_does_not_leak_into_next_search() {
+  LineGraph graph;
+  graph.n = 20;
+  LineGraph::NodeData query{15};
+  svector::hnsw::LayerOperations<LineGraph, VisibilityPolicy> layer(graph,
+                                                                    query);
+
+  // A tracking search...
+  std::vector<LineGraph::Node> first{LineGraph::Node{0}};
+  assert(!layer.search(first, LineGraph::LevelId{}, 5, /*track_trx=*/true));
+  std::vector<LineGraph::TrxRef> trx_refs;
+  layer.consume_all(first, &trx_refs);
+  assert(first.size() == 5);
+
+  // ...followed by a default (non-tracking) one on the same object must
+  // return the right nodes and not leave the tracking state behind.
+  std::vector<LineGraph::Node> second{LineGraph::Node{19}};
+  assert(!layer.search(second, LineGraph::LevelId{}, 3));
+  layer.consume_all(second);
+  std::vector<int> sorted_got = values(second);
+  std::sort(sorted_got.begin(), sorted_got.end());
+  assert((sorted_got == std::vector<int>{14, 15, 16}));
+
+  // And tracking can be switched back on.
+  std::vector<LineGraph::Node> third{LineGraph::Node{19}};
+  assert(!layer.search(third, LineGraph::LevelId{}, 3, /*track_trx=*/true));
+  trx_refs.clear();
+  layer.consume_all(third, &trx_refs);
+  assert(third.size() == 3);
+  assert(trx_refs_match(third, trx_refs));
+}
+
 void test_seed_distance_failure_propagates() {
   LineGraph graph;
   graph.n = 20;
@@ -719,6 +853,11 @@ int main() {
   test_invisible_entry_point_does_not_seed_result();
   test_always_visible_policy_ignores_invisibility();
   test_consume_simple();
+  test_track_trx_returns_trx_refs_with_nodes();
+  test_track_trx_skips_invisible_nodes();
+  test_track_trx_consume_simple_truncates_trx_refs();
+  test_track_trx_empty_result();
+  test_track_trx_does_not_leak_into_next_search();
   test_seed_distance_failure_propagates();
   test_consume_heuristic_prefers_diverse_candidates();
   test_consume_heuristic_keeps_pruned_connections();

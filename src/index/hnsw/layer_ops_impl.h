@@ -50,9 +50,11 @@ LayerOperations<Graph, Policy>::LayerOperations(Graph &graph, const Node &query)
 
 template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::search(
-    const std::vector<Node> &entry_points, LevelId level, uint32_t ef) {
+    const std::vector<Node> &entry_points, LevelId level, uint32_t ef,
+    bool track_trx) {
   reset();
   m_level = level;
+  m_track_trx = track_trx;
 
   if (seed_impl(entry_points)) {
     return true;
@@ -67,7 +69,7 @@ bool LayerOperations<Graph, Policy>::search(
     // Algorithm 2, line 7: distance(c, q) > distance(f, q). m_results can
     // be empty here if every candidate seen so far was invisible; in that
     // case there's no result yet to compare against, so keep expanding.
-    if (!m_results.empty() && m_results.top() < c) {
+    if (!results_empty() && results_top() < c) {
       break;
     }
     if (expand(c.node, ef)) {
@@ -94,15 +96,16 @@ bool LayerOperations<Graph, Policy>::seed(const std::vector<Node> &candidates,
 }
 
 template <typename Graph, template <typename> class Policy>
-void LayerOperations<Graph, Policy>::consume_all(std::vector<Node> &out) {
+void LayerOperations<Graph, Policy>::consume_all(
+    std::vector<Node> &out, std::vector<TrxRef> *trx_refs) {
   assert(m_state == State::Consume);
   m_state = State::Init;
-  consume_result(out);
+  consume_result(out, trx_refs);
 }
 
 template <typename Graph, template <typename> class Policy>
-void LayerOperations<Graph, Policy>::consume_simple(uint32_t M,
-                                                    std::vector<Node> &out) {
+void LayerOperations<Graph, Policy>::consume_simple(
+    uint32_t M, std::vector<Node> &out, std::vector<TrxRef> *trx_refs) {
   assert(m_state == State::Consume);
   m_state = State::Init;
 
@@ -111,24 +114,82 @@ void LayerOperations<Graph, Policy>::consume_simple(uint32_t M,
   // result is already ordered by increasing distance once extracted, so
   // this is just a truncation, with no distance computation or sort of
   // its own.
-  consume_result(out);
+  consume_result(out, trx_refs);
   if (out.size() > M) {
     out.resize(M);
+    if (trx_refs) {
+      trx_refs->resize(M);
+    }
   }
 }
 
 template <typename Graph, template <typename> class Policy>
-void LayerOperations<Graph, Policy>::consume_result(std::vector<Node> &out) {
+bool LayerOperations<Graph, Policy>::results_empty() const {
+  return m_track_trx ? m_locking_results.empty() : m_results.empty();
+}
+
+template <typename Graph, template <typename> class Policy>
+size_t LayerOperations<Graph, Policy>::results_size() const {
+  return m_track_trx ? m_locking_results.size() : m_results.size();
+}
+
+template <typename Graph, template <typename> class Policy>
+const typename LayerOperations<Graph, Policy>::Candidate &
+LayerOperations<Graph, Policy>::results_top() const {
+  return m_track_trx ? m_locking_results.top().candidate : m_results.top();
+}
+
+template <typename Graph, template <typename> class Policy>
+void LayerOperations<Graph, Policy>::results_pop() {
+  if (m_track_trx) {
+    m_locking_results.pop();
+  } else {
+    m_results.pop();
+  }
+}
+
+template <typename Graph, template <typename> class Policy>
+void LayerOperations<Graph, Policy>::results_push(const Candidate &candidate,
+                                                  const TrxPair &trx) {
+  if (m_track_trx) {
+    m_locking_results.push(LockingCandidate{candidate, trx.trx_ref});
+  } else {
+    m_results.push(candidate);
+  }
+}
+
+template <typename Graph, template <typename> class Policy>
+void LayerOperations<Graph, Policy>::consume_result(
+    std::vector<Node> &out, std::vector<TrxRef> *trx_refs) {
+  // trx_refs are only collected when search() was asked to track them.
+  assert(trx_refs == nullptr || m_track_trx);
+
   out.clear();
-  if (!m_results.empty()) {
-    // m_results is a max-heap (largest distance first). Fill out
-    // back-to-front as we pop, so the final order is ascending by distance
-    // without a separate reverse pass.
-    out.resize(m_results.size());
-    for (auto i = out.size(); i-- > 0;) {
+  if (trx_refs) {
+    trx_refs->clear();
+  }
+  if (results_empty()) {
+    return;
+  }
+
+  // The result set is a max-heap (largest distance first). Fill out
+  // back-to-front as we pop, so the final order is ascending by distance
+  // without a separate reverse pass.
+  out.resize(results_size());
+  if (trx_refs) {
+    trx_refs->resize(out.size());
+  }
+  for (auto i = out.size(); i-- > 0;) {
+    if (m_track_trx) {
+      const LockingCandidate &top = m_locking_results.top();
+      out[i] = top.candidate.node;
+      if (trx_refs) {
+        (*trx_refs)[i] = top.trx_ref;
+      }
+    } else {
       out[i] = m_results.top().node;
-      m_results.pop();
     }
+    results_pop();
   }
 }
 
@@ -139,8 +200,11 @@ void LayerOperations<Graph, Policy>::reset() {
   m_visited.clear();
   m_candidates.clear();
   m_results.clear();
+  m_locking_results.clear();
+  m_track_trx = false;
 
   m_expand_buf.clear();
+  m_trx_buf.clear();
   m_neighbour_buf.clear();
 }
 
@@ -162,6 +226,7 @@ bool LayerOperations<Graph, Policy>::consume_heuristic(
     KeepPrunedConnections keep_pruned_connections, std::vector<Node> &out,
     std::vector<Node> *candidate_pool) {
   assert(m_state == State::Consume);
+  assert(!m_track_trx); // The heuristic is not used for locking reads.
   m_state = State::Init;
 
   // Algorithm 4, line 2: W <- C. C is exactly the preceding search()/
@@ -294,11 +359,16 @@ bool LayerOperations<Graph, Policy>::is_dominated(
 
 template <typename Graph, template <typename> class Policy>
 bool LayerOperations<Graph, Policy>::evaluate_distances(
-    std::vector<Candidate> &candidates, size_t begin) {
+    std::vector<Candidate> &candidates, size_t begin,
+    std::vector<TrxPair> *trx) {
+  if (trx) {
+    trx->resize(candidates.size());
+  }
   // Distance computations are independent and could be parallelized
   // if Graph::distance() is thread-safe.
   for (size_t i = begin; i < candidates.size(); ++i) {
     Candidate &candidate = candidates[i];
+    TrxPair resolved;
     bool failed = std::visit(
         [&](const auto &query) {
           using QueryType = std::decay_t<decltype(query)>;
@@ -307,13 +377,15 @@ bool LayerOperations<Graph, Policy>::evaluate_distances(
             return m_graph.distance(query, candidate.node, candidate.distance);
           } else {
             return m_graph.distance(query, candidate.node, candidate.distance,
-                                    candidate.trx_ref,
-                                    candidate.delete_trx_ref);
+                                    resolved.trx_ref, resolved.delete_trx_ref);
           }
         },
         m_query);
     if (failed) {
       return true;
+    }
+    if (trx) {
+      (*trx)[i] = resolved;
     }
   }
   return false;
@@ -342,22 +414,24 @@ bool LayerOperations<Graph, Policy>::seed_impl(
     }
   }
 
-  if (evaluate_distances(m_expand_buf)) {
+  if (evaluate_distances(m_expand_buf, 0, &m_trx_buf)) {
     return true;
   }
 
-  for (const Candidate &candidate : m_expand_buf) {
+  for (size_t i = 0; i < m_expand_buf.size(); ++i) {
+    const Candidate &candidate = m_expand_buf[i];
+    const TrxPair &trx = m_trx_buf[i];
     m_candidates.push(candidate);
 
     // Invisible entry points are still traversed from, but must not seed
     // the result set.
     bool visible = false;
-    if (PolicyType::is_visible(m_graph, candidate.node, candidate.trx_ref,
-                               candidate.delete_trx_ref, visible)) {
+    if (PolicyType::is_visible(m_graph, candidate.node, trx.trx_ref,
+                               trx.delete_trx_ref, visible)) {
       return true;
     }
     if (visible) {
-      m_results.push(candidate);
+      results_push(candidate, trx);
     }
   }
   return false;
@@ -377,27 +451,29 @@ bool LayerOperations<Graph, Policy>::expand(const Node &node, uint32_t ef) {
     }
   }
 
-  if (evaluate_distances(m_expand_buf)) {
+  if (evaluate_distances(m_expand_buf, 0, &m_trx_buf)) {
     return true;
   }
 
-  for (const Candidate &candidate : m_expand_buf) {
+  for (size_t i = 0; i < m_expand_buf.size(); ++i) {
+    const Candidate &candidate = m_expand_buf[i];
+    const TrxPair &trx = m_trx_buf[i];
     // Algorithm 2, line 13: distance(e, q) < distance(f, q) or |W| < ef.
-    if (m_results.size() < ef || candidate < m_results.top()) {
+    if (results_size() < ef || candidate < results_top()) {
       m_candidates.push(candidate);
 
       // Invisible candidates are still traversed so the search can reach
       // visible nodes beyond them, but must not enter the result set or
       // count against ef.
       bool visible = false;
-      if (Policy<Graph>::is_visible(m_graph, candidate.node, candidate.trx_ref,
-                                    candidate.delete_trx_ref, visible)) {
+      if (Policy<Graph>::is_visible(m_graph, candidate.node, trx.trx_ref,
+                                    trx.delete_trx_ref, visible)) {
         return true;
       }
       if (visible) {
-        m_results.push(candidate);
-        if (m_results.size() > ef) {
-          m_results.pop();
+        results_push(candidate, trx);
+        if (results_size() > ef) {
+          results_pop();
         }
       }
     }

@@ -253,6 +253,13 @@ bool IndexGraph::visible(const Node & /*node*/, TrxRef trx_ref,
   return false;
 }
 
+bool IndexGraph::is_entry_current(const Node &node, TrxRef trx_ref) {
+  NodeData data;
+  if (resolve_node_data(node.vid, m_ctx.m_vector_buf_1, data))
+    return false;
+  return data.trx_ref == trx_ref && data.delete_trx_ref == Page::EMPTY_TRX_ID;
+}
+
 IndexGraph::LevelId IndexGraph::get_insert_level() {
   thread_local std::random_device rd;
   thread_local std::mt19937 gen(rd());

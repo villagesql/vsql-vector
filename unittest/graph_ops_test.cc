@@ -95,6 +95,7 @@ struct MockGraph {
   using LevelId = MockLevelId;
   using DistanceType = float;
   using TrxRef = int;
+  static constexpr TrxRef EMPTY_TRX_ID = 0;
   enum class LockMode { Shared, Exclusive };
 
   // ---- RAII lock guards. Single-threaded bookkeeping only: these tests
