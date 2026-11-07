@@ -784,11 +784,12 @@ bool ColumnStore::mark_delete(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
     }
   } else {
     // A re-attempt after a crash finds the delete trx ref already empty.
-    bool trx_match = (old_del_trx_ref == trx_ref) || (old_del_trx_ref == 0);
+    bool trx_match =
+        (old_del_trx_ref == trx_ref) || (old_del_trx_ref == Page::EMPTY_TRX_ID);
     m_data.set_record_undelete(data_page, slot_index, trx_match, mtr);
 
     // Step 5: Empty the delete trx ref.
-    if (old_del_trx_ref != 0) {
+    if (old_del_trx_ref != Page::EMPTY_TRX_ID) {
       data_page.clear_trx_id(del_trx_offset, mtr);
     }
   }

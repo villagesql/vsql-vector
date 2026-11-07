@@ -880,12 +880,17 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
   const uint32_t ef_search =
       std::max<uint32_t>(k, static_cast<uint32_t>(read_ef_search()));
 
+  // For locking reads, the search captures each result's creator trx_ref
+  // while evaluating it, before purge can reclaim the node.
+  const bool needs_trx_ref = scan_desc.needs_trx_ref();
   std::vector<Node> nodes;
-  if (GraphOperations<IndexGraph>(graph).search_knn(query, k, ef_search, nodes))
+  std::vector<Segment::TrxRef> trx_refs;
+  if (GraphOperations<IndexGraph>(graph).search_knn(
+          query, k, ef_search, nodes, needs_trx_ref ? &trx_refs : nullptr))
     return true;
 
-  auto *c =
-      new Cursor(std::move(graph), std::move(nodes), scan_desc.needs_trx_ref());
+  auto *c = new Cursor(std::move(graph), std::move(nodes), std::move(trx_refs),
+                       needs_trx_ref);
   *cursor = c;
   *eof = c->eof();
   return false;
@@ -915,18 +920,14 @@ bool fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
   key_column_refs[VECTOR_KEY_POS] =
       static_cast<IndexScanKey::KeyPartRef>(node->vid.value);
 
-  *trx_ref = 0;
-  if (c->needs_trx_ref()) {
-    // TODO(villagesql-indexing): resolve the transaction that last wrote this
-    // entry.
-  }
+  // The creator trx_ref of the vector record, captured by the search; it is
+  // what validate() later compares against.
+  *trx_ref = c->needs_trx_ref() ? c->current_trx_ref() : Page::EMPTY_TRX_ID;
   return false;
 }
 
-bool validate(Index::Cursor /*cursor*/, Segment::TrxRef /*trx_ref*/) {
-  // TODO(villagesql-indexing): confirm that the entry still exists,
-  // was created by trx_ref and is not marked as deleted.
-  return true;
+bool validate(Index::Cursor cursor, Segment::TrxRef trx_ref) {
+  return static_cast<Cursor *>(cursor)->validate_current(trx_ref);
 }
 
 bool save(Index::Cursor /*cursor*/, char * /*err*/, uint32_t /*err_len*/) {
