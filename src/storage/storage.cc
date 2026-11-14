@@ -108,7 +108,7 @@ bool MultiColumnStore::create(Space::Ref space_ref, Segment::TrxRef trx_ref,
   // allocated and assigned on first use.
   for (size_t i = 1; i < storages.size(); ++i) {
     m_stores[i].init(space_ref, Page::INVALID_REF, storages[i].col_len,
-                     /*num_segments=*/0, /*num_root_pages=*/1,
+                     /*num_segments=*/1, /*num_root_pages=*/1,
                      storages[i].metadata);
   }
 
@@ -181,6 +181,17 @@ bool MultiColumnStore::init_root_page(uint8_t seg_idx, uint8_t root_idx,
                error_msg_len, false);
     mtr_ctx.commit();
     return true;
+  }
+
+  // Copy the segment header to the root page so page allocation does not
+  // need to access the primary root. The header is immutable after segment
+  // creation, so copies on other root pages remain valid.
+  {
+    static_assert(Segment::NUM_SEGMENTS_SIZE == 1, "num_segments is 1 byte");
+    new_page.write_integer_1(Page::HEADER_SIZE, 1, mtr);
+    new_page.write_string(Page::HEADER_SIZE + Segment::NUM_SEGMENTS_SIZE,
+                          static_cast<const unsigned char *>(seg_head),
+                          Segment::HEADER_SIZE, mtr);
   }
 
   if (target.m_root.format(new_page, mtr, FORMAT_VERSION, target.m_metadata)) {
@@ -270,10 +281,6 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
   m_stores.resize(num_root_pages);
   m_stores[0].init(space_ref, root_page_ref, info0.col_len, info0.num_segs,
                    num_root_pages, info0.metadata);
-  // The primary store owns the segment page and uses segment 0 -- same as
-  // create(). insert() consults these to source its segment header, so they
-  // must be restored on reload or the first insert after reopen reads a
-  // segment from an invalid page (m_primary_root_page_ref stays INVALID_REF).
   m_stores[0].m_primary_root_page_ref = root_page_ref;
   m_stores[0].m_segment_index = 0;
 
@@ -283,7 +290,7 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
     Page::Ref ref = other_refs[i - 1];
     if (ref == Page::INVALID_REF) {
       m_stores[i].init(space_ref, Page::INVALID_REF, specs[i].col_len,
-                       /*num_segments=*/0, /*num_root_pages=*/1,
+                       /*num_segments=*/1, /*num_root_pages=*/1,
                        specs[i].metadata);
       continue;
     }
@@ -301,17 +308,11 @@ bool MultiColumnStore::load(Column::StorageRef storage_ref,
     auto info = read_page_info(sec_root);
     sec_mtr_ctx.commit();
 
-    assert(info.num_segs == 0);
+    assert(info.num_segs == 1);
     assert(info.num_other_root_pages == 0);
 
     m_stores[i].init(space_ref, ref, info.col_len, info.num_segs,
                      info.num_other_root_pages + 1, info.metadata);
-    // A secondary store's segment lives on the primary root page; record that
-    // here. Its segment index is not persisted in the root page (it is owned by
-    // the layer that laid out the segments, e.g. the HNSW IndexStore's
-    // level->segment mapping), so the owner restores m_segment_index when it
-    // re-drives init_root_page() on reload. Until then this store must not be
-    // inserted into.
     m_stores[i].m_primary_root_page_ref = root_page_ref;
   }
 
@@ -464,55 +465,10 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
     m_root.page_select(root_page, m_space_ref, data_page_ref, cur_free_slots);
 
     if (data_page_ref == Page::INVALID_REF) {
-      // Segments live only on the segment-owning ("primary") root page. This
-      // store allocates data pages from its assigned segment there. For the
-      // primary store the segment page is its own root (already X-latched as
-      // root_page); any other store loads the primary root to reach its
-      // segment header.
-      //
-      // LATCH ORDERING: this is currently the ONLY place that holds latches on
-      // two root pages at once. The order is: this store's own root page FIRST
-      // (root_page, latched above), THEN the owning/primary root page. Any
-      // future code that takes both must follow this same order to avoid
-      // deadlock.
-      //
-      // The owning root is taken EXCLUSIVE only because Segment::get_header()
-      // asserts an EXCLUSIVE latch (storage_api.h). We do not modify the owning
-      // root page here -- we just read its segment header to allocate from that
-      // segment -- so SHARED_EXCLUSIVE (which still serializes segment
-      // allocation) is the intended latch.
-      // TODO(villagesql-indexing): switch to Page::Latch::SHARED_EXCLUSIVE once
-      // the get_header() EXCLUSIVE assertion is relaxed in the storage API.
-      //
-      // The latch is released immediately after load_new(), since it is not
-      // needed for the remainder of the insert.
-      Segment::Ref seg_head;
-      Page primary_root_holder;
-      Page *seg_root = &root_page;
-      const bool own_owning_root = (m_primary_root_page_ref != m_root_page_ref);
-      if (own_owning_root) {
-        if (primary_root_holder.load(m_space_ref, m_primary_root_page_ref,
-                                     Page::Latch::EXCLUSIVE,
-                                     mtr) != Error::SUCCESS) {
-          fill_error("insert: failed to load primary root page for segment",
-                     error_msg, error_msg_len, false);
-          return true;
-        }
-        seg_root = &primary_root_holder;
-      }
-      seg_head = Segment::get_header(*seg_root, m_segment_index);
+      Segment::Ref seg_head =
+          Segment::get_header(root_page, RootPage::DEFAULT_SEGMENT_IDX);
       if (data_page.load_new(seg_head, mtr) != Error::SUCCESS) {
         fill_error("insert: failed to allocate new data page", error_msg,
-                   error_msg_len, false);
-        return true;
-      }
-
-      // The owning root latch is no longer needed once the page is allocated;
-      // release it immediately rather than holding it for the rest of the
-      // insert.
-      if (own_owning_root &&
-          primary_root_holder.release(mtr) != Error::SUCCESS) {
-        fill_error("insert: failed to release primary root page", error_msg,
                    error_msg_len, false);
         return true;
       }

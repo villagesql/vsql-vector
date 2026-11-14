@@ -45,6 +45,61 @@ using vsql::preview_storage::Page;
 using vsql::preview_storage::Segment;
 using vsql::preview_storage::Space;
 
+/*
+ * Latching Protocol for Column Storage
+ * ====================================
+ *
+ * All page latches are taken through mini-transactions (mtr) and are held
+ * until the mtr commits. The rules below define the order in which latches may
+ * be acquired so that concurrent operations cannot deadlock.
+ *
+ * Terminology note: "primary root page" (e.g. in init_root_page) is the first
+ * root page of a multi-root column store. It is unrelated to the "Primary"
+ * column store of an index level (see 3.2), which is paired with a "Secondary"
+ * column store.
+ *
+ * 1. Across column stores
+ * -----------------------
+ * 1.1 A column store operation never acquires latches in more than one column
+ *     store. Ordering across column stores is the caller's responsibility.
+ *
+ * 1.2 Exception: initializing a new column store. The primary root page and
+ *     the newly allocated root page are latched at the same time. This is safe
+ *     because the new root page is not yet visible to any other thread.
+ *
+ * 2. Within a column store
+ * ------------------------
+ * Two kinds of pages are involved: the root page and the data pages.
+ *
+ * 2.1 Single data page. If an operation latches exactly one data page (S or
+ *     X), it does not need to latch the root page.
+ *
+ * 2.2 Root page before data pages. If an operation needs the root page and
+ *     one or more data pages, it must latch the root page first.
+ *
+ * 2.3 Multiple data pages. If an operation latches more than one data page,
+ *     it must hold the root page latch first (see 2.2). The root page latch
+ *     mode then decides the order for the data pages:
+ *       - Root X latch: data pages may be latched in any order.
+ *       - Root S latch: data pages must be latched in ascending page ID order.
+ *         (Reserved for future use. No current code path latches multiple
+ *         data pages under an S root latch.)
+ *
+ * 3. Rules for callers
+ * --------------------
+ * 3.1 Reusing an mtr within one column store. The same mtr must not be passed
+ *     to several APIs of the same column store, unless every call after the
+ *     first operates only on pages the first call already latched. Example:
+ *     fetch-for-update followed by update of the same record.
+ *
+ * 3.2 Reusing an mtr across column stores. The same mtr may be used for
+ *     operations on different column stores. The caller must then keep a
+ *     consistent latch order across the column stores. Example: the HNSW index
+ *     keeps a top-down order across levels, since each level is a separate
+ *     column store. Within one level, the Primary column store is latched
+ *     before the Secondary one.
+ */
+
 // Describes one column store to be created within a segment.
 struct Storage_spec {
   uint16_t col_len;
@@ -63,11 +118,6 @@ struct ColumnStore {
   // Space and root page for this store.
   Space::Ref m_space_ref{0};
   Page::Ref m_root_page_ref{Page::INVALID_REF};
-
-  // Segments live only on the segment-owning ("primary") root page; every store
-  // in a MultiColumnStore allocates its data pages from a segment on that page,
-  // identified by m_segment_index. For the primary store itself these point at
-  // its own root / segment 0. Set at create()/init_root_page().
   Page::Ref m_primary_root_page_ref{Page::INVALID_REF};
   uint8_t m_segment_index{0};
 
