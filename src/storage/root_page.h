@@ -89,6 +89,9 @@ public:
   // [Free Slot Array: Max 2k slots] [Left Over] [Page Trailer]
   // |------------M * 4-------------|-----L-----|-----8-------|
 
+  // Default segment used to allocate data pages for this root page.
+  static constexpr uint8_t DEFAULT_SEGMENT_IDX = 0;
+
   // Fixed-size field lengths. All offsets are dynamic based on number of
   // segments (N) and Number of other root pages(K).
   static constexpr Page::Offset VERSION_LEN = 1;
