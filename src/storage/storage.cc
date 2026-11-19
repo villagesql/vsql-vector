@@ -405,8 +405,8 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
   // Step 3a: Check if concurrency exceeds available slots and we can grow
   uint32_t concurrency =
       m_insert_concurrency_counter.load(std::memory_order_relaxed);
-  bool need_grow = (concurrency > cur_free_slots) &&
-                   (cur_free_slots < m_root.get_max_free_slots());
+  auto [need_grow, grow_target] =
+      m_root.determine_free_slot_growth(concurrency, cur_free_slots);
 
   // Step 4: Optimistic path - check if we got a valid page
   Page data_page;
@@ -456,7 +456,7 @@ bool ColumnStore::insert(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
 
     // Step 5a: Grow free slots if needed
     if (need_grow) {
-      m_root.grow_free_slots(root_page, mtr);
+      m_root.grow_free_slots(root_page, grow_target, mtr);
     }
 
     // Re-read the cached slot under X latch. Between releasing S and acquiring

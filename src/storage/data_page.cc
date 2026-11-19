@@ -128,6 +128,22 @@ void DataPage::format(Page &data_page, MtrCtx::Ref mtr, uint8_t format_version,
 
   // Write number of free records (initially all records are free)
   data_page.write_integer_2(NUM_FREE_RECS_OFF, m_max_num_recs, mtr);
+
+  // If max records is not a multiple of 4, the last bitmap byte contains
+  // padding 2-bit groups that map to no real slot. Mark them as occupied
+  // (FREE_BIT=1) so find_free_slot() never returns them. Write the whole byte
+  // so real slots are explicitly free (0) regardless of prior page contents.
+  constexpr uint8_t RECS_PER_BYTE = 8 / BITS_PER_RECORD;
+  const uint8_t used_in_last_byte = m_max_num_recs % RECS_PER_BYTE;
+  if (used_in_last_byte != 0) {
+    uint8_t last_byte = 0;
+    for (uint8_t slot = used_in_last_byte; slot < RECS_PER_BYTE; slot++) {
+      last_byte |= (1 << (slot * BITS_PER_RECORD + FREE_BIT));
+    }
+    Page::Offset last_byte_off =
+        FREE_BITMAP_OFF + (m_max_num_recs * BITS_PER_RECORD >> 3);
+    data_page.write_integer_1(last_byte_off, last_byte, mtr);
+  }
 }
 
 Column::Ref DataPage::encode_column_ref(Page::Ref page_ref,
@@ -455,6 +471,9 @@ bool DataPage::find_free_slot(Page &data_page, uint16_t &slot_index,
   }
 
   // Slow path: Scan bitmap byte by byte
+  // Note: if m_max_num_recs is not a multiple of 4, the last byte has padding
+  // 2-bit groups. format() marks them occupied (FREE_BIT=1), so they are never
+  // reported as free and slot_index below is always < m_max_num_recs.
   // Calculate number of bytes needed (2 bits per record, 4 records per byte)
   uint16_t num_bitmap_bytes =
       bits_to_bytes_ceil(m_max_num_recs * BITS_PER_RECORD);

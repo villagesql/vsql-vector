@@ -24,9 +24,11 @@
 #ifndef VILLAGESQL_EXAMPLES_VSQL_SVECTOR_SRC_ROOT_PAGE_H
 #define VILLAGESQL_EXAMPLES_VSQL_SVECTOR_SRC_ROOT_PAGE_H
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <villagesql/preview/storage_api.h>
 
@@ -206,11 +208,17 @@ public:
   // to. The root page must be S or X latched.
   uint16_t get_free_slot(Page &root_page);
 
-  // Grow the free slots array to accommodate higher concurrency.
-  // The root page must be X latched. Increase by 2x of current size
-  // limiting the increment to MAX_FREE_SLOT_STEP. The total slot array
-  // size is limited to m_max_free_slots.
-  void grow_free_slots(Page &root_page, MtrCtx::Ref mtr);
+  // Determine if the free slots array should grow for the given concurrency.
+  // Returns {true, target_size} if growth is required, otherwise
+  // {false, current_free_slots}. No latch is needed.
+  std::pair<bool, size_t>
+  determine_free_slot_growth(size_t concurrency,
+                             size_t current_free_slots) const;
+
+  // Grow the free slots array to the target size. The root page must be X
+  // latched. This is a no-op if the array has already reached the target.
+  void grow_free_slots(Page &root_page, size_t target_free_slots,
+                       MtrCtx::Ref mtr);
 
   // Maximum step size for growing free slots array.
   static constexpr uint16_t MAX_FREE_SLOT_STEP = 16;
