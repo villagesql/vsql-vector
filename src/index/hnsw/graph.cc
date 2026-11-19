@@ -237,9 +237,11 @@ bool IndexGraph::incoming_neighbours(const Node &node, LevelId level,
 
 bool IndexGraph::visible(const Node & /*node*/, TrxRef trx_ref,
                          TrxRef delete_trx_ref, bool &out) {
-  // TODO(villagesql-indexing): Handle visibility for locking read.
   if (m_read_view == nullptr) {
-    out = true;
+    // For locking reads, a delete-marked record whose deleting transaction
+    // has committed is invisible and can be ignored; it is awaiting purge.
+    out = delete_trx_ref == Page::EMPTY_TRX_ID ||
+          m_index.is_transaction_active(delete_trx_ref);
     return false;
   }
 
