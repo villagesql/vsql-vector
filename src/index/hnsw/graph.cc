@@ -255,11 +255,15 @@ bool IndexGraph::visible(const Node & /*node*/, TrxRef trx_ref,
   return false;
 }
 
-bool IndexGraph::is_entry_current(const Node &node, TrxRef trx_ref) {
+bool IndexGraph::is_entry_current(const Node &node, TrxRef trx_ref,
+                                  bool &current) {
+  current = false;
   NodeData data;
   if (resolve_node_data(node.vid, m_ctx.m_vector_buf_1, data))
-    return false;
-  return data.trx_ref == trx_ref && data.delete_trx_ref == Page::EMPTY_TRX_ID;
+    return true;
+  current =
+      data.trx_ref == trx_ref && data.delete_trx_ref == Page::EMPTY_TRX_ID;
+  return false;
 }
 
 IndexGraph::LevelId IndexGraph::get_insert_level() {
