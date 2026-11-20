@@ -847,10 +847,7 @@ bool purge(StorageCtx *ctx, const Index &index, Segment::TrxRef trx_ref,
 bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
            const IndexScanDesc &scan_desc, Index::Cursor *cursor, bool *eof,
            char *err, uint32_t err_len) {
-  // The only capability this index registers is KNN (see vector.cc), so the
-  // server never issues a Point/Range scan against it.
-  assert(scan_desc.is_knn());
-  assert(scan_desc.num_keys() == 1 && scan_desc[0].is_knn());
+  assert(scan_desc.num_keys() == 1);
 
   IndexGraph graph(ctx->user(), index, Segment::TrxRef{},
                    index.get_max_col_len(VECTOR_KEY_POS),
