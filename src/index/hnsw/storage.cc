@@ -889,6 +889,9 @@ bool begin(StorageCtx *ctx, const Index &index, MtrCtx::Ref /*mctx*/,
           query, k, ef_search, nodes, needs_trx_ref ? &trx_refs : nullptr))
     return true;
 
+  // err is only valid for this call; the graph outlives it inside the cursor,
+  // so drop the span rather than leave it dangling.
+  graph.set_error({});
   auto *c = new Cursor(std::move(graph), std::move(nodes), std::move(trx_refs),
                        needs_trx_ref);
   *cursor = c;
@@ -926,8 +929,14 @@ bool fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
   return false;
 }
 
+// Size of the stack error buffer validate() binds to the cursor's graph.
+static constexpr size_t VALIDATE_ERR_SIZE = 256;
+
 bool validate(Index::Cursor cursor, Segment::TrxRef trx_ref) {
-  return static_cast<Cursor *>(cursor)->validate_current(trx_ref);
+  // validate() receives no error buffer, so give the graph one for this call.
+  char err[VALIDATE_ERR_SIZE];
+  return static_cast<Cursor *>(cursor)->validate_current(
+      trx_ref, std::span<char>(err, sizeof(err)));
 }
 
 bool save(Index::Cursor /*cursor*/, char * /*err*/, uint32_t /*err_len*/) {

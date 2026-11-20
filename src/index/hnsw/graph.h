@@ -282,9 +282,8 @@ public:
     std::stack<LevelId> m_stack;
   };
 
-  // Constructed fresh by the API entry point handling a single top-level
-  // call (e.g. the DML insert() hook), which already has its own index,
-  // trx_ref and err/err_len to inject -- not shared or reused across calls.
+  // Represents an index operation with access to its store, transaction
+  // context and error reporting.
   IndexGraph(IndexStore *store, const Index &index, TrxRef trx_ref,
              size_t vector_buf_size, std::span<char> err);
 
@@ -439,6 +438,9 @@ public:
   void set_read_view(IndexScanDesc::ReadViewRef read_view) {
     m_read_view = read_view;
   }
+
+  // Re-binds the non-owning error buffer.
+  void set_error(std::span<char> err) { m_ctx.m_error = err; }
 
 private:
   // Lock primitives backing LockGraph/LockLevels.
@@ -653,9 +655,12 @@ public:
 
   // Whether the entry at the current position still exists, was created by
   // trx_ref and is not delete marked. False at eof().
-  bool validate_current(Segment::TrxRef trx_ref) {
+  bool validate_current(Segment::TrxRef trx_ref, std::span<char> err) {
     const Node *node = current();
-    return node != nullptr && m_graph.is_entry_current(*node, trx_ref);
+    if (node == nullptr)
+      return false;
+    m_graph.set_error(err);
+    return m_graph.is_entry_current(*node, trx_ref);
   }
 
 private:
