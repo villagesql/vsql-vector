@@ -1,20 +1,9 @@
 # Test HNSW index lifecycle for the SVECTOR type registered by the
 # vsql_vector extension: CREATE TABLE with inline indexes, CREATE INDEX,
 # ALTER TABLE ADD/DROP INDEX, DROP INDEX, and DROP TABLE.
-#
-# villagesql_custom_index_proceed bypasses the "not yet implemented" guard in
-# PT_custom_index_type::do_contextualize() so that the full DDL path runs and
-# HNSW index storage is actually created/dropped and metadata is committed
-# to villagesql.custom_indexes / custom_index_columns.
-#
-# TODO(villagesql-indexing): Remove have_debug.inc and the debug flag below
-# once custom index execution is fully implemented and the guard in
-# PT_custom_index_type::do_contextualize() is removed.
---source include/have_debug.inc
 
 SET PERSIST vsql_allow_preview_extensions = ON;
 INSTALL EXTENSION vsql_vector;
-SET SESSION debug='+d,villagesql_custom_index_proceed';
 
 --echo # --- Initial state: empty ---
 --source include/villagesql/query_custom_indexes.inc
@@ -48,7 +37,6 @@ SHOW CREATE TABLE t1;
 if ($restart) {
   --echo # --- Restart server: verify HNSW indexes and metadata survive a restart before any index is dropped ---
   --source include/restart_mysqld.inc
-  SET SESSION debug='+d,villagesql_custom_index_proceed';
   SHOW CREATE TABLE t1;
   --source include/villagesql/query_custom_indexes.inc
 }
@@ -103,7 +91,6 @@ DROP TABLE t2;
 
 --echo # HNSW create/drop index lifecycle test completed
 
-SET SESSION debug='-d,villagesql_custom_index_proceed';
 UNINSTALL EXTENSION vsql_vector;
 SET PERSIST vsql_allow_preview_extensions = OFF;
 RESET PERSIST vsql_allow_preview_extensions;
