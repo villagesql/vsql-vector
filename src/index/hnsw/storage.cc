@@ -880,7 +880,8 @@ bool fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
            IndexScanKey::KeyPartRef *key_column_refs,
            IndexScanKey::KeyPartData * /*key_columns*/,
            IndexScanKey::KeyPartData * /*pkey_columns*/,
-           Segment::TrxRef *trx_ref, char * /*err*/, uint32_t /*err_len*/) {
+           Segment::TrxRef *trx_ref, bool *delete_mark, char * /*err*/,
+           uint32_t /*err_len*/) {
   const auto *c = static_cast<Cursor *>(cursor);
   const Node *node = c->current();
   assert(node != nullptr);
@@ -895,6 +896,7 @@ bool fetch(Index::Cursor cursor, IndexScanKey::KeyPartRef *key_ref,
       static_cast<IndexScanKey::KeyPartRef>(node->vid.value);
 
   *trx_ref = 0;
+  *delete_mark = false;
   if (c->needs_trx_ref()) {
     // TODO(villagesql-indexing): resolve the transaction that last wrote this
     // entry.
