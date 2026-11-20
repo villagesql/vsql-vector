@@ -113,6 +113,8 @@ INSERT INTO embeddings VALUES (5, '[9.0, 8.0, 7.0, 6.0]', NULL);  -- L1 dist fro
 | `COSINE_DISTANCE(v1, v2)` | REAL | Cosine distance — `1 - cosine_similarity`; range [0, 2] |
 | `INNER_PRODUCT(v1, v2)` | REAL | Dot product (similarity, not a metric); higher means more similar |
 
+`COSINE_DISTANCE` returns 1 (maximum distance) when either argument is the zero vector, where cosine similarity is undefined.
+
 Both arguments to a distance/similarity function must have the same dimension. All functions return NULL if either argument is NULL.
 
 ### Example Queries
