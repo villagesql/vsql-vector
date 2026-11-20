@@ -37,9 +37,9 @@ namespace {
 // Level 0 has the largest Mmax (2*M, vs. M above it) and every level's
 // overflow capacity is the same regardless of level, so level 0 sizes the
 // worst case for both buffers.
-GraphContext make_graph_context(IndexStore &store, size_t vector_buf_size,
+GraphContext make_graph_context(IndexStore *store, size_t vector_buf_size,
                                 std::span<char> err) {
-  const uint32_t M = store.num_neighbours();
+  const uint32_t M = store->num_neighbours();
   const uint32_t mmax0 = LevelStore::max_neighbours(LevelStore::LevelId{0}, M);
   const uint32_t overflow_capacity =
       LevelStore::overflow_capacity(LevelStore::LevelId{0}, M);
@@ -62,7 +62,7 @@ bool IndexGraph::debug_check_level(const Node &node, LevelId level) const {
   // which a debug-only check has no business overwriting.
   StoreKind kind;
   LevelStore *located =
-      m_store.locate(node.nid, kind, /*err=*/nullptr, /*err_len=*/0);
+      m_store->locate(node.nid, kind, /*err=*/nullptr, /*err_len=*/0);
   // Separate assert so an abort names the cause: locate() failing to resolve
   // the NID at all, rather than resolving it to a different level.
   assert(located != nullptr);
@@ -70,11 +70,12 @@ bool IndexGraph::debug_check_level(const Node &node, LevelId level) const {
 }
 #endif // NDEBUG
 
-IndexGraph::IndexGraph(IndexStore &store, const Index &index,
-                       Segment::TrxRef trx_ref, size_t vector_buf_size,
+IndexGraph::IndexGraph(IndexStore *store, const Index &index,
+                       IndexGraph::TrxRef trx_ref, size_t vector_buf_size,
                        std::span<char> err)
     : m_store(store), m_index(index), m_trx_ref(trx_ref),
-      m_ctx(make_graph_context(store, vector_buf_size, err)) {}
+      m_ctx(make_graph_context(store, vector_buf_size, err)),
+      m_read_view(nullptr) {}
 
 bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
   assert(vid.is_valid());
@@ -86,7 +87,7 @@ bool IndexGraph::resolve_node_data(VID vid, ScratchBytes &buf, NodeData &out) {
   out.data.length = static_cast<uint32_t>(buf.size());
   return m_index.get_key_data(VECTOR_KEY_POS,
                               static_cast<IndexScanKey::KeyPartRef>(vid.value),
-                              &out.data);
+                              &out.data, &out.trx_ref);
 }
 
 bool IndexGraph::distance(const NodeData &a, const NodeData &b,
@@ -111,7 +112,8 @@ bool IndexGraph::distance(const Node &a, const Node &b, DistanceType &out) {
   return distance(a_data, b_data, out);
 }
 
-bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
+bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out,
+                          TrxRef &b_trx_ref) {
   // a is the caller's own vector -- the one being inserted or queried for,
   // which is not in the graph and so has no vid to resolve. Only b needs a
   // buffer, and it takes the second one so the roles of the two never shift
@@ -120,6 +122,8 @@ bool IndexGraph::distance(const NodeData &a, const Node &b, DistanceType &out) {
   if (resolve_node_data(b.vid, m_ctx.m_vector_buf_2, b_data))
     return true;
 
+  b_trx_ref = b_data.trx_ref;
+
   return distance(a, b_data, out);
 }
 
@@ -127,7 +131,7 @@ bool IndexGraph::neighbours(const Node &node, LevelId level,
                             std::vector<Node> &out) {
   out.clear();
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
 
   MtrCtx mtr_ctx;
@@ -153,7 +157,7 @@ bool IndexGraph::resolve_node(LevelId level, NID nid, Node &out) {
   assert(nid.is_valid());
   assert(!nid.is_incoming());
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
 
   MtrCtx mtr_ctx;
@@ -176,7 +180,7 @@ bool IndexGraph::incoming_neighbours(const Node &node, LevelId level,
   out.clear();
   assert(debug_check_level(node, level));
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   const uint32_t max_n = store->max_neighbours();
   const uint32_t capacity = store->overflow_capacity();
@@ -230,10 +234,8 @@ bool IndexGraph::incoming_neighbours(const Node &node, LevelId level,
   return false;
 }
 
-// TODO(villagesql-indexing): Implement MVCC visibility check for the
-// querying transaction instead of treating every node as visible.
-bool IndexGraph::visible(const Node & /*node*/, bool &out) {
-  out = true;
+bool IndexGraph::visible(const Node & /*node*/, TrxRef trx_ref, bool &out) {
+  out = m_index.is_trx_visible(m_read_view, trx_ref);
   return false;
 }
 
@@ -249,7 +251,7 @@ IndexGraph::LevelId IndexGraph::get_insert_level() {
   // Algorithm 1, line 4:
   // l <- floor(-ln(unif(0,1)) * mL)
   // where mL = 1 / ln(M)
-  double level = std::floor(-std::log(unif) * m_store.level_norm_factor());
+  double level = std::floor(-std::log(unif) * m_store->level_norm_factor());
 
   double max_level = static_cast<double>(IndexStore::max_level().value);
   level = std::min(level, max_level);
@@ -258,12 +260,12 @@ IndexGraph::LevelId IndexGraph::get_insert_level() {
 
 bool IndexGraph::get_entry_point(std::vector<Node> &out, LevelId &out_level) {
   out.clear();
-  const Node &entry = m_store.entry_point();
+  const Node &entry = m_store->entry_point();
   if (!entry.nid.is_valid())
     return false;
 
   out.push_back(entry);
-  out_level = m_store.entry_level();
+  out_level = m_store->entry_level();
   return false;
 }
 
@@ -274,13 +276,13 @@ bool IndexGraph::set_entry_point(const std::vector<Node> &nodes,
 
   MtrCtx mtr_ctx;
   auto mtr = mtr_ctx.start();
-  return m_store.set_entry_point(mtr, node, level, get_err_buffer(),
-                                 get_err_buffer_len());
+  return m_store->set_entry_point(mtr, node, level, get_err_buffer(),
+                                  get_err_buffer_len());
 }
 
 bool IndexGraph::ensure_levels(LevelId level) {
-  return m_store.ensure_levels(level, get_err_buffer(), get_err_buffer_len()) ==
-         nullptr;
+  return m_store->ensure_levels(level, get_err_buffer(),
+                                get_err_buffer_len()) == nullptr;
 }
 
 bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
@@ -308,7 +310,7 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
     // level per create_node() call, and parent is the node it created at
     // the level just above.
     LevelId parent_level{static_cast<uint8_t>(level.value + 1)};
-    parent_store = m_store.get_level(parent_level);
+    parent_store = m_store->get_level(parent_level);
     assert(parent_store != nullptr);
 
     assert(debug_check_level(*parent, parent_level));
@@ -327,7 +329,7 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
     assert(!parent_check.lower_level.is_valid());
   }
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
 
   // Per the bidirectional-link protocol (see graph.h): this node's edges to
@@ -372,7 +374,7 @@ bool IndexGraph::create_node(const std::optional<Node> &parent, LevelId level,
 bool IndexGraph::drop_overflow_nodes(LevelId level, const Node &node) {
   assert(debug_check_level(node, level));
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
 
   // Read node's own Overflow field first, before the chain-walking loop
@@ -424,7 +426,7 @@ bool IndexGraph::drop_overflow_nodes(LevelId level, const Node &node) {
 }
 
 bool IndexGraph::drop_overflow_node(LevelId level, const OverflowLink &link) {
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   assert(debug_check_level(Node{link.nid, VID{}}, level));
   assert(debug_check_level(Node{link.prev, VID{}}, level));
@@ -472,7 +474,7 @@ bool IndexGraph::drop_node(const std::optional<Node> &parent, LevelId level,
     // fetch is needed first: LowerLevel is being cleared unconditionally,
     // not spliced into a value that depends on the record's prior state.
     LevelId parent_level{static_cast<uint8_t>(level.value + 1)};
-    LevelStore *parent_store = m_store.get_level(parent_level);
+    LevelStore *parent_store = m_store->get_level(parent_level);
     assert(parent_store != nullptr);
     assert(debug_check_level(*parent, parent_level));
 
@@ -485,7 +487,7 @@ bool IndexGraph::drop_node(const std::optional<Node> &parent, LevelId level,
       return true;
   }
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
 
   if (store->remove(mtr, StoreKind::Neighbour, node.nid, m_trx_ref,
@@ -500,7 +502,7 @@ bool IndexGraph::mark_delete(const Node &node, LevelId level,
                              bool delete_mark) {
   assert(debug_check_level(node, level));
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
 
   MtrCtx mtr_ctx;
@@ -514,7 +516,7 @@ bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
   assert(level.has_lower_level());
   assert(debug_check_level(node, level));
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
 
   MtrCtx mtr_ctx;
@@ -539,7 +541,7 @@ bool IndexGraph::get_next_level_node(const Node &node, LevelId level,
 bool IndexGraph::add_overflow_incoming(MtrCtx::Ref mtr, LevelId level,
                                        const Node &neighbour, NID overflow_head,
                                        const Node &node) {
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   const uint32_t capacity = store->overflow_capacity();
   assert(capacity <= m_ctx.m_incoming_buf_1.size());
@@ -636,7 +638,7 @@ bool IndexGraph::add_overflow_incoming(MtrCtx::Ref mtr, LevelId level,
 
 bool IndexGraph::link_neighbours(const Node &node, LevelId level,
                                  std::vector<Node> &out) {
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
 
   // Level Operation Lock: S. Two concurrently inserted nodes cannot choose
@@ -651,7 +653,7 @@ bool IndexGraph::link_neighbours_locked(const Node &node, LevelId level,
                                         std::vector<Node> &out) {
   out.clear();
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   const uint32_t max_n = store->max_neighbours();
 
@@ -769,7 +771,7 @@ bool IndexGraph::drop_neighbour_link(LevelId level, const Node &node,
                                      NID neighbour_nid, bool &keeps_link) {
   keeps_link = false;
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   const uint32_t max_n = store->max_neighbours();
 
@@ -838,7 +840,7 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
   assert(!node.nid.is_incoming());
   assert(debug_check_level(node, level));
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   const uint32_t max_n = store->max_neighbours();
   assert(neighbours.size() <= max_n);
@@ -1070,7 +1072,7 @@ bool IndexGraph::replace_neighbours(const Node &node, LevelId level,
 
 bool IndexGraph::clear_link(MtrCtx::Ref mtr, LevelId level,
                             const LinkSlot &link) {
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   assert(link.slot.is_valid());
 
@@ -1104,7 +1106,7 @@ bool IndexGraph::find_overflow_link(LevelId level, NID head, NID target,
                                     LinkSlot &out) {
   out = LinkSlot{};
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   const uint32_t capacity = store->overflow_capacity();
   assert(capacity <= m_ctx.m_incoming_buf_2.size());
@@ -1144,7 +1146,7 @@ bool IndexGraph::unlink_neighbour(LevelId level, const Node &node,
   // that case from having found nothing to sever.
   out_neighbour = Node{};
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   const uint32_t max_n = store->max_neighbours();
 
@@ -1226,7 +1228,7 @@ bool IndexGraph::unlink_neighbours(const Node &node, LevelId level,
   assert(!node.nid.is_incoming());
   assert(debug_check_level(node, level));
 
-  LevelStore *store = m_store.get_level(level);
+  LevelStore *store = m_store->get_level(level);
   assert(store != nullptr);
   const uint32_t max_n = store->max_neighbours();
   const uint32_t capacity = store->overflow_capacity();
@@ -1397,12 +1399,12 @@ bool IndexGraph::unlink_neighbours(const Node &node, LevelId level,
   return false;
 }
 
-uint32_t IndexGraph::M() const { return m_store.num_neighbours(); }
+uint32_t IndexGraph::M() const { return m_store->num_neighbours(); }
 uint32_t IndexGraph::ef_construction() const {
-  return m_store.ef_construction();
+  return m_store->ef_construction();
 }
 uint32_t IndexGraph::Mmax(LevelId level) const {
-  auto *store = m_store.get_level(level);
+  auto *store = m_store->get_level(level);
   assert(store != nullptr);
   return store->max_neighbours();
 }
@@ -1410,20 +1412,20 @@ uint32_t IndexGraph::Mmax(LevelId level) const {
 // Lock primitives backing LockGraph/LockLevels below.
 void IndexGraph::lock_graph(LockMode mode) {
   if (mode == LockMode::Shared)
-    m_store.mutex().lock_shared();
+    m_store->mutex().lock_shared();
   else
-    m_store.mutex().lock();
+    m_store->mutex().lock();
 }
 
 void IndexGraph::unlock_graph(LockMode mode) {
   if (mode == LockMode::Shared)
-    m_store.mutex().unlock_shared();
+    m_store->mutex().unlock_shared();
   else
-    m_store.mutex().unlock();
+    m_store->mutex().unlock();
 }
 
 void IndexGraph::lock_level(LevelId level, LockMode mode) {
-  auto *store = m_store.get_level(level);
+  auto *store = m_store->get_level(level);
   assert(store != nullptr);
   if (mode == LockMode::Shared)
     store->mutex().lock_shared();
@@ -1432,7 +1434,7 @@ void IndexGraph::lock_level(LevelId level, LockMode mode) {
 }
 
 void IndexGraph::unlock_level(LevelId level, LockMode mode) {
-  auto *store = m_store.get_level(level);
+  auto *store = m_store->get_level(level);
   assert(store != nullptr);
   if (mode == LockMode::Shared)
     store->mutex().unlock_shared();

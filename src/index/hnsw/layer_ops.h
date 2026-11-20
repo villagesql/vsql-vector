@@ -61,9 +61,10 @@ private:
 //   // Computes the distance between two nodes and stores the result in 'out'.
 //   bool distance(const Node&, const Node&, DistanceType& out);
 //
-//   // Computes the distance between the query and a node and stores the
-//   // result in 'out'.
-//   bool distance(const NodeData&, const Node&, DistanceType& out);
+//   // Computes the distance between the query and a node and fetches
+//   // the transaction reference of Node data.
+//   bool distance(const NodeData&, const Node&, DistanceType&,
+//                 TrxRef&);
 //
 //   // Replaces the contents of 'out' with the neighbours of the node.
 //   // 'level' is the node's own level, as passed to search()/seed() below.
@@ -81,14 +82,17 @@ private:
 //   // in search_layer()'s output or count against ef. The bool return
 //   // value follows the same convention as Graph's methods above: it
 //   // signals failure of the visibility check itself, not the node's
-//   // visibility -- that result is carried in 'out'.
-//   static bool is_visible(Graph&, const Node&, bool& out);
+//   // visibility -- that result is carried in 'out'. trx_ref is the node's
+//   // resolved trx_ref, from the Candidate the distance() call that found
+//   // it filled in.
+//   static bool is_visible(Graph&, const Node&, TrxRef trx_ref, bool& out);
 template <typename Graph, template <typename> class Policy>
 class LayerOperations {
 public:
   using PolicyType = Policy<Graph>;
   using Node = typename Graph::Node;
   using NodeData = typename Graph::NodeData;
+  using TrxRef = typename Graph::TrxRef;
   using LevelId = typename Graph::LevelId;
   enum class ExtendCandidates { No, Yes };
   enum class KeepPrunedConnections { No, Yes };
@@ -179,6 +183,7 @@ private:
   struct Candidate {
     Node node;
     Distance distance{};
+    TrxRef trx_ref{};
 
     Candidate(Node n) : node(std::move(n)) {}
 
