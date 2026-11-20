@@ -679,7 +679,7 @@ static constexpr auto HNSW_INDEX_TYPE =
             .end<&svector::hnsw::end>()
 
         .global()
-            .capabilities(Index::Support::KNN)
+            .capabilities(Index::Support::KNN | Index::Support::APPROXIMATE)
             .storage_props(Index::Storage::HAS_COLUMN_REF |
                            Index::Storage::REF_LOOKUP)
             .options<svector::hnsw::Options, &svector::hnsw::Options::parse>()
@@ -765,8 +765,7 @@ static const auto HNSW_L1_PROFILE =
     make_index_profile(kHNSWProfileL1)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function<HNSW_L1_FN>(DISTANCE_PROFILE_FN_ID,
-                                   FunctionKind::Order)
+        .with_function<HNSW_L1_FN>(DISTANCE_PROFILE_FN_ID, FunctionKind::Order)
         .with_helper<HNSW_L1_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .build();
@@ -775,8 +774,7 @@ static const auto HNSW_L2_PROFILE =
     make_index_profile(kHNSWProfileL2)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function<HNSW_L2_FN>(DISTANCE_PROFILE_FN_ID,
-                                   FunctionKind::Order)
+        .with_function<HNSW_L2_FN>(DISTANCE_PROFILE_FN_ID, FunctionKind::Order)
         .with_helper<HNSW_L2_SQUARED_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .default_for_type(true)
@@ -787,7 +785,7 @@ static const auto HNSW_COSINE_PROFILE =
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
         .with_function<HNSW_COSINE_FN>(DISTANCE_PROFILE_FN_ID,
-                                   FunctionKind::Order)
+                                       FunctionKind::Order)
         .with_helper<HNSW_COSINE_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::ASC)
         .build();
@@ -796,8 +794,7 @@ static const auto HNSW_IP_PROFILE =
     make_index_profile(kHNSWProfileInnerProduct)
         .for_type(kSVectorTypeName)
         .using_index(kHNSWIndexName)
-        .with_function<HNSW_IP_FN>(DISTANCE_PROFILE_FN_ID,
-                                   FunctionKind::Order)
+        .with_function<HNSW_IP_FN>(DISTANCE_PROFILE_FN_ID, FunctionKind::Order)
         .with_helper<HNSW_IP_HELPER_FN>(DISTANCE_HELPER_FN_ID)
         .ordering(Index::Ordering::DESC)
         .build();
