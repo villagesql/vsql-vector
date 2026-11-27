@@ -87,6 +87,33 @@ void render_hnsw_graph(PageReader &reader, const HnswIndexMetadata &index_meta,
                        uint16_t level0_column_size, uint32_t max_nodes,
                        bool verbose, GraphStyle style, std::ostream &out);
 
+// What render_hnsw_graph_dot() needs from the level-0 root page.
+struct HnswRootInfo {
+  uint16_t column_size = 0;
+  // Head of the store's all-pages list (RootPageInfo::all_slot_head).
+  uint32_t all_slot_head = 0;
+};
+
+// Same walk as render_hnsw_graph(), written as one Graphviz DOT digraph with
+// one cluster per level instead of ASCII art (see hnsw_dot.h for the model
+// and styling). Precondition checks are the same as render_hnsw_graph()'s;
+// failures go to err and return false, leaving out untouched, so out is
+// always either a complete DOT graph or empty.
+//
+// level_filter >= 0 emits only that level (the walk, and so max_nodes, still
+// starts at the entry level). With find_unreachable, also enumerates every
+// live record of the level-0 store via its all-pages list and draws those the
+// entry-point walk never reached as "unreachable" nodes -- an independent
+// enumeration, so it distinguishes "no longer reachable" from "gone". It is
+// skipped, with a note in the diagram, if the walk was truncated. Only level
+// 0 can be checked: the other levels' root pages are not known from the
+// level-0 store.
+bool render_hnsw_graph_dot(PageReader &reader,
+                           const HnswIndexMetadata &index_meta,
+                           const HnswRootInfo &root, uint32_t max_nodes,
+                           int level_filter, bool find_unreachable,
+                           std::ostream &out, std::ostream &err);
+
 } // namespace tool
 } // namespace svector
 

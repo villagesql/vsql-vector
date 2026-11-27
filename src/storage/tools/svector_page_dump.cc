@@ -35,18 +35,21 @@
 //   -d, --data-page N   Show specific data page number
 //   -a, --all-pages     Show all data pages (traverse from root)
 //   -i, --index         Treat the root page as an HNSW index root page
+//   --page-json N       Write page N as JSON (used by the graph viewer)
 //   -h, --help          Show this help message
 
 #include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "data_page_parser.h"
 #include "hnsw_graph.h"
 #include "hnsw_layout.h"
 #include "page_reader.h"
 #include "root_page_parser.h"
+#include "storage_json.h"
 
 namespace svector {
 namespace tool {
@@ -76,6 +79,30 @@ class SvectorPageDump {
        return 0;
      }
 
+     if ((graph_dot_ || graph_unreachable_ || graph_level_ >= 0) &&
+         !show_graph_) {
+       std::cerr << "Error: --graph-format dot, --graph-level and "
+                    "--graph-unreachable require -g/--graph\n";
+       return 1;
+     }
+     if ((graph_unreachable_ || graph_level_ >= 0) && !graph_dot_) {
+       std::cerr << "Error: --graph-level and --graph-unreachable require "
+                    "--graph-format dot\n";
+       return 1;
+     }
+     if (graph_dot_ && (has_specific_data_page_ || show_all_pages_)) {
+       std::cerr << "Error: --graph-format dot cannot be combined with "
+                    "-d/--data-page or -a/--all-pages\n";
+       return 1;
+     }
+
+     if (has_page_json_ && (show_graph_ || graph_dot_ ||
+                            has_specific_data_page_ || show_all_pages_)) {
+       std::cerr << "Error: --page-json cannot be combined with -g/--graph, "
+                    "-d/--data-page or -a/--all-pages\n";
+       return 1;
+     }
+
      if (ibd_file_.empty() || root_page_num_ == 0) {
        std::cerr << "Error: IBD file and root page number are required\n\n";
        print_usage(argv[0]);
@@ -103,10 +130,13 @@ class SvectorPageDump {
        return 1;
      }
 
-     // Display root page
-     std::cout << "IBD File: " << ibd_file_ << "\n";
-     std::cout << "Root Page Number: " << root_page_num_ << "\n\n";
-     RootPageParser::display(root_info, verbose_, is_index_);
+     // Display root page. Skipped for DOT and JSON output, which must be
+     // clean on stdout.
+     if (!graph_dot_ && !has_page_json_) {
+       std::cout << "IBD File: " << ibd_file_ << "\n";
+       std::cout << "Root Page Number: " << root_page_num_ << "\n\n";
+       RootPageParser::display(root_info, verbose_, is_index_);
+     }
 
      // Determine how to decode this store's data page records: as an HNSW
      // NeighbourEntry/OverflowEntry (see hnsw_layout.h) when --index was
@@ -127,16 +157,69 @@ class SvectorPageDump {
        // through and decode data pages as plain SVECTOR vectors.
      }
 
+     // One page as JSON for the graph viewer's storage view: the root page
+     // itself, or any other page decoded as a data page of this store.
+     if (has_page_json_) {
+       if (page_json_ == root_page_num_) {
+         // Name each other root by its own StorageMeta so the viewer can
+         // tell the stores (levels, overflow) apart.
+         std::vector<std::string> other_names;
+         for (uint32_t ref : root_info.other_root_page_refs) {
+           std::string name;
+           auto other_data = reader.read_page(ref);
+           RootPageParser::RootPageInfo other_info;
+           HnswIndexMetadata other_meta;
+           std::string other_error;
+           if (other_data &&
+               RootPageParser::parse(*other_data, other_info, other_error) &&
+               parse_hnsw_index_metadata(other_info.storage_metadata_raw,
+                                         other_meta, other_error))
+             name = other_meta.name;
+           other_names.push_back(name);
+         }
+         write_root_page_json(root_page_num_, root_info,
+                              have_index_meta ? &index_meta : nullptr,
+                              other_names, std::cout);
+         return 0;
+       }
+       auto page_data = reader.read_page(page_json_);
+       if (!page_data) {
+         std::cerr << "Error reading page " << page_json_ << ": "
+                   << reader.get_error() << "\n";
+         return 1;
+       }
+       DataPageParser::DataPageInfo page_info;
+       if (!DataPageParser::parse(*page_data, root_info.column_size, page_info,
+                                  error, record_kind_, has_lower_level_)) {
+         std::cerr << "Error parsing page " << page_json_ << ": " << error
+                   << "\n";
+         return 1;
+       }
+       write_data_page_json(page_json_, page_info, std::cout);
+       return 0;
+     }
+
      // Show the HNSW graph if requested
      if (show_graph_) {
-       std::cout << "\n" << std::string(80, '=') << "\n\n";
+       if (!graph_dot_)
+         std::cout << "\n" << std::string(80, '=') << "\n\n";
        if (!have_index_meta) {
          std::cerr << "Error: --graph requires -i/--index with root page "
                       "metadata that decodes as HNSW StorageMeta\n";
          return 1;
        }
-       render_hnsw_graph(reader, index_meta, root_info.column_size,
-                         graph_max_nodes_, verbose_, graph_style_, std::cout);
+       if (graph_dot_) {
+         HnswRootInfo root;
+         root.column_size = root_info.column_size;
+         root.all_slot_head = root_info.all_slot_head;
+         if (!render_hnsw_graph_dot(reader, index_meta, root, graph_max_nodes_,
+                                    graph_level_, graph_unreachable_, std::cout,
+                                    std::cerr))
+           return 1;
+       } else {
+         render_hnsw_graph(reader, index_meta, root_info.column_size,
+                           graph_max_nodes_, verbose_, graph_style_, std::cout);
+       }
      }
 
      // Show specific data page if requested
@@ -259,6 +342,40 @@ class SvectorPageDump {
                     << "' (expected 'tree' or 'list')\n";
           return false;
         }
+      } else if (arg == "--graph-format") {
+        if (i + 1 >= argc) {
+          std::cerr << "Error: " << arg << " requires a format (text or dot)\n";
+          return false;
+        }
+        std::string format = argv[++i];
+        if (format == "text") {
+          graph_dot_ = false;
+        } else if (format == "dot") {
+          graph_dot_ = true;
+        } else {
+          std::cerr << "Error: unknown --graph-format '" << format
+                    << "' (expected 'text' or 'dot')\n";
+          return false;
+        }
+      } else if (arg == "--graph-level") {
+        if (i + 1 >= argc) {
+          std::cerr << "Error: " << arg << " requires a level number\n";
+          return false;
+        }
+        graph_level_ = std::stoi(argv[++i]);
+        if (graph_level_ < 0) {
+          std::cerr << "Error: " << arg << " must not be negative\n";
+          return false;
+        }
+      } else if (arg == "--graph-unreachable") {
+        graph_unreachable_ = true;
+      } else if (arg == "--page-json") {
+        if (i + 1 >= argc) {
+          std::cerr << "Error: " << arg << " requires a page number\n";
+          return false;
+        }
+        page_json_ = std::stoul(argv[++i]);
+        has_page_json_ = true;
       } else if (arg == "-d" || arg == "--data-page") {
         if (i + 1 >= argc) {
           std::cerr << "Error: " << arg << " requires a page number\n";
@@ -337,6 +454,25 @@ class SvectorPageDump {
     std::cout << "                        degree=<n>' line per node -- "
                  "easier to read for\n";
     std::cout << "                        levels with many edges per node\n";
+    std::cout << "  --graph-format FMT    'text' (default): the ASCII output "
+                 "above. 'dot': a\n";
+    std::cout << "                        Graphviz digraph on stdout, one "
+                 "cluster per level,\n";
+    std::cout << "                        nothing else printed (render with "
+                 "'dot -Tsvg')\n";
+    std::cout << "  --graph-level N       With --graph-format dot: draw only "
+                 "level N\n";
+    std::cout << "  --graph-unreachable   With --graph-format dot: also draw "
+                 "level-0 live\n";
+    std::cout << "                        records the entry point cannot "
+                 "reach (skipped if the\n";
+    std::cout << "                        walk is cut off by --max-nodes)\n";
+    std::cout
+        << "  --page-json N         Write page N (the root page or a data "
+           "page of this\n";
+    std::cout << "                        store) as one JSON object on stdout "
+                 "and nothing\n";
+    std::cout << "                        else; use with -i for HNSW stores\n";
     std::cout << "  -h, --help            Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << "  # Show root page only\n";
@@ -361,6 +497,12 @@ class SvectorPageDump {
     std::cout << "  # Render as a flat adjacency list instead of tree art\n";
     std::cout << "  " << prog_name
               << " table.ibd 4 -i -g --graph-style list\n\n";
+    std::cout << "  # Level 0 as a Graphviz diagram, including unreachable "
+                 "nodes\n";
+    std::cout << "  " << prog_name
+              << " table.ibd 4 -i -g --graph-format dot --graph-level 0 \\\n";
+    std::cout << "      --graph-unreachable --max-nodes 500 | dot -Tsvg -o "
+                 "l0.svg\n\n";
   }
 
   bool show_data_page(PageReader &reader, uint32_t page_num,
@@ -411,6 +553,15 @@ class SvectorPageDump {
   // Set by --graph-style: Tree (default) draws nested tree art, List prints
   // one flat adjacency line per node instead (see hnsw_graph.h).
   GraphStyle graph_style_;
+  // Set by --graph-format dot: emit the graph as Graphviz DOT instead (see
+  // render_hnsw_graph_dot()). graph_level_ (--graph-level, -1 = all levels)
+  // and graph_unreachable_ (--graph-unreachable) refine it.
+  bool graph_dot_ = false;
+  int graph_level_ = -1;
+  bool graph_unreachable_ = false;
+  // Set by --page-json N: write page N as JSON (see storage_json.h).
+  bool has_page_json_ = false;
+  uint32_t page_json_ = 0;
 };
 
 }  // namespace tool
