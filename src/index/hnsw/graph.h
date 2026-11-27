@@ -188,6 +188,8 @@ public:
   struct NodeData {
     IndexScanKey::KeyPartData data;
     TrxRef trx_ref;
+    // Transaction that delete marked the entry, or EMPTY_TRX_ID if none.
+    TrxRef delete_trx_ref = Page::EMPTY_TRX_ID;
   };
 
   using Node = hnsw::Node;
@@ -289,7 +291,7 @@ public:
   bool distance(const Node &a, const Node &b, DistanceType &out);
 
   bool distance(const NodeData &a, const Node &b, DistanceType &out,
-                TrxRef &b_trx_ref);
+                TrxRef &b_trx_ref, TrxRef &b_delete_trx_ref);
 
   // level is node's own level. Callers always already know it (it's how
   // they located node in the first place), so it's taken directly instead
@@ -308,9 +310,9 @@ public:
   bool incoming_neighbours(const Node &node, LevelId level,
                            std::vector<Node> &out);
 
-  // trx_ref is the visibility-relevant row's resolved trx_ref (see
-  // distance()'s b_trx_ref) -- checked against this call's read view.
-  bool visible(const Node &node, TrxRef trx_ref, bool &out);
+  // Check if the node data is visible.
+  bool visible(const Node &node, TrxRef trx_ref, TrxRef delete_trx_ref,
+               bool &out);
 
   // Returns the randomly-generated level for the element about to be
   // inserted (Algorithm 1, line 4):
