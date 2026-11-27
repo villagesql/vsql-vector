@@ -23,6 +23,7 @@
 
 #include "root_page.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <random>
@@ -187,27 +188,38 @@ bool RootPage::get_cached_slot_number(Space::Ref space_ref, Page::Ref page_ref,
   return true;
 }
 
-void RootPage::grow_free_slots(Page &root_page, MtrCtx::Ref mtr) {
+std::pair<bool, size_t>
+RootPage::determine_free_slot_growth(size_t concurrency,
+                                     size_t current_free_slots) const {
+  if (concurrency <= current_free_slots ||
+      current_free_slots >= m_max_free_slots) {
+    return {false, current_free_slots};
+  }
+
+  // Increase by min(current_free_slots, MAX_FREE_SLOT_STEP) to double the size
+  size_t growth = std::min<size_t>(current_free_slots, MAX_FREE_SLOT_STEP);
+  size_t target =
+      std::min<size_t>(current_free_slots + growth, m_max_free_slots);
+  return {true, target};
+}
+
+void RootPage::grow_free_slots(Page &root_page, size_t target_free_slots,
+                               MtrCtx::Ref mtr) {
   assert(root_page.is_loaded(Page::Latch::EXCLUSIVE));
 
-  // Step 1: Read current free slots count
+  // Step 1: Read current free slots count. It may have changed since the
+  // target was determined, as that was done without the X latch.
   uint16_t cur_free_slots =
       root_page.read_integer_2(free_slot_array_cur_size_off());
 
-  // Step 2: We should only be called if we can grow
-  assert(cur_free_slots < m_max_free_slots);
-
-  // Step 3: Calculate new size
-  // Increase by min(cur_free_slots, MAX_FREE_SLOT_STEP) to double the size
-  uint16_t growth = std::min(cur_free_slots, MAX_FREE_SLOT_STEP);
-  uint16_t new_free_slots = cur_free_slots + growth;
-
-  // Cap at maximum
-  if (new_free_slots > m_max_free_slots) {
-    new_free_slots = m_max_free_slots;
+  // Step 2: Cap the target at maximum and return if already reached.
+  uint16_t new_free_slots = static_cast<uint16_t>(
+      std::min<size_t>(target_free_slots, m_max_free_slots));
+  if (cur_free_slots >= new_free_slots) {
+    return;
   }
 
-  // Step 4: Initialize new slots to NULL_FREE_PAGE_REF
+  // Step 3: Initialize new slots to NULL_FREE_PAGE_REF
   for (uint16_t i = cur_free_slots; i < new_free_slots; i++) {
     Page::Offset slot_offset = free_slot_array_off() + (i * FREE_SLOT_LEN);
     root_page.write_integer_4(slot_offset, NULL_FREE_PAGE_REF, mtr);
@@ -371,6 +383,7 @@ bool RootPage::remove_free_page(Page &root_page, Page &data_page,
   // Step 5: Reset free links for the data page being removed.
   prev_ref = NULL_FREE_PAGE_REF;
   data_page_info->set_free_links(data_page, &prev_ref, &prev_ref, mtr);
+  data_page_info->set_free_slot_number(data_page, DataPage::INVALID_SLOT, mtr);
 
   // Step 6: Decrement total free pages counter
   uint32_t total_free_pages = root_page.read_integer_4(total_free_pages_off());
