@@ -111,6 +111,54 @@ static_assert(native::MAX_VECTOR_DIMENSION <=
                   (SIZE_MAX - sizeof(native::Data)) / sizeof(float),
               "MAX_VECTOR_DIMENSION would overflow native vector allocation");
 
+// The type's binary form, which the server hands over for a value in the binary
+// charset (a _binary literal, a binary parameter, a VARBINARY column): the
+// little-endian float32 elements with no header,
+//
+//     [f0 (4B LE)][f1]...[f(dim-1)]
+//
+// which is numpy.asarray(v, '<f4').tobytes(), and what MariaDB's VECTOR takes.
+// Clients use it instead of formatting a decimal literal, which is far more
+// expensive to build client-side. When p is known the length must be exactly
+// its dimension's worth of elements, so a truncated or over-long value is an
+// error rather than a vector reinterpreted at another dimension; when p is
+// unknown the length sets it.
+static void svector_from_binary(MaybeParams<SVectorParams> &p,
+                                Span<const unsigned char> from,
+                                CustomResult out) {
+  if (from.size() == 0 || from.size() % sizeof(float) != 0) {
+    out.warning("svector_from_binary: length is not a multiple of 4 bytes");
+    return;
+  }
+  const size_t count = from.size() / sizeof(float);
+  if (count > static_cast<size_t>(native::MAX_VECTOR_DIMENSION)) {
+    out.warning("svector_from_binary: invalid dimension");
+    return;
+  }
+  if (p.is_known() && static_cast<size_t>(p.value().dimension) != count) {
+    out.warning("svector_from_binary: dimension mismatch");
+    return;
+  }
+
+  auto buf = out.buffer();
+  const size_t need = sizeof(vef_storage_ref_t) + from.size();
+  if (buf.size() < need) {
+    out.warning("svector_from_binary: buffer too small");
+    return;
+  }
+  std::memset(buf.data(), 0, sizeof(vef_storage_ref_t));
+  unsigned char *dst = buf.data() + sizeof(vef_storage_ref_t);
+  // Re-store each float via float4store so the on-disk encoding is identical
+  // to the decimal path and portable regardless of host byte order.
+  for (size_t i = 0; i < count; ++i) {
+    float value;
+    std::memcpy(&value, from.data() + i * sizeof(float), sizeof(float));
+    native::float4store(dst + i * sizeof(float), value);
+  }
+  if (!p.is_known()) p.set(SVectorParams{static_cast<int64_t>(count)});
+  out.set_length(need);
+}
+
 // When p is known, dimension is taken from p; the parsed element count must
 // match p.value().dimension. When p is unknown, the element count from the
 // string sets p.dimension. The loop is capped by what the output buffer can
@@ -619,6 +667,7 @@ constexpr auto SVECTOR = vsql::make_type<kSVectorTypeName>()
                              .params<SVectorParams, &SVectorParams::parse,
                                      &SVectorParams::to_strings>()
                              .from_string<svector_from_string>()
+                             .from_binary<&svector_from_binary>()
                              .to_string<svector_to_string>()
                              .compare<svector_compare>()
                              .int_to_params<svector_get_params>()

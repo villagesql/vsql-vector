@@ -1,0 +1,114 @@
+# Install vsql-svector extension
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+
+########################################################################
+#
+# Test binary ingest for SVECTOR.
+#
+# A value in the binary charset (a _binary literal, a binary parameter, a
+# VARBINARY column) is SVECTOR's binary form, encoded by svector_from_binary:
+# the little-endian float32 elements with no header.
+#
+#     [f0 (4B LE)][f1]...[f(dim-1)]
+#
+# Hex literals below (X'..') are those encodings:
+#   [1,2,3,4]        -> 0000803F 00000040 00004040 00008040
+#   [0.5,-0.5,0,1.5] -> 0000003F 000000BF 00000000 0000C03F
+#
+########################################################################
+
+CREATE TABLE t (
+  id INT PRIMARY KEY,
+  v  SVECTOR(4) NOT NULL
+) ENGINE=InnoDB;
+
+# A hex or bit literal without _binary is the binary form too; hex_to_svector
+# covers it.
+INSERT INTO t VALUES (1, _binary X'0000803F000000400000404000008040');
+INSERT INTO t VALUES (2, '[1.0, 2.0, 3.0, 4.0]');
+
+# Binary ingest and string ingest store the same vector.
+SELECT id, VECTOR_FORMAT(v, 1) AS formatted FROM t ORDER BY id;
+SELECT L2_DISTANCE(a.v, b.v) AS dist
+FROM t a, t b WHERE a.id = 1 AND b.id = 2;
+
+INSERT INTO t VALUES (3, _binary X'0000003F000000BF000000000000C03F');
+INSERT INTO t VALUES (4, '[0.5, -0.5, 0.0, 1.5]');
+SELECT L2_DISTANCE(a.v, b.v) AS dist
+FROM t a, t b WHERE a.id = 3 AND b.id = 4;
+
+# Element bytes are never read as text. The first element is
+# 0.0004149999876972288, whose bytes begin with 0x5B, the code for '['.
+INSERT INTO t VALUES (5, _binary X'5B94D939000000400000404000008040');
+INSERT INTO t VALUES (6, '[0.0004149999876972288, 2.0, 3.0, 4.0]');
+SELECT L2_DISTANCE(a.v, b.v) AS dist
+FROM t a, t b WHERE a.id = 5 AND b.id = 6;
+
+# The last byte is 0x20, a space, and is kept: the 4th element is
+# 1.0842021724855044e-19.
+INSERT INTO t VALUES (7, _binary X'0000803F000000400000404000000020');
+INSERT INTO t VALUES (8, '[1.0, 2.0, 3.0, 1.0842021724855044e-19]');
+SELECT L2_DISTANCE(a.v, b.v) AS dist
+FROM t a, t b WHERE a.id = 7 AND b.id = 8;
+
+# A binary prepared-statement parameter.
+PREPARE s FROM 'INSERT INTO t VALUES (?, ?)';
+SET @id = 9, @v = _binary X'0000803F000000400000404000008040';
+EXECUTE s USING @id, @v;
+DEALLOCATE PREPARE s;
+SELECT L2_DISTANCE(a.v, b.v) AS dist
+FROM t a, t b WHERE a.id = 9 AND b.id = 2;
+
+# INSERT ... SELECT from a VARBINARY column.
+CREATE TABLE raw (id INT PRIMARY KEY, b VARBINARY(16));
+INSERT INTO raw VALUES (10, X'0000803F000000400000404000008040');
+INSERT INTO t SELECT id, b FROM raw;
+DROP TABLE raw;
+SELECT L2_DISTANCE(a.v, b.v) AS dist
+FROM t a, t b WHERE a.id = 10 AND b.id = 2;
+
+# Malformed binary values are rejected.
+
+# Three elements where the column has four.
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t VALUES (20, _binary X'0000803F0000004000004040');
+
+# Five elements where the column has four.
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t VALUES (21, _binary X'0000803F000000400000404000008040000080400000A040');
+
+# Not a whole number of elements.
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t VALUES (22, _binary X'0000803F00');
+
+# No elements.
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t VALUES (23, _binary X'');
+
+# A decimal literal with no brackets is a decimal error.
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t VALUES (24, '1.0, 2.0, 3.0, 4.0');
+
+DROP TABLE t;
+
+# The binary form as a function argument, which is how a client sends a
+# query vector (SELECT ... ORDER BY L2_DISTANCE(v, ?)). Its dimension comes
+# from its length.
+CREATE TABLE t2 (
+  id INT PRIMARY KEY,
+  v  SVECTOR(4) NOT NULL
+) ENGINE=InnoDB;
+INSERT INTO t2 VALUES (1, '[1.0, 2.0, 3.0, 4.0]');
+INSERT INTO t2 VALUES (2, '[0.5, -0.5, 0.0, 1.5]');
+
+# Row 1 is an exact match (dist 0).
+SELECT id, L2_DISTANCE(v, _binary X'0000803F000000400000404000008040') AS dist
+FROM t2 ORDER BY dist, id;
+
+DROP TABLE t2;
+
+--echo # binary ingest test completed
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;

@@ -1,0 +1,50 @@
+# Install vsql-svector extension
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+
+########################################################################
+#
+# A hex literal (0x.. or X'..') is SVECTOR's binary form, as the same bytes
+# written with _binary are: the little-endian float32 elements with no header.
+#
+#   [1,2,3,4]        -> 0000803F 00000040 00004040 00008040
+#   [0.5,-0.5,0,1.5] -> 0000003F 000000BF 00000000 0000C03F
+#
+########################################################################
+
+CREATE TABLE t (
+  id INT PRIMARY KEY,
+  v  SVECTOR(4) NOT NULL,
+  INDEX idx_v (v hnsw_l2) USING EXTENDED(hnsw) WITH (M = 8, ef_construction = 64)
+) ENGINE=InnoDB;
+
+INSERT INTO t VALUES (1, 0x0000803F000000400000404000008040);
+INSERT INTO t VALUES (2, X'0000003F000000BF000000000000C03F');
+INSERT INTO t VALUES (3, '[1,2,3,6]'), (4, '[9,9,9,9]'), (5, '[2,2,3,4]');
+SELECT id, v FROM t ORDER BY id;
+
+# Three elements where the column has four.
+--error ER_TRUNCATED_WRONG_VALUE_FOR_FIELD
+INSERT INTO t VALUES (10, 0x0000803F0000004000004040);
+
+# The query vector of a nearest-neighbour search, served by the index.
+SELECT id, L2_DISTANCE(v, 0x0000803F000000400000404000008040) AS dist
+FROM t ORDER BY dist, id;
+--replace_regex /\(cost=[0-9.e+]+ rows=[0-9.e+]+\)/(cost=# rows=#)/
+EXPLAIN FORMAT=TREE
+SELECT id FROM t ORDER BY L2_DISTANCE(v, 0x0000803F000000400000404000008040)
+LIMIT 3;
+SELECT id FROM t ORDER BY L2_DISTANCE(v, 0x0000803F000000400000404000008040)
+LIMIT 3;
+
+PREPARE s FROM 'SELECT id FROM t ORDER BY L2_DISTANCE(v, X''0000803F000000400000404000008040'') LIMIT 3';
+EXECUTE s;
+EXECUTE s;
+DEALLOCATE PREPARE s;
+
+DROP TABLE t;
+
+--echo # hex literal test completed
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;
