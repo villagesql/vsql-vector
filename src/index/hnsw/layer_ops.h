@@ -57,6 +57,10 @@ private:
 //   using NodeData = ...;
 //   using DistanceType = ...;  // DefaultConstructible and LessThanComparable
 //   using LevelId = ...;       // DefaultConstructible
+//   using TrxRef = ...;
+//   // TrxRef value meaning "no transaction", e.g. a node that is not delete
+//   // marked has this as its delete_trx_ref.
+//   static constexpr TrxRef EMPTY_TRX_ID = ...;
 //
 //   // Computes the distance between two nodes and stores the result in 'out'.
 //   bool distance(const Node&, const Node&, DistanceType& out);
@@ -84,7 +88,7 @@ private:
 //   // signals failure of the visibility check itself, not the node's
 //   // visibility -- that result is carried in 'out'. trx_ref is the node's
 //   // resolved trx_ref and delete_trx_ref (EMPTY_TRX_ID if not delete
-//   // marked), from the Candidate the distance() call that found it filled in.
+//   // marked), as the distance() call that found it filled them in.
 //   static bool is_visible(Graph&, const Node&, TrxRef trx_ref,
 //                          TrxRef delete_trx_ref, bool& out);
 template <typename Graph, template <typename> class Policy>
@@ -118,10 +122,13 @@ public:
   // so they don't count against ef or appear in the result. level is the
   // level entry_points (and every node this call will traverse to) live
   // at -- carried into this object's state for the paired consume_*() call
-  // and any neighbours() lookups this call makes itself. Returns true if a
-  // graph operation fails.
-  bool search(const std::vector<Node> &entry_points, LevelId level,
-              uint32_t ef);
+  // and any neighbours() lookups this call makes itself. If track_trx is
+  // set, the creator trx_ref of each retained result is kept alongside it
+  // and can be extracted by consume_all()/consume_simple(); it is meant for
+  // the bottom layer of a locking read, and costs nothing when unset.
+  // Returns true if a graph operation fails.
+  bool search(const std::vector<Node> &entry_points, LevelId level, uint32_t ef,
+              bool track_trx = false);
 
   // Step 1, traversal-free variant: evaluates the distance from the query
   // to each element of candidates directly (Algorithm 2, lines 1-3,
@@ -135,13 +142,18 @@ public:
 
   // Step 2, variant A: extracts every node found by the preceding
   // search()/seed() call, ordered by increasing distance from the query
-  // node (nearest first).
-  void consume_all(std::vector<Node> &out);
+  // node (nearest first). If trx_refs is non-null, it is replaced with the
+  // creator trx_ref of each node in out, in the same order; this requires
+  // that search() was called with track_trx set.
+  void consume_all(std::vector<Node> &out,
+                   std::vector<TrxRef> *trx_refs = nullptr);
 
   // Step 2, variant B: extracts the M elements of the preceding
   // search()/seed() call's result nearest to the query node, ordered by
-  // increasing distance (Algorithm 3, SELECT-NEIGHBORS-SIMPLE).
-  void consume_simple(uint32_t M, std::vector<Node> &out);
+  // increasing distance (Algorithm 3, SELECT-NEIGHBORS-SIMPLE). trx_refs
+  // behaves as in consume_all(), truncated to the same M elements.
+  void consume_simple(uint32_t M, std::vector<Node> &out,
+                      std::vector<TrxRef> *trx_refs = nullptr);
 
   // Step 2, variant C: selects up to M elements of the preceding
   // search()/seed() call's result via the heuristic (Algorithm 4,
@@ -184,46 +196,75 @@ private:
   struct Candidate {
     Node node;
     Distance distance{};
-    TrxRef trx_ref{};
-    TrxRef delete_trx_ref{};
 
     Candidate(Node n) : node(std::move(n)) {}
 
     bool operator<(const Candidate &rhs) const {
       return distance < rhs.distance;
     }
-
-    struct MinComparator {
-      bool operator()(const Candidate &lhs, const Candidate &rhs) const {
-        return rhs < lhs;
-      }
-    };
-
-    struct MaxComparator {
-      bool operator()(const Candidate &lhs, const Candidate &rhs) const {
-        return lhs < rhs;
-      }
-    };
   };
 
-  using MinQueue = detail::PriorityQueue<Candidate, std::vector<Candidate>,
-                                         typename Candidate::MinComparator>;
+  // A retained result that also carries its creator trx_ref. Used for the
+  // result set only when the search tracks trx_refs (locking reads), so
+  // other searches don't pay for the extra field.
+  struct LockingCandidate {
+    Candidate candidate;
+    TrxRef trx_ref = Graph::EMPTY_TRX_ID;
 
-  using MaxQueue = detail::PriorityQueue<Candidate, std::vector<Candidate>,
-                                         typename Candidate::MaxComparator>;
+    bool operator<(const LockingCandidate &rhs) const {
+      return candidate < rhs.candidate;
+    }
+  };
+
+  // The trx_ref and delete_trx_ref the distance() call resolved for a
+  // candidate. Needed only until the candidate's visibility is decided (and,
+  // for trx_ref, until it is admitted to the result set), so it lives in a
+  // transient buffer parallel to m_expand_buf rather than in Candidate.
+  struct TrxPair {
+    TrxRef trx_ref = Graph::EMPTY_TRX_ID;
+    TrxRef delete_trx_ref = Graph::EMPTY_TRX_ID;
+  };
+
+  template <typename T> struct MinComparator {
+    bool operator()(const T &lhs, const T &rhs) const { return rhs < lhs; }
+  };
+
+  template <typename T> struct MaxComparator {
+    bool operator()(const T &lhs, const T &rhs) const { return lhs < rhs; }
+  };
+
+  template <typename T>
+  using MinQueue = detail::PriorityQueue<T, std::vector<T>, MinComparator<T>>;
+
+  template <typename T>
+  using MaxQueue = detail::PriorityQueue<T, std::vector<T>, MaxComparator<T>>;
+
+  // The result set is m_results, or m_locking_results when m_track_trx is
+  // set; exactly one of them is in use for a given search. These helpers
+  // hide which.
+  bool results_empty() const;
+  size_t results_size() const;
+  const Candidate &results_top() const;
+  void results_pop();
+  void results_push(const Candidate &candidate, const TrxPair &trx);
 
   // Moves the search result into out, consuming it in the process.
   // The output vector is replaced with the search result, ordered by
-  // increasing distance from the query node (nearest first). Leaves
-  // m_candidates and m_visited as-is; the next search()/seed() call is
-  // responsible for discarding them via reset().
-  void consume_result(std::vector<Node> &out);
+  // increasing distance from the query node (nearest first). If trx_refs is
+  // non-null it is filled in the same order. Leaves m_candidates and
+  // m_visited as-is; the next search()/seed() call is responsible for
+  // discarding them via reset().
+  void consume_result(std::vector<Node> &out, std::vector<TrxRef> *trx_refs);
 
   // Fills in the distance for each candidate from index begin onward.
   // Elements before begin are assumed to already carry a valid distance
   // (e.g. copied over from a prior search()/seed() result) and are left
-  // untouched. Returns true if a graph operation fails.
-  bool evaluate_distances(std::vector<Candidate> &candidates, size_t begin = 0);
+  // untouched. If trx is non-null it is resized to candidates.size() and
+  // trx[i] receives the trx_ref/delete_trx_ref resolved for candidates[i]
+  // (EMPTY_TRX_ID for a Node query, which resolves neither). Returns true if
+  // a graph operation fails.
+  bool evaluate_distances(std::vector<Candidate> &candidates, size_t begin = 0,
+                          std::vector<TrxPair> *trx = nullptr);
 
   // Seeds m_visited, m_candidates and m_results from the entry points
   // (Algorithm 2, lines 1-3). Returns true if a graph operation fails.
@@ -260,8 +301,11 @@ private:
   LevelId m_level{};
 
   std::unordered_set<typename Node::KeyType> m_visited;
-  MinQueue m_candidates;
-  MaxQueue m_results;
+  MinQueue<Candidate> m_candidates;
+  MaxQueue<Candidate> m_results;
+  // Used in place of m_results when m_track_trx is set.
+  MaxQueue<LockingCandidate> m_locking_results;
+  bool m_track_trx = false;
 
   // Scratch buffers reused across calls, so that repeated operations
   // don't reallocate their backing storage. Cleared by reset(); methods
@@ -269,6 +313,9 @@ private:
   // consume_heuristic()) clear them again as needed.
   std::vector<Node> m_neighbour_buf;
   std::vector<Candidate> m_expand_buf;
+  // trx_ref/delete_trx_ref of each m_expand_buf element, while seed_impl()
+  // and expand() decide their visibility. Not otherwise meaningful.
+  std::vector<TrxPair> m_trx_buf;
 };
 
 } // namespace svector::hnsw
