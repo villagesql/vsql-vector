@@ -173,10 +173,10 @@ struct GraphContext {
   ScratchNIDs m_incoming_buf_1;
   ScratchNIDs m_incoming_buf_2;
 
-  // Non-owning error buffer for the single API call this GraphContext (and
-  // its owning IndexGraph) was constructed for -- IndexGraph is constructed
-  // fresh per top-level call by the API entry point that already has its
-  // own err/err_len from the caller, rather than shared/reused across calls.
+  // Non-owning error buffer, valid only for the API call it was supplied to.
+  // Graphs built per top-level call get it at construction; a graph kept
+  // across calls (inside a Cursor) must have it cleared when the call ends and
+  // re-bound with IndexGraph::set_error() at the start of the next one.
   std::span<char> m_error;
 };
 
@@ -282,9 +282,8 @@ public:
     std::stack<LevelId> m_stack;
   };
 
-  // Constructed fresh by the API entry point handling a single top-level
-  // call (e.g. the DML insert() hook), which already has its own index,
-  // trx_ref and err/err_len to inject -- not shared or reused across calls.
+  // Represents an index operation with access to its store, transaction
+  // context and error reporting.
   IndexGraph(IndexStore *store, const Index &index, TrxRef trx_ref,
              size_t vector_buf_size, std::span<char> err);
 
@@ -315,8 +314,9 @@ public:
                bool &out);
 
   // Whether node's vector record still exists, was created by trx_ref and is
-  // not delete marked. A failed read counts as not current.
-  bool is_entry_current(const Node &node, TrxRef trx_ref);
+  // not delete marked. Returns false on success (result in current), true on
+  // error (message written to the error buffer).
+  bool is_entry_current(const Node &node, TrxRef trx_ref, bool &current);
 
   // Returns the randomly-generated level for the element about to be
   // inserted (Algorithm 1, line 4):
@@ -439,6 +439,9 @@ public:
   void set_read_view(IndexScanDesc::ReadViewRef read_view) {
     m_read_view = read_view;
   }
+
+  // Re-binds the non-owning error buffer.
+  void set_error(std::span<char> err) { m_ctx.m_error = err; }
 
 private:
   // Lock primitives backing LockGraph/LockLevels.
@@ -652,10 +655,19 @@ public:
   bool eof() const { return m_pos == EOF_POS; }
 
   // Whether the entry at the current position still exists, was created by
-  // trx_ref and is not delete marked. False at eof().
-  bool validate_current(Segment::TrxRef trx_ref) {
+  // trx_ref and is not delete marked; valid is false at eof(). Returns false
+  // on success, true on error (message written to err). err is bound to the
+  // graph only for the duration of this call.
+  bool validate_current(Segment::TrxRef trx_ref, std::span<char> err,
+                        bool &valid) {
+    valid = false;
     const Node *node = current();
-    return node != nullptr && m_graph.is_entry_current(*node, trx_ref);
+    if (node == nullptr)
+      return false;
+    m_graph.set_error(err);
+    const bool failed = m_graph.is_entry_current(*node, trx_ref, valid);
+    m_graph.set_error({});
+    return failed;
   }
 
 private:
