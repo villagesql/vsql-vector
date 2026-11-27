@@ -534,19 +534,18 @@ void DataPage::insert(Page &data_page, MtrCtx::Ref mtr, Segment::TrxRef trx_ref,
   col_ref = encode_column_ref(page_ref, slot_index);
 }
 
-bool DataPage::purge(Page &data_page, MtrCtx::Ref mtr, uint16_t slot_index,
-                     Segment::TrxRef trx_ref, bool &purged) {
-  assert(data_page.is_loaded(Page::Latch::EXCLUSIVE));
+bool DataPage::is_purgeable(Page &data_page, uint16_t slot_index,
+                            Segment::TrxRef trx_ref, bool &purgeable) const {
+  assert(data_page.is_loaded(Page::Latch::EXCLUSIVE) ||
+         data_page.is_loaded(Page::Latch::SHARED));
 
-  // Initialize output parameter
-  purged = false;
+  purgeable = false;
 
-  // Step 1: Validate slot index is within bounds
+  // Validate slot index is within bounds
   if (slot_index >= m_max_num_recs) {
     return true;
   }
 
-  // Step 2: Validate record state
   auto [delete_marked, is_free] = get_record_status(data_page, slot_index);
 
   if (is_free) {
@@ -555,24 +554,39 @@ bool DataPage::purge(Page &data_page, MtrCtx::Ref mtr, uint16_t slot_index,
     return false;
   }
 
-  // Step 3: Verify that the transaction reference matches. A delete marked
-  // record is purged by its deleting transaction; an unmarked one is an
-  // insert being rolled back, purged by its inserting transaction.
+  // Verify that the transaction reference matches. A delete marked record is
+  // purged by its deleting transaction; an unmarked one is an insert being
+  // rolled back, purged by its inserting transaction. A mismatch is not an
+  // error: the record was modified by another transaction and should not be
+  // purged by this one.
   Page::Offset rec_offset = get_record_offset(slot_index);
   Segment::TrxRef stored_trx_ref = data_page.read_trx_id(
       delete_marked ? rec_offset + DELETE_TRX_REF_OFF : rec_offset);
 
-  if (stored_trx_ref != trx_ref) {
-    // Transaction reference mismatch - do not purge
-    // This is not an error, just means the record was modified by another
-    // transaction and should not be purged by this transaction.
+  purgeable = (stored_trx_ref == trx_ref);
+  return false;
+}
+
+bool DataPage::purge(Page &data_page, MtrCtx::Ref mtr, uint16_t slot_index,
+                     Segment::TrxRef trx_ref, bool &purged) {
+  assert(data_page.is_loaded(Page::Latch::EXCLUSIVE));
+
+  // Initialize output parameter
+  purged = false;
+
+  // Steps 1-3: validate the slot, its state and the transaction reference.
+  bool purgeable = false;
+  if (is_purgeable(data_page, slot_index, trx_ref, purgeable)) {
+    return true;
+  }
+  if (!purgeable) {
     return false;
   }
 
-  // Step 4: Mark record as free (clears both FREE_BIT and DELETE_MARK_BIT)
-  if (!delete_marked) {
-    // Rollback path: purging a non-deleted slot.
-  }
+  Page::Offset rec_offset = get_record_offset(slot_index);
+
+  // Step 4: Mark record as free (clears both FREE_BIT and DELETE_MARK_BIT).
+  // An unmarked record here is the rollback path of an insert.
   set_record_free(data_page, slot_index, mtr);
 
   // Empty both transaction refs of the freed slot.
