@@ -25,7 +25,6 @@
 #define VILLAGESQL_EXAMPLES_VSQL_SVECTOR_SRC_NATIVE_VECTOR_H
 
 #include <cassert>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -201,77 +200,6 @@ bool from_encoded(const unsigned char *encoded_data, size_t encoded_len,
 // Returns true on error.
 bool to_encoded(const void *native_data, unsigned char *encoded_buffer,
                 size_t encoded_buf_len, size_t *encoded_len);
-
-// L1 distance (Manhattan distance) between two vectors
-static V_FUNC_ALWAYS_INLINE double dist_l1(const Data *v1, const Data *v2) {
-  double result = 0.0;
-  for (uint32_t i = 0; i < v1->dim; i++) {
-    result += std::abs(v1->data[i] - v2->data[i]);
-  }
-  return result;
-}
-
-// Squared L2 distance between two vectors (without sqrt for efficiency)
-static V_FUNC_ALWAYS_INLINE double dist_squared_l2(const Data *v1,
-                                                   const Data *v2) {
-  const float *a = v1->data;
-  const float *b = v2->data;
-  const float *end = a + v1->dim;
-
-  // Use pointer iteration (helps vectorization)
-  double result = 0.0;
-  for (; a != end; ++a, ++b) {
-    double diff = double(*a) - double(*b);
-    result += diff * diff;
-  }
-  return result;
-}
-
-// L2 distance (Euclidean distance) between two vectors
-static V_FUNC_ALWAYS_INLINE double dist_l2(const Data *v1, const Data *v2) {
-  return std::sqrt(dist_squared_l2(v1, v2));
-}
-
-// Cosine distance between two vectors
-static V_FUNC_ALWAYS_INLINE double dist_cosine(const Data *v1, const Data *v2) {
-  double dot = 0.0, norm1 = 0.0, norm2 = 0.0;
-  for (uint32_t i = 0; i < v1->dim; i++) {
-    double x = v1->data[i];
-    double y = v2->data[i];
-    dot += x * y;
-    norm1 += x * x;
-    norm2 += y * y;
-  }
-  double denom = std::sqrt(norm1) * std::sqrt(norm2);
-  if (denom > 0.0) {
-    return 1.0 - (dot / denom);
-  }
-  return 1.0;  // Maximum distance
-}
-
-// Inner product (dot product) between two vectors
-static V_FUNC_ALWAYS_INLINE double dist_inner_product(const Data *v1,
-                                                      const Data *v2) {
-  double result = 0.0;
-  for (uint32_t i = 0; i < v1->dim; i++) {
-    result += v1->data[i] * v2->data[i];
-  }
-  return result;
-}
-
-// Calculate L2 norm (Euclidean norm) of a vector
-static V_FUNC_ALWAYS_INLINE double norm_l2(const Data *v) {
-  const float *a = v->data;
-  const float *end = a + v->dim;
-
-  // Use pointer iteration (helps vectorization)
-  double sum_sq = 0.0;
-  for (; a != end; ++a) {
-    double val = double(*a);
-    sum_sq += val * val;
-  }
-  return std::sqrt(sum_sq);
-}
 
 }  // namespace svector::native
 

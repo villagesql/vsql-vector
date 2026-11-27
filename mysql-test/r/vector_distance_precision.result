@@ -1,0 +1,71 @@
+SET PERSIST vsql_allow_preview_extensions = ON;
+INSTALL EXTENSION vsql_vector;
+# === 1) Same data: short vector, 16-lane block, scalar tail ===
+SELECT VECTOR_NORM(SVECTOR::FROM_STRING('[10000, 1]')) AS norm_2;
+norm_2
+10000.00005
+SELECT VECTOR_NORM(SVECTOR::FROM_STRING(
+'[10000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1]')) AS norm_17_tail;
+norm_17_tail
+10000.00005
+SELECT VECTOR_NORM(SVECTOR::FROM_STRING(
+'[10000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'))
+AS norm_32_block;
+norm_32_block
+10000
+SELECT L2_DISTANCE(
+SVECTOR::FROM_STRING(
+'[10000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'),
+SVECTOR::FROM_STRING(
+'[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'))
+AS l2_32_block;
+l2_32_block
+10000
+SELECT L1_DISTANCE(SVECTOR::FROM_STRING('[1e8, 1]'),
+SVECTOR::FROM_STRING('[0, 0]')) AS l1_2;
+l1_2
+100000001
+SELECT L1_DISTANCE(
+SVECTOR::FROM_STRING(
+'[1e8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'),
+SVECTOR::FROM_STRING(
+'[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'))
+AS l1_32_block;
+l1_32_block
+100000000
+# === 2) COSINE_DISTANCE noise floor for 1536-dim near duplicates ===
+CREATE TABLE prec (
+id INT PRIMARY KEY,
+v SVECTOR(1536) NOT NULL
+) ENGINE=InnoDB;
+SET @blk = '0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.1,1.2,1.3,1.4,1.5,1.6,';
+SET @head = REPEAT(CONCAT(@blk, '1.7,'), 95);
+SET @q  = CONCAT('[', @head, @blk, '1.7]');
+SET @c2 = CONCAT('[', @head, @blk, '1.8]');
+SET @c3 = CONCAT('[', @head, @blk, '1.7003]');
+SET @c4 = CONCAT('[', @head, '0.097', SUBSTRING(@blk, 4), '1.7]');
+INSERT INTO prec VALUES (1, @q), (2, @c2), (3, @c3), (4, @c4);
+SELECT id, COSINE_DISTANCE(v, SVECTOR::FROM_STRING(@q)) AS cos_dist
+FROM prec ORDER BY id;
+id	cos_dist
+1	0
+2	0.000003087832590509265
+3	0.000000009432927661201518
+4	0.0000000027819757608682494
+# === 3) Near-duplicate ranking ===
+SELECT id FROM prec ORDER BY L2_DISTANCE(v, SVECTOR::FROM_STRING(@q)), id;
+id
+1
+3
+4
+2
+SELECT id FROM prec ORDER BY COSINE_DISTANCE(v, SVECTOR::FROM_STRING(@q)), id;
+id
+1
+4
+3
+2
+DROP TABLE prec;
+UNINSTALL EXTENSION vsql_vector;
+SET PERSIST vsql_allow_preview_extensions = OFF;
+RESET PERSIST vsql_allow_preview_extensions;
