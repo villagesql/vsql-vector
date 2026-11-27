@@ -66,10 +66,16 @@ bool LayerOperations<Graph, Policy>::search(
   while (!m_candidates.empty()) {
     Candidate c = m_candidates.top();
     m_candidates.pop();
-    // Algorithm 2, line 7: distance(c, q) > distance(f, q). m_results can
-    // be empty here if every candidate seen so far was invisible; in that
-    // case there's no result yet to compare against, so keep expanding.
-    if (!results_empty() && results_top() < c) {
+
+    // Algorithm 2, line 7: distance(c, q) > distance(f, q). With MVCC,
+    // elements in C may be invisible and are excluded from W. Consequently,
+    // W may contain fewer than ef elements even when C is large. Continue
+    // expanding until W is full before applying the usual stopping condition.
+    // TODO(villagesql-indexing): MVCC visibility can cause the search to
+    // visit and retain more nodes than usual. Consider configurable limits
+    // on nodes visited, nodes retained in C, and memory usage, trading
+    // recall for bounded latency and memory.
+    if (results_size() >= ef && results_top() < c) {
       break;
     }
     if (expand(c.node, ef)) {
