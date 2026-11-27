@@ -147,7 +147,7 @@ bool DataPageParser::parse(const std::vector<uint8_t> &page_data,
 
   // Calculate first record offset
   uint32_t first_rec_offset = DataPage::FREE_BITMAP_OFF + bitmap_size_bytes;
-  uint32_t rec_size = DataPage::TRX_REF_SIZE + column_size;
+  uint32_t rec_size = DataPage::REC_HEADER_SIZE + column_size;
 
   // Parse records
   info.records.clear();
@@ -178,7 +178,9 @@ bool DataPageParser::parse(const std::vector<uint8_t> &page_data,
     if (!rec.is_free && rec_offset + rec_size <= page_data.size()) {
       // Read transaction reference
       rec.trx_ref = read_id48(page_data, rec_offset);
-      uint32_t off = rec_offset + DataPage::TRX_REF_SIZE;
+      rec.delete_trx_ref =
+          read_id48(page_data, rec_offset + DataPage::DELETE_TRX_REF_OFF);
+      uint32_t off = rec_offset + DataPage::REC_HEADER_SIZE;
 
       if (index_kind == HnswRecordKind::Neighbour) {
         rec.owner_vid = read_id48(page_data, off);
@@ -215,6 +217,7 @@ bool DataPageParser::parse(const std::vector<uint8_t> &page_data,
       }
     } else {
       rec.trx_ref = 0;
+      rec.delete_trx_ref = 0;
     }
 
     info.records.push_back(rec);
@@ -306,7 +309,7 @@ void DataPageParser::display(const DataPageInfo &info, bool verbose,
         std::cout << "  [" << std::setw(3) << i << "] ";
         std::cout << "Trx ID:" << std::setw(12) << rec.trx_ref;
         if (rec.is_deleted) {
-          std::cout << " (DELETED)";
+          std::cout << " (DELETED by trx " << rec.delete_trx_ref << ")";
         }
 
         if (info.index_kind == HnswRecordKind::Neighbour) {

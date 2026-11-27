@@ -230,7 +230,7 @@ levels.
   (truncated or unresolved), so reciprocity is unknown rather than assumed.
 - **Node states**: dashed grey = truncated by `--max-nodes`; dashed red =
   unresolved (referenced but not a live record, reason in the tooltip); light
-  red fill + `deleted` = delete-marked but still allocated and linked; orange
+  red fill + `del N` (N = deleting trx id) = delete-marked but still allocated and linked; orange
   fill + `unreachable` = see below.
 - A truncated diagram says `PARTIAL GRAPH` in its header and marks the cut
   nodes; it never looks complete.
@@ -247,7 +247,7 @@ Compare dumps taken before and after a delete:
 - node gone from the store -> it is not listed at all (deleted);
 - node still allocated but orange `unreachable` -> still stored, but nothing
   reachable links to it (a connectivity break);
-- node still linked but marked `deleted` -> delete-marked, not yet purged;
+- node still linked but marked `del N` -> delete-marked, not yet purged;
 - a neighbour that is not a live record -> dashed red `unresolved` (dangling).
 
 Limits: the check covers level 0 only (other levels' root pages are not known

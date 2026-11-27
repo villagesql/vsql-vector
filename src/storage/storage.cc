@@ -610,7 +610,7 @@ bool ColumnStore::fetch(MtrCtx::Ref mctx, Column::Ref col_ref, bool for_update,
   trx_ref = data_page.read_trx_id(rec_offset);
 
   // Step 6: Set column data pointer to the column data in the page
-  Page::Offset col_data_offset = rec_offset + DataPage::TRX_REF_SIZE;
+  Page::Offset col_data_offset = rec_offset + DataPage::REC_HEADER_SIZE;
   col_data.data = data_page.get_data() + col_data_offset;
   col_data.length = m_root.get_column_size();
 
@@ -720,7 +720,7 @@ bool ColumnStore::update(MtrCtx::Ref mctx, Column::Ref col_ref,
   // contiguous byte range and is written with a single call, keeping the
   // number of redo log records down.
   Page::Offset col_offset =
-      m_data.get_record_offset(slot_index) + DataPage::TRX_REF_SIZE;
+      m_data.get_record_offset(slot_index) + DataPage::REC_HEADER_SIZE;
   for (size_t i = 0; i < chunk_ids.size();) {
     // Extend the run as long as the next index follows the current one.
     size_t end = i + 1;
@@ -762,18 +762,25 @@ bool ColumnStore::mark_delete(MtrCtx::Ref mctx, Segment::TrxRef trx_ref,
 
   // Step 4: Mark or unmark the record as deleted based on delete_mark parameter
   Page::Offset rec_offset = m_data.get_record_offset(slot_index);
-  Segment::TrxRef old_trx_ref = data_page.read_trx_id(rec_offset);
-  bool trx_id_match = (old_trx_ref == trx_ref);
+  Page::Offset del_trx_offset = rec_offset + DataPage::DELETE_TRX_REF_OFF;
+  Segment::TrxRef old_del_trx_ref = data_page.read_trx_id(del_trx_offset);
 
   if (delete_mark) {
     m_data.set_record_delete(data_page, slot_index, mtr);
-  } else {
-    m_data.set_record_undelete(data_page, slot_index, trx_id_match, mtr);
-  }
 
-  // Step 5: Update the transaction reference
-  if (!trx_id_match) {
-    data_page.write_trx_id(rec_offset, trx_ref, mtr);
+    // Step 5: Record the deleting transaction. The insert trx ref is kept.
+    if (old_del_trx_ref != trx_ref) {
+      data_page.write_trx_id(del_trx_offset, trx_ref, mtr);
+    }
+  } else {
+    // A re-attempt after a crash finds the delete trx ref already empty.
+    bool trx_match = (old_del_trx_ref == trx_ref) || (old_del_trx_ref == 0);
+    m_data.set_record_undelete(data_page, slot_index, trx_match, mtr);
+
+    // Step 5: Empty the delete trx ref.
+    if (old_del_trx_ref != 0) {
+      data_page.clear_trx_id(del_trx_offset, mtr);
+    }
   }
 
   return false;

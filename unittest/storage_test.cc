@@ -48,6 +48,7 @@
 namespace {
 
 using vsql::preview_storage::Column;
+using vsql::preview_storage::Page;
 using vsql::preview_storage::Segment;
 using vsql::preview_storage::Space;
 
@@ -336,11 +337,181 @@ void test_insert_after_reload_uses_primary_segment() {
                     "restored by load())");
 }
 
+// -------------------------------------------------------------------------
+// Purge / delete-mark ownership tests.
+//
+// A record carries two trx refs: the inserting trx (trx_ref) and, while it is
+// delete marked, the deleting trx (delete_trx_ref). DataPage::is_purgeable
+// compares the delete trx ref for a delete-marked record and the insert trx
+// ref otherwise. These tests cover the flows that exist in practice:
+//   - insert rollback          -> purge(inserter) on an unmarked record
+//   - purge after a committed delete -> purge(deleter) on a marked record
+//   - delete rollback          -> undelete clears the delete trx ref
+//   - insert + delete in one trx, then rollback
+// -------------------------------------------------------------------------
+
+constexpr uint16_t kPurgeColLen = 16;
+constexpr Segment::TrxRef kTrxA = 10;
+constexpr Segment::TrxRef kTrxB = 20;
+
+// One single-column store backed by the fake ABI.
+struct PurgeFixture {
+  svector::MultiColumnStore mcs;
+  char err[512] = {};
+
+  PurgeFixture() {
+    install_fake_abi();
+    std::vector<svector::Storage_spec> specs{{kPurgeColLen, "SVECTOR"}};
+    bool failed = mcs.create(/*space_ref=*/1, /*trx_ref=*/1, specs,
+                             /*num_segments=*/1, err, sizeof(err));
+    assert(!failed && "create should succeed");
+  }
+
+  svector::ColumnStore &store() { return mcs.m_stores[0]; }
+
+  Column::Ref insert(Segment::TrxRef trx) {
+    std::vector<unsigned char> value(kPurgeColLen, 0x5);
+    Column::Data data{value.data(), kPurgeColLen};
+    Column::Ref ref = Column::EMPTY_REF;
+    vsql::preview_storage::MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    bool failed = store().insert(mtr, trx, data, ref, err, sizeof(err));
+    mtr_ctx.commit();
+    assert(!failed && "insert should succeed");
+    return ref;
+  }
+
+  void mark_delete(Segment::TrxRef trx, Column::Ref ref, bool delete_mark) {
+    vsql::preview_storage::MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    bool failed =
+        store().mark_delete(mtr, trx, ref, delete_mark, err, sizeof(err));
+    mtr_ctx.commit();
+    assert(!failed && "mark_delete should succeed");
+  }
+
+  bool is_purgeable(Segment::TrxRef trx, Column::Ref ref) {
+    vsql::preview_storage::MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    bool purgeable = false;
+    bool failed =
+        store().is_purgeable(mtr, trx, ref, purgeable, err, sizeof(err));
+    mtr_ctx.commit();
+    assert(!failed && "is_purgeable should succeed");
+    return purgeable;
+  }
+
+  void purge(Segment::TrxRef trx, Column::Ref ref) {
+    vsql::preview_storage::MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    bool failed = store().purge(mtr, trx, ref, err, sizeof(err));
+    mtr_ctx.commit();
+    assert(!failed && "purge should not error");
+  }
+
+  // Returns true if the record is still readable (slot not free) and reports
+  // its trx refs.
+  bool fetch(Column::Ref ref, Segment::TrxRef &trx,
+             Segment::TrxRef &delete_trx) {
+    vsql::preview_storage::MtrCtx mtr_ctx;
+    auto mtr = mtr_ctx.start();
+    Column::Data data{}, rowid_prefix{};
+    bool failed =
+        store().fetch(mtr, ref, /*for_update=*/false, data, rowid_prefix, trx,
+                      delete_trx, err, sizeof(err));
+    mtr_ctx.commit();
+    return !failed;
+  }
+};
+
+// 1. Insert rollback: the inserting trx purges its own unmarked record.
+void test_purge_insert_rollback() {
+  PurgeFixture f;
+  Column::Ref ref = f.insert(kTrxA);
+
+  // Another trx must not be able to purge an unmarked record it did not
+  // insert; the inserter can.
+  assert(!f.is_purgeable(kTrxB, ref));
+  assert(f.is_purgeable(kTrxA, ref));
+
+  f.purge(kTrxB, ref);
+  Segment::TrxRef trx, del_trx;
+  assert(f.fetch(ref, trx, del_trx) && "purge by non-owner must be a no-op");
+
+  f.purge(kTrxA, ref);
+  assert(!f.fetch(ref, trx, del_trx) && "slot should be free after rollback");
+}
+
+// 2. Committed insert (A), delete by B, then purge by B. The record keeps A's
+// insert ref and gains B as delete ref; B's purge must free it. If
+// is_purgeable compared the insert ref here, B's purge would silently fail and
+// the slot would leak.
+void test_purge_delete_marked_by_deleting_trx() {
+  PurgeFixture f;
+  Column::Ref ref = f.insert(kTrxA);
+  f.mark_delete(kTrxB, ref, /*delete_mark=*/true);
+
+  Segment::TrxRef trx, del_trx;
+  assert(f.fetch(ref, trx, del_trx));
+  assert(trx == kTrxA && "insert trx ref must be kept on delete mark");
+  assert(del_trx == kTrxB && "delete trx ref must be the deleter");
+
+  assert(f.is_purgeable(kTrxB, ref));
+  // Defensive contract check: the insert trx does not own a delete-marked
+  // record. Not reachable from a committed insert in practice (its undo is
+  // discarded), but is_purgeable must key on the delete trx ref.
+  assert(!f.is_purgeable(kTrxA, ref));
+  f.purge(kTrxA, ref);
+  assert(f.fetch(ref, trx, del_trx) && "purge by inserter must be a no-op");
+
+  f.purge(kTrxB, ref);
+  assert(!f.fetch(ref, trx, del_trx) && "slot should be free after purge");
+}
+
+// 3. Delete rollback: undelete clears the delete trx ref and keeps the insert
+// ref. The record is then no longer owned by the deleter for purge.
+void test_undelete_clears_delete_trx_ref() {
+  PurgeFixture f;
+  Column::Ref ref = f.insert(kTrxA);
+  f.mark_delete(kTrxB, ref, true);
+  f.mark_delete(kTrxB, ref, false);
+
+  Segment::TrxRef trx, del_trx;
+  assert(f.fetch(ref, trx, del_trx));
+  assert(trx == kTrxA && "insert trx ref must survive delete + undelete");
+  assert(del_trx == Page::EMPTY_TRX_ID && "delete trx ref must be cleared");
+
+  assert(!f.is_purgeable(kTrxB, ref));
+  assert(f.is_purgeable(kTrxA, ref));
+}
+
+// 4. One trx inserts and deletes the same record, then rolls back. Both refs
+// equal A, so the choice of field must not break the equal case.
+void test_purge_insert_and_delete_same_trx() {
+  PurgeFixture f;
+  Column::Ref ref = f.insert(kTrxA);
+  f.mark_delete(kTrxA, ref, true);
+
+  Segment::TrxRef trx, del_trx;
+  assert(f.fetch(ref, trx, del_trx));
+  assert(trx == kTrxA && del_trx == kTrxA);
+
+  assert(f.is_purgeable(kTrxA, ref));
+  assert(!f.is_purgeable(kTrxB, ref));
+
+  f.purge(kTrxA, ref);
+  assert(!f.fetch(ref, trx, del_trx) && "slot should be free after purge");
+}
+
 } // namespace
 
 int main() {
   test_insert_into_level1_store_hits_segment_bug();
   test_insert_after_reload_uses_primary_segment();
+  test_purge_insert_rollback();
+  test_purge_delete_marked_by_deleting_trx();
+  test_undelete_clears_delete_trx_ref();
+  test_purge_insert_and_delete_same_trx();
   std::printf("All storage tests passed.\n");
   return 0;
 }
