@@ -177,7 +177,7 @@ bool DataPageParser::parse(const std::vector<uint8_t> &page_data,
 
     if (!rec.is_free && rec_offset + rec_size <= page_data.size()) {
       // Read transaction reference
-      rec.trx_ref = read_uint64(page_data, rec_offset);
+      rec.trx_ref = read_id48(page_data, rec_offset);
       uint32_t off = rec_offset + DataPage::TRX_REF_SIZE;
 
       if (index_kind == HnswRecordKind::Neighbour) {
